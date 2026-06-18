@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 
+	"lapangango-api/internal/auth"
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/database"
+	"lapangango-api/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +25,12 @@ func main() {
 	defer dbPool.Close()
 
 	r := gin.Default()
+
+	tokenService := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpiresInHours)
+	authRepository := auth.NewRepository(dbPool)
+	authService := auth.NewService(authRepository, tokenService)
+	authHandler := auth.NewHandler(authService)
+	authHandler.RegisterRoutes(r, middleware.Auth(tokenService))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{

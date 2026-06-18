@@ -3,13 +3,16 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	AppPort     string
-	DatabaseURL string
+	AppPort           string
+	DatabaseURL       string
+	JWTSecret         string
+	JWTExpiresInHours int
 }
 
 func Load() Config {
@@ -28,8 +31,24 @@ func Load() Config {
 		log.Fatal("DATABASE_URL is required")
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET is required")
+	}
+
+	jwtExpiresInHours := 24
+	if value := os.Getenv("JWT_EXPIRES_IN_HOURS"); value != "" {
+		parsedValue, err := strconv.Atoi(value)
+		if err != nil || parsedValue <= 0 {
+			log.Fatal("JWT_EXPIRES_IN_HOURS must be a positive number")
+		}
+		jwtExpiresInHours = parsedValue
+	}
+
 	return Config{
-		AppPort:     appPort,
-		DatabaseURL: databaseURL,
+		AppPort:           appPort,
+		DatabaseURL:       databaseURL,
+		JWTSecret:         jwtSecret,
+		JWTExpiresInHours: jwtExpiresInHours,
 	}
 }
