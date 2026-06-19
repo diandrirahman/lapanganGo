@@ -9,6 +9,7 @@ import (
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/database"
 	"lapangango-api/internal/middleware"
+	"lapangango-api/internal/owners"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,7 +31,15 @@ func main() {
 	authRepository := auth.NewRepository(dbPool)
 	authService := auth.NewService(authRepository, tokenService)
 	authHandler := auth.NewHandler(authService)
-	authHandler.RegisterRoutes(r, middleware.Auth(tokenService))
+	authMiddleware := middleware.Auth(tokenService)
+	authHandler.RegisterRoutes(r, authMiddleware)
+
+	ownerRepository := owners.NewRepository(dbPool)
+	ownerService := owners.NewService(ownerRepository)
+	ownerHandler := owners.NewHandler(ownerService)
+	ownerHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	registerRoleTestRoutes(r, tokenService)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -60,4 +69,26 @@ func main() {
 	if err := r.Run(":" + cfg.AppPort); err != nil {
 		log.Fatal("Failed to run server:", err)
 	}
+}
+
+func registerRoleTestRoutes(r *gin.Engine, tokenService *auth.TokenService) {
+	authMiddleware := middleware.Auth(tokenService)
+
+	r.GET("/customer/profile-test", authMiddleware, middleware.RequireRole("CUSTOMER"), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Customer access granted",
+		})
+	})
+
+	r.GET("/owner/dashboard-test", authMiddleware, middleware.RequireRole("OWNER"), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Owner access granted",
+		})
+	})
+
+	r.GET("/admin/dashboard-test", authMiddleware, middleware.RequireRole("SUPER_ADMIN"), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Super admin access granted",
+		})
+	})
 }
