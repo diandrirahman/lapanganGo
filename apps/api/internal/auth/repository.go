@@ -2,9 +2,11 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -96,4 +98,18 @@ func (r *Repository) FindByEmail(ctx context.Context, email string) (User, error
 
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
+}
+
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func UniqueViolationConstraint(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return ""
+	}
+
+	return pgErr.ConstraintName
 }

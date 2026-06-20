@@ -7,9 +7,12 @@ import (
 
 	"lapangango-api/internal/auth"
 	"lapangango-api/internal/config"
+	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
 	"lapangango-api/internal/middleware"
 	"lapangango-api/internal/owners"
+	"lapangango-api/internal/schedules"
+	"lapangango-api/internal/venues"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,7 +42,20 @@ func main() {
 	ownerHandler := owners.NewHandler(ownerService)
 	ownerHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
-	registerRoleTestRoutes(r, tokenService)
+	venueRepository := venues.NewRepository(dbPool)
+	venueService := venues.NewService(venueRepository)
+	venueHandler := venues.NewHandler(venueService)
+	venueHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	courtRepository := courts.NewRepository(dbPool)
+	courtService := courts.NewService(courtRepository)
+	courtHandler := courts.NewHandler(courtService)
+	courtHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	scheduleRepository := schedules.NewRepository(dbPool)
+	scheduleService := schedules.NewService(scheduleRepository)
+	scheduleHandler := schedules.NewHandler(scheduleService)
+	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -69,26 +85,4 @@ func main() {
 	if err := r.Run(":" + cfg.AppPort); err != nil {
 		log.Fatal("Failed to run server:", err)
 	}
-}
-
-func registerRoleTestRoutes(r *gin.Engine, tokenService *auth.TokenService) {
-	authMiddleware := middleware.Auth(tokenService)
-
-	r.GET("/customer/profile-test", authMiddleware, middleware.RequireRole("CUSTOMER"), func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Customer access granted",
-		})
-	})
-
-	r.GET("/owner/dashboard-test", authMiddleware, middleware.RequireRole("OWNER"), func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Owner access granted",
-		})
-	})
-
-	r.GET("/admin/dashboard-test", authMiddleware, middleware.RequireRole("SUPER_ADMIN"), func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Super admin access granted",
-		})
-	})
 }

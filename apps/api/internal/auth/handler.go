@@ -34,17 +34,28 @@ func (h *Handler) Register(c *gin.Context) {
 
 	user, err := h.service.Register(c.Request.Context(), req)
 	if err != nil {
-		if errors.Is(err, ErrEmailAlreadyUsed) {
+		switch {
+		case errors.Is(err, ErrEmailAlreadyUsed):
 			c.JSON(http.StatusConflict, gin.H{
 				"message": "Email already used",
 			})
 			return
+		case errors.Is(err, ErrPhoneAlreadyUsed):
+			c.JSON(http.StatusConflict, gin.H{
+				"message": "Phone already used",
+			})
+			return
+		case errors.Is(err, ErrUnsupportedRegistrationRole):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Public registration only supports customer accounts",
+			})
+			return
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Failed to register user",
+			})
+			return
 		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Failed to register user",
-		})
-		return
 	}
 
 	c.JSON(http.StatusCreated, AuthResponse{

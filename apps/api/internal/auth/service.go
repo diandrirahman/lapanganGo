@@ -9,8 +9,10 @@ import (
 )
 
 var (
-	ErrEmailAlreadyUsed  = errors.New("email already used")
-	ErrInvalidCredential = errors.New("invalid email or password")
+	ErrEmailAlreadyUsed            = errors.New("email already used")
+	ErrPhoneAlreadyUsed            = errors.New("phone already used")
+	ErrInvalidCredential           = errors.New("invalid email or password")
+	ErrUnsupportedRegistrationRole = errors.New("unsupported registration role")
 )
 
 type Service struct {
@@ -27,6 +29,13 @@ func NewService(repository *Repository, token *TokenService) *Service {
 
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (UserResponse, error) {
 	email := normalizeEmail(req.Email)
+	role := strings.TrimSpace(req.Role)
+	if role == "" {
+		role = "CUSTOMER"
+	}
+	if role != "CUSTOMER" {
+		return UserResponse{}, ErrUnsupportedRegistrationRole
+	}
 
 	existingUser, err := s.repository.FindByEmail(ctx, email)
 	if err != nil && !IsNotFound(err) {
@@ -39,11 +48,6 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (UserRespon
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return UserResponse{}, err
-	}
-
-	role := strings.TrimSpace(req.Role)
-	if role == "" {
-		role = "CUSTOMER"
 	}
 
 	var phone *string
@@ -60,6 +64,14 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (UserRespon
 		Role:         role,
 	})
 	if err != nil {
+		if IsUniqueViolation(err) {
+			switch UniqueViolationConstraint(err) {
+			case "users_email_key":
+				return UserResponse{}, ErrEmailAlreadyUsed
+			case "users_phone_key":
+				return UserResponse{}, ErrPhoneAlreadyUsed
+			}
+		}
 		return UserResponse{}, err
 	}
 
