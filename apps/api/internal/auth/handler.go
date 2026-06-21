@@ -50,6 +50,11 @@ func (h *Handler) Register(c *gin.Context) {
 				"message": "Public registration only supports customer accounts",
 			})
 			return
+		case errors.Is(err, ErrWeakPassword):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Password is too weak. It must contain uppercase, lowercase, numbers, and special characters.",
+			})
+			return
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"message": "Failed to register user",

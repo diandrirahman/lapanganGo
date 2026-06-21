@@ -67,11 +67,21 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 		return nil, err
 	}
 
+	venueIDs := make([]string, 0, len(venues))
+	for _, venue := range venues {
+		venueIDs = append(venueIDs, venue.ID)
+	}
+
+	facilitiesMap, err := s.repository.FindFacilitiesByVenueIDs(ctx, venueIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	responses := make([]PublicVenueResponse, 0, len(venues))
 	for _, venue := range venues {
-		facilities, err := s.repository.FindFacilitiesByVenueID(ctx, venue.ID)
-		if err != nil {
-			return nil, err
+		facilities := facilitiesMap[venue.ID]
+		if facilities == nil {
+			facilities = []Facility{}
 		}
 		responses = append(responses, toPublicVenueResponse(venue, facilities))
 	}
@@ -115,11 +125,21 @@ func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueRespons
 		return nil, err
 	}
 
+	venueIDs := make([]string, 0, len(venues))
+	for _, venue := range venues {
+		venueIDs = append(venueIDs, venue.ID)
+	}
+
+	facilitiesMap, err := s.repository.FindFacilitiesByVenueIDs(ctx, venueIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	responses := make([]VenueResponse, 0, len(venues))
 	for _, venue := range venues {
-		facilities, err := s.repository.FindFacilitiesByVenueID(ctx, venue.ID)
-		if err != nil {
-			return nil, err
+		facilities := facilitiesMap[venue.ID]
+		if facilities == nil {
+			facilities = []Facility{}
 		}
 		responses = append(responses, toVenueResponse(venue, facilities))
 	}

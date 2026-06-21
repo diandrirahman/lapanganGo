@@ -13,6 +13,7 @@ var (
 	ErrPhoneAlreadyUsed            = errors.New("phone already used")
 	ErrInvalidCredential           = errors.New("invalid email or password")
 	ErrUnsupportedRegistrationRole = errors.New("unsupported registration role")
+	ErrWeakPassword                = errors.New("password must contain at least one uppercase letter, one lowercase letter, one number, and one special character")
 )
 
 type Service struct {
@@ -29,13 +30,7 @@ func NewService(repository *Repository, token *TokenService) *Service {
 
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (UserResponse, error) {
 	email := normalizeEmail(req.Email)
-	role := strings.TrimSpace(req.Role)
-	if role == "" {
-		role = "CUSTOMER"
-	}
-	if role != "CUSTOMER" {
-		return UserResponse{}, ErrUnsupportedRegistrationRole
-	}
+	role := "CUSTOMER"
 
 	existingUser, err := s.repository.FindByEmail(ctx, email)
 	if err != nil && !IsNotFound(err) {
@@ -43,6 +38,10 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (UserRespon
 	}
 	if existingUser.ID != "" {
 		return UserResponse{}, ErrEmailAlreadyUsed
+	}
+
+	if !isPasswordStrong(req.Password) {
+		return UserResponse{}, ErrWeakPassword
 	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -130,4 +129,24 @@ func toUserResponse(user User) UserResponse {
 		Status:    user.Status,
 		CreatedAt: user.CreatedAt,
 	}
+}
+
+func isPasswordStrong(password string) bool {
+	if len(password) < 8 {
+		return false
+	}
+	var hasUpper, hasLower, hasNumber, hasSpecial bool
+	for _, char := range password {
+		switch {
+		case char >= 'A' && char <= 'Z':
+			hasUpper = true
+		case char >= 'a' && char <= 'z':
+			hasLower = true
+		case char >= '0' && char <= '9':
+			hasNumber = true
+		default:
+			hasSpecial = true
+		}
+	}
+	return hasUpper && hasLower && hasNumber && hasSpecial
 }

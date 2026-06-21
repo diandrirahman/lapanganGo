@@ -581,6 +581,38 @@ func (r *Repository) FindFacilitiesByVenueID(ctx context.Context, venueID string
 	return scanFacilities(rows)
 }
 
+func (r *Repository) FindFacilitiesByVenueIDs(ctx context.Context, venueIDs []string) (map[string][]Facility, error) {
+	if len(venueIDs) == 0 {
+		return make(map[string][]Facility), nil
+	}
+
+	query := `
+		SELECT vf.venue_id::text, f.id::text, f.name, f.icon
+		FROM venue_facilities vf
+		JOIN facilities f ON f.id = vf.facility_id
+		WHERE vf.venue_id = ANY($1::uuid[])
+		ORDER BY vf.venue_id, f.name ASC
+	`
+
+	rows, err := r.db.Query(ctx, query, venueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	facilitiesMap := make(map[string][]Facility)
+	for rows.Next() {
+		var venueID string
+		var facility Facility
+		if err := rows.Scan(&venueID, &facility.ID, &facility.Name, &facility.Icon); err != nil {
+			return nil, err
+		}
+		facilitiesMap[venueID] = append(facilitiesMap[venueID], facility)
+	}
+
+	return facilitiesMap, rows.Err()
+}
+
 func replaceVenueFacilities(ctx context.Context, tx pgx.Tx, venueID string, facilityIDs []string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM venue_facilities WHERE venue_id = $1`, venueID); err != nil {
 		return err
