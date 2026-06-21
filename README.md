@@ -79,6 +79,10 @@ Authentication:
 - `POST /auth/login`
 - `GET /auth/me`
 
+Public availability:
+
+- `GET /courts/:id/availability?date=YYYY-MM-DD`
+
 Owner profile:
 
 - `POST /owner/profile`

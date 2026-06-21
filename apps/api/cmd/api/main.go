@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"lapangango-api/internal/auth"
+	"lapangango-api/internal/availability"
 	"lapangango-api/internal/blockedslots"
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
@@ -37,6 +38,11 @@ func main() {
 	authHandler := auth.NewHandler(authService)
 	authMiddleware := middleware.Auth(tokenService)
 	authHandler.RegisterRoutes(r, authMiddleware)
+
+	availabilityRepository := availability.NewRepository(dbPool)
+	availabilityService := availability.NewService(availabilityRepository)
+	availabilityHandler := availability.NewHandler(availabilityService)
+	availabilityHandler.RegisterRoutes(r)
 
 	ownerRepository := owners.NewRepository(dbPool)
 	ownerService := owners.NewService(ownerRepository)
