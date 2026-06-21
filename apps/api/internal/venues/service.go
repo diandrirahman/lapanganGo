@@ -79,6 +79,31 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 	return responses, nil
 }
 
+func (s *Service) GetPublicVenue(ctx context.Context, venueID string) (PublicVenueDetailResponse, error) {
+	venue, err := s.repository.FindPublicVenueByID(ctx, venueID)
+	if IsNotFound(err) {
+		return PublicVenueDetailResponse{}, ErrVenueNotFound
+	}
+	if err != nil {
+		return PublicVenueDetailResponse{}, err
+	}
+
+	facilities, err := s.repository.FindFacilitiesByVenueID(ctx, venue.ID)
+	if err != nil {
+		return PublicVenueDetailResponse{}, err
+	}
+
+	courts, err := s.repository.FindActiveCourtsByVenueID(ctx, venue.ID)
+	if err != nil {
+		return PublicVenueDetailResponse{}, err
+	}
+
+	return PublicVenueDetailResponse{
+		PublicVenueResponse: toPublicVenueResponse(venue, facilities),
+		Courts:              toPublicCourtResponses(courts),
+	}, nil
+}
+
 func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueResponse, error) {
 	ownerProfile, err := s.getOwnerProfile(ctx, userID)
 	if err != nil {
@@ -334,5 +359,26 @@ func toFacilityResponses(facilities []Facility) []FacilityResponse {
 		})
 	}
 
+	return responses
+}
+
+func toPublicCourtResponses(courts []Court) []PublicCourtResponse {
+	responses := make([]PublicCourtResponse, 0, len(courts))
+	for _, court := range courts {
+		responses = append(responses, PublicCourtResponse{
+			ID: court.ID,
+			Sport: PublicSportResponse{
+				ID:   court.Sport.ID,
+				Name: court.Sport.Name,
+			},
+			Name:         court.Name,
+			Description:  court.Description,
+			LocationType: court.LocationType,
+			SurfaceType:  court.SurfaceType,
+			PricePerHour: court.PricePerHour,
+			CreatedAt:    court.CreatedAt,
+			UpdatedAt:    court.UpdatedAt,
+		})
+	}
 	return responses
 }

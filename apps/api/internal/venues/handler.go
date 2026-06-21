@@ -17,6 +17,7 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
 	router.GET("/venues", h.GetPublicVenues)
+	router.GET("/venues/:id", h.GetPublicVenue)
 
 	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
 	ownerGroup.POST("/venues", h.CreateVenue)
@@ -51,6 +52,21 @@ func (h *Handler) GetPublicVenues(c *gin.Context) {
 		"page":   req.Page,
 		"limit":  req.Limit,
 	})
+}
+
+func (h *Handler) GetPublicVenue(c *gin.Context) {
+	venueID, ok := getVenueIDParam(c)
+	if !ok {
+		return
+	}
+
+	venue, err := h.service.GetPublicVenue(c.Request.Context(), venueID)
+	if err != nil {
+		respondVenueError(c, err, "Failed to get public venue")
+		return
+	}
+
+	c.JSON(http.StatusOK, venue)
 }
 
 func (h *Handler) CreateVenue(c *gin.Context) {

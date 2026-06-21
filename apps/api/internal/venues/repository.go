@@ -43,6 +43,25 @@ type Facility struct {
 	Icon *string
 }
 
+type Sport struct {
+	ID   string
+	Name string
+}
+
+type Court struct {
+	ID           string
+	VenueID      string
+	Sport        Sport
+	Name         string
+	Description  *string
+	LocationType string
+	SurfaceType  *string
+	PricePerHour float64
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 type VenueParams struct {
 	OwnerProfileID string
 	Name           string
@@ -203,6 +222,105 @@ func (r *Repository) ListPublicVenues(ctx context.Context, limit, offset int) ([
 	}
 
 	return venues, rows.Err()
+}
+
+func (r *Repository) FindPublicVenueByID(ctx context.Context, id string) (Venue, error) {
+	query := `
+		SELECT
+			id::text,
+			owner_profile_id::text,
+			name,
+			description,
+			address,
+			district,
+			city,
+			province,
+			postal_code,
+			latitude,
+			longitude,
+			status::text,
+			created_at,
+			updated_at
+		FROM venues
+		WHERE id = $1 AND status = 'ACTIVE'
+		LIMIT 1
+	`
+
+	var venue Venue
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&venue.ID,
+		&venue.OwnerProfileID,
+		&venue.Name,
+		&venue.Description,
+		&venue.Address,
+		&venue.District,
+		&venue.City,
+		&venue.Province,
+		&venue.PostalCode,
+		&venue.Latitude,
+		&venue.Longitude,
+		&venue.Status,
+		&venue.CreatedAt,
+		&venue.UpdatedAt,
+	)
+	if err != nil {
+		return Venue{}, err
+	}
+
+	return venue, nil
+}
+
+func (r *Repository) FindActiveCourtsByVenueID(ctx context.Context, venueID string) ([]Court, error) {
+	query := `
+		SELECT
+			c.id::text,
+			c.venue_id::text,
+			c.sport_id::text,
+			s.name,
+			c.name,
+			c.description,
+			c.location_type::text,
+			c.surface_type,
+			c.price_per_hour,
+			c.status::text,
+			c.created_at,
+			c.updated_at
+		FROM courts c
+		JOIN sports s ON s.id = c.sport_id
+		WHERE c.venue_id = $1 AND c.status = 'ACTIVE'
+		ORDER BY c.created_at DESC
+	`
+
+	rows, err := r.db.Query(ctx, query, venueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var courts []Court
+	for rows.Next() {
+		var court Court
+		err := rows.Scan(
+			&court.ID,
+			&court.VenueID,
+			&court.Sport.ID,
+			&court.Sport.Name,
+			&court.Name,
+			&court.Description,
+			&court.LocationType,
+			&court.SurfaceType,
+			&court.PricePerHour,
+			&court.Status,
+			&court.CreatedAt,
+			&court.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		courts = append(courts, court)
+	}
+
+	return courts, rows.Err()
 }
 
 func (r *Repository) ListByOwnerProfileID(ctx context.Context, ownerProfileID string) ([]Venue, error) {

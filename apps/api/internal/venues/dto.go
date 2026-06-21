@@ -59,6 +59,28 @@ type PublicVenueResponse struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
+type PublicSportResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type PublicCourtResponse struct {
+	ID           string              `json:"id"`
+	Sport        PublicSportResponse `json:"sport"`
+	Name         string              `json:"name"`
+	Description  *string             `json:"description,omitempty"`
+	LocationType string              `json:"location_type"`
+	SurfaceType  *string             `json:"surface_type,omitempty"`
+	PricePerHour float64             `json:"price_per_hour"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
+}
+
+type PublicVenueDetailResponse struct {
+	PublicVenueResponse
+	Courts []PublicCourtResponse `json:"courts"`
+}
+
 type VenueResponse struct {
 	ID             string             `json:"id"`
 	OwnerProfileID string             `json:"owner_profile_id"`
