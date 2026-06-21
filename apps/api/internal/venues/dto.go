@@ -32,10 +32,31 @@ type UpdateVenueStatusRequest struct {
 	Status string `json:"status" binding:"required,oneof=DRAFT ACTIVE INACTIVE"`
 }
 
+type ListPublicVenuesQuery struct {
+	Limit int `form:"limit" binding:"omitempty,min=1,max=50"`
+	Page  int `form:"page" binding:"omitempty,min=1"`
+}
+
 type FacilityResponse struct {
 	ID   string  `json:"id"`
 	Name string  `json:"name"`
 	Icon *string `json:"icon,omitempty"`
+}
+
+type PublicVenueResponse struct {
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Description *string            `json:"description,omitempty"`
+	Address     string             `json:"address"`
+	District    *string            `json:"district,omitempty"`
+	City        string             `json:"city"`
+	Province    *string            `json:"province,omitempty"`
+	PostalCode  *string            `json:"postal_code,omitempty"`
+	Latitude    *float64           `json:"latitude,omitempty"`
+	Longitude   *float64           `json:"longitude,omitempty"`
+	Facilities  []FacilityResponse `json:"facilities"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 type VenueResponse struct {

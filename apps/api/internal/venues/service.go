@@ -51,6 +51,34 @@ func (s *Service) CreateVenue(ctx context.Context, userID string, req CreateVenu
 	return toVenueResponse(venue, facilities), nil
 }
 
+func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery) ([]PublicVenueResponse, error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * limit
+
+	venues, err := s.repository.ListPublicVenues(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	responses := make([]PublicVenueResponse, 0, len(venues))
+	for _, venue := range venues {
+		facilities, err := s.repository.FindFacilitiesByVenueID(ctx, venue.ID)
+		if err != nil {
+			return nil, err
+		}
+		responses = append(responses, toPublicVenueResponse(venue, facilities))
+	}
+
+	return responses, nil
+}
+
 func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueResponse, error) {
 	ownerProfile, err := s.getOwnerProfile(ctx, userID)
 	if err != nil {
@@ -275,6 +303,24 @@ func toVenueResponse(venue Venue, facilities []Facility) VenueResponse {
 		Facilities:     toFacilityResponses(facilities),
 		CreatedAt:      venue.CreatedAt,
 		UpdatedAt:      venue.UpdatedAt,
+	}
+}
+
+func toPublicVenueResponse(venue Venue, facilities []Facility) PublicVenueResponse {
+	return PublicVenueResponse{
+		ID:          venue.ID,
+		Name:        venue.Name,
+		Description: venue.Description,
+		Address:     venue.Address,
+		District:    venue.District,
+		City:        venue.City,
+		Province:    venue.Province,
+		PostalCode:  venue.PostalCode,
+		Latitude:    venue.Latitude,
+		Longitude:   venue.Longitude,
+		Facilities:  toFacilityResponses(facilities),
+		CreatedAt:   venue.CreatedAt,
+		UpdatedAt:   venue.UpdatedAt,
 	}
 }
 

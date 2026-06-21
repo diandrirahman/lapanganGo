@@ -164,6 +164,47 @@ func (r *Repository) Create(ctx context.Context, params VenueParams, facilityIDs
 	return venue, nil
 }
 
+func (r *Repository) ListPublicVenues(ctx context.Context, limit, offset int) ([]Venue, error) {
+	query := `
+		SELECT
+			id::text,
+			owner_profile_id::text,
+			name,
+			description,
+			address,
+			district,
+			city,
+			province,
+			postal_code,
+			latitude,
+			longitude,
+			status::text,
+			created_at,
+			updated_at
+		FROM venues
+		WHERE status = 'ACTIVE'
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := r.db.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var venues []Venue
+	for rows.Next() {
+		venue, err := scanVenue(rows)
+		if err != nil {
+			return nil, err
+		}
+		venues = append(venues, venue)
+	}
+
+	return venues, rows.Err()
+}
+
 func (r *Repository) ListByOwnerProfileID(ctx context.Context, ownerProfileID string) ([]Venue, error) {
 	query := `
 		SELECT

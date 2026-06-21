@@ -16,12 +16,41 @@ func NewHandler(service *Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
+	router.GET("/venues", h.GetPublicVenues)
+
 	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
 	ownerGroup.POST("/venues", h.CreateVenue)
 	ownerGroup.GET("/venues", h.ListVenues)
 	ownerGroup.GET("/venues/:id", h.GetVenue)
 	ownerGroup.PUT("/venues/:id", h.UpdateVenue)
 	ownerGroup.PATCH("/venues/:id/status", h.UpdateVenueStatus)
+}
+
+func (h *Handler) GetPublicVenues(c *gin.Context) {
+	req := ListPublicVenuesQuery{
+		Limit: 10,
+		Page:  1,
+	}
+
+	if err := c.ShouldBindQuery(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid query parameters",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	venues, err := h.service.GetPublicVenues(c.Request.Context(), req)
+	if err != nil {
+		respondVenueError(c, err, "Failed to list public venues")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"venues": venues,
+		"page":   req.Page,
+		"limit":  req.Limit,
+	})
 }
 
 func (h *Handler) CreateVenue(c *gin.Context) {
