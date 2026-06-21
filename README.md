@@ -106,4 +106,10 @@ Owner schedules:
 - `GET /owner/courts/:id/operating-hours`
 - `PUT /owner/courts/:id/operating-hours`
 
+Owner blocked slots:
+
+- `POST /owner/courts/:id/blocked-slots`
+- `GET /owner/courts/:id/blocked-slots`
+- `DELETE /owner/blocked-slots/:id`
+
 Public registration currently creates customer accounts only. Owner onboarding should go through a dedicated owner registration or verification flow.

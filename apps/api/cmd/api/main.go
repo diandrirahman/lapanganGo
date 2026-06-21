@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"lapangango-api/internal/auth"
+	"lapangango-api/internal/blockedslots"
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
@@ -56,6 +57,11 @@ func main() {
 	scheduleService := schedules.NewService(scheduleRepository)
 	scheduleHandler := schedules.NewHandler(scheduleService)
 	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	blockedSlotRepository := blockedslots.NewRepository(dbPool)
+	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
+	blockedSlotHandler := blockedslots.NewHandler(blockedSlotService)
+	blockedSlotHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
