@@ -74,6 +74,7 @@ func main() {
 	bookingsService := bookings.NewService(bookingsRepository)
 	bookingsHandler := bookings.NewHandler(bookingsService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
+	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)

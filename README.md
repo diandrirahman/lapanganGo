@@ -82,6 +82,21 @@ Authentication:
 Public availability:
 
 - `GET /courts/:id/availability?date=YYYY-MM-DD`
+  - Status slot yang dikembalikan:
+    - `AVAILABLE`: slot bisa dipesan
+    - `BLOCKED`: slot diblokir owner/maintenance
+    - `BOOKED`: slot sudah overlap dengan booking aktif
+  - Catatan: Frontend harus memperlakukan `BLOCKED` dan `BOOKED` sebagai disabled/unselectable.
+
+Customer bookings:
+
+- `POST /bookings`
+- `GET /bookings`
+- `GET /bookings/:id`
+- `PATCH /bookings/:id/cancel`
+- `POST /bookings/:id/pay`
+
+*Note: The `/pay` endpoint is a dummy payment feature for MVP. It marks a `PENDING_PAYMENT` booking as `CONFIRMED`. This is not a real payment gateway integration.*
 
 Owner profile:
 
@@ -96,6 +111,7 @@ Owner venues:
 - `GET /owner/venues/:id`
 - `PUT /owner/venues/:id`
 - `PATCH /owner/venues/:id/status`
+- `GET /owner/venues/:id/bookings?date=YYYY-MM-DD&status=PENDING_PAYMENT`
 
 Owner courts:
 

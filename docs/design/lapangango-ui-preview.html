@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LapanganGo — UI Preview</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-soft: #f1f5f9;
+      --primary: #16a34a;
+      --primary-dark: #15803d;
+      --primary-soft: #dcfce7;
+      --accent: #f97316;
+      --accent-soft: #ffedd5;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --success: #22c55e;
+      --radius-lg: 28px;
+      --radius-md: 18px;
+      --shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+      --shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    a {
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .page {
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
+      height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      font-size: 24px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--primary), #0ea5e9);
+      display: grid;
+      place-items: center;
+      color: white;
+      box-shadow: 0 12px 28px rgba(22, 163, 74, 0.28);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 28px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-weight: 800;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 12px 24px rgba(22, 163, 74, 0.22);
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-dark);
+    }
+
+    .btn-accent {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 12px 24px rgba(249, 115, 22, 0.24);
+    }
+
+    .btn-ghost {
+      background: var(--surface-soft);
+      color: var(--text);
+    }
+
+    .hero {
+      position: relative;
+      padding: 72px 0 42px;
+      background:
+        radial-gradient(circle at 18% 20%, rgba(34, 197, 94, .20), transparent 28%),
+        radial-gradient(circle at 80% 8%, rgba(14, 165, 233, .18), transparent 26%),
+        linear-gradient(180deg, #ffffff 0%, #f8fafc 92%);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 42px;
+      align-items: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--primary-soft);
+      color: var(--primary-dark);
+      font-weight: 800;
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      font-size: clamp(42px, 6vw, 72px);
+      line-height: .94;
+      letter-spacing: -0.07em;
+      margin: 0 0 18px;
+    }
+
+    .hero-text {
+      font-size: 18px;
+      color: var(--muted);
+      line-height: 1.7;
+      width: min(580px, 100%);
+      margin-bottom: 28px;
+    }
+
+    .search-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr .8fr auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 28px;
+    }
+
+    .field {
+      background: var(--surface-soft);
+      border: 1px solid transparent;
+      border-radius: 18px;
+      padding: 12px 14px;
+      min-height: 64px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .field strong {
+      display: block;
+      font-size: 15px;
+    }
+
+    .hero-visual {
+      position: relative;
+      min-height: 520px;
+    }
+
+    .phone-card {
+      position: absolute;
+      right: 20px;
+      top: 0;
+      width: 340px;
+      background: #0f172a;
+      border-radius: 40px;
+      padding: 14px;
+      box-shadow: 0 34px 80px rgba(15, 23, 42, .26);
+      transform: rotate(3deg);
+    }
+
+    .phone-screen {
+      background: white;
+      border-radius: 30px;
+      overflow: hidden;
+      min-height: 500px;
+    }
+
+    .phone-img {
+      height: 190px;
+      background:
+        linear-gradient(rgba(15, 23, 42, .05), rgba(15, 23, 42, .50)),
+        url("https://images.unsplash.com/photo-1556056504-5c7696c4c28d?auto=format&fit=crop&w=900&q=80");
+      background-size: cover;
+      background-position: center;
+      position: relative;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .badge-success {
+      color: #166534;
+      background: #dcfce7;
+    }
+
+    .badge-warning {
+      color: #92400e;
+      background: #fef3c7;
+    }
+
+    .badge-muted {
+      color: #475569;
+      background: #e2e8f0;
+    }
+
+    .phone-body {
+      padding: 18px;
+    }
+
+    .phone-title {
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    .rating {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .slot-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .slot {
+      border-radius: 14px;
+      padding: 10px 8px;
+      font-size: 12px;
+      font-weight: 900;
+      text-align: center;
+      border: 1px solid var(--border);
+      background: white;
+    }
+
+    .slot.available {
+      background: var(--primary-soft);
+      color: var(--primary-dark);
+      border-color: #bbf7d0;
+    }
+
+    .slot.selected {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    .slot.booked {
+      background: #e2e8f0;
+      color: #94a3b8;
+      text-decoration: line-through;
+    }
+
+    .floating-card {
+      position: absolute;
+      left: 10px;
+      bottom: 40px;
+      width: 260px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 26px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .floating-card strong {
+      display: block;
+      font-size: 32px;
+      letter-spacing: -0.05em;
+      margin-bottom: 4px;
+    }
+
+    section {
+      padding: 64px 0;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 26px;
+    }
+
+    .section-head h2 {
+      font-size: 36px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+      margin: 0;
+    }
+
+    .section-head p {
+      color: var(--muted);
+      margin: 8px 0 0;
+      line-height: 1.6;
+    }
+
+    .sports-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 14px;
+    }
+
+    .sport-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 22px;
+      text-align: center;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .sport-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      margin: 0 auto 12px;
+      display: grid;
+      place-items: center;
+      background: var(--primary-soft);
+      font-size: 26px;
+    }
+
+    .venue-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+    }
+
+    .venue-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      overflow: hidden;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .venue-image {
+      height: 210px;
+      background-size: cover;
+      background-position: center;
+      position: relative;
+    }
+
+    .venue-image .badge {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+    }
+
+    .venue-content {
+      padding: 18px;
+    }
+
+    .venue-content h3 {
+      margin: 0 0 6px;
+      letter-spacing: -0.035em;
+      font-size: 21px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .facility-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0;
+    }
+
+    .pill {
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: #475569;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .price-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .price {
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      font-size: 20px;
+    }
+
+    .price span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .detail-preview {
+      background: #0f172a;
+      color: white;
+      border-radius: 38px;
+      padding: 26px;
+      box-shadow: var(--shadow);
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 24px;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: 1.3fr .7fr;
+      gap: 12px;
+    }
+
+    .gallery-main,
+    .gallery-small {
+      background-size: cover;
+      background-position: center;
+      min-height: 300px;
+      border-radius: 26px;
+    }
+
+    .gallery-side {
+      display: grid;
+      gap: 12px;
+    }
+
+    .gallery-small {
+      min-height: 144px;
+    }
+
+    .detail-info h2 {
+      margin: 18px 0 8px;
+      font-size: 34px;
+      letter-spacing: -0.05em;
+      color: white;
+    }
+
+    .booking-panel {
+      background: white;
+      color: var(--text);
+      border-radius: 30px;
+      padding: 22px;
+      align-self: start;
+    }
+
+    .booking-panel h3 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .panel-row {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding: 12px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel-row strong {
+      color: var(--text);
+    }
+
+    .dashboard {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 34px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-columns: 250px 1fr;
+      min-height: 520px;
+    }
+
+    .sidebar {
+      background: #0f172a;
+      color: white;
+      padding: 24px;
+    }
+
+    .sidebar .brand {
+      font-size: 20px;
+      margin-bottom: 32px;
+    }
+
+    .side-menu {
+      display: grid;
+      gap: 8px;
+    }
+
+    .side-link {
+      padding: 12px 14px;
+      border-radius: 14px;
+      color: #cbd5e1;
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .side-link.active {
+      background: rgba(255, 255, 255, .12);
+      color: white;
+    }
+
+    .dash-content {
+      padding: 28px;
+      background: #f8fafc;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin: 22px 0;
+    }
+
+    .stat-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 18px;
+    }
+
+    .stat-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .stat-card strong {
+      display: block;
+      font-size: 28px;
+      letter-spacing: -0.05em;
+      margin-top: 10px;
+    }
+
+    .table-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .footer {
+      padding: 48px 0;
+      background: #0f172a;
+      color: white;
+    }
+
+    .footer-grid {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .footer p {
+      color: #94a3b8;
+      margin: 8px 0 0;
+    }
+
+    @media (max-width: 980px) {
+      .nav-links {
+        display: none;
+      }
+
+      .hero-grid,
+      .detail-grid,
+      .dashboard {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-visual {
+        min-height: 420px;
+      }
+
+      .phone-card {
+        position: relative;
+        right: auto;
+        width: min(340px, 100%);
+        margin: 0 auto;
+      }
+
+      .floating-card {
+        display: none;
+      }
+
+      .search-card {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .search-card .btn {
+        grid-column: 1 / -1;
+        justify-content: center;
+      }
+
+      .sports-row,
+      .venue-grid,
+      .stat-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .gallery {
+        grid-template-columns: 1fr;
+      }
+
+      .gallery-side {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .nav-actions .btn-ghost {
+        display: none;
+      }
+
+      .hero {
+        padding-top: 42px;
+      }
+
+      .search-card,
+      .sports-row,
+      .venue-grid,
+      .stat-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-head {
+        display: block;
+      }
+
+      .footer-grid {
+        display: block;
+      }
+
+      .dashboard {
+        display: block;
+      }
+
+      .sidebar {
+        border-radius: 0;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <nav class="navbar">
+      <div class="container nav-inner">
+        <a class="brand" href="#">
+          <span class="brand-mark">⚽</span>
+          <span>LapanganGo</span>
+        </a>
+
+        <div class="nav-links">
+          <a href="#search">Cari Lapangan</a>
+          <a href="#venue">Venue Populer</a>
+          <a href="#detail">Cara Booking</a>
+          <a href="#owner">Jadi Owner</a>
+        </div>
+
+        <div class="nav-actions">
+          <button class="btn btn-ghost">Masuk</button>
+          <button class="btn btn-primary">Daftar</button>
+        </div>
+      </div>
+    </nav>
+
+    <section class="hero" id="search">
+      <div class="container hero-grid">
+        <div>
+          <div class="eyebrow">● Slot real-time & review terpercaya</div>
+          <h1>Cari Lapangan Kosong Tanpa Chat Admin Dulu</h1>
+          <p class="hero-text">
+            Lihat jadwal kosong, harga, fasilitas, foto, dan review lapangan langsung dari website. Booking futsal, badminton, mini soccer, dan olahraga favoritmu dalam hitungan menit.
+          </p>
+
+          <div class="nav-actions">
+            <button class="btn btn-accent">Cari Lapangan Sekarang</button>
+            <button class="btn btn-ghost">Daftarkan Lapangan</button>
+          </div>
+
+          <div class="search-card">
+            <div class="field">
+              <label>Lokasi</label>
+              <strong>Jakarta Barat</strong>
+            </div>
+            <div class="field">
+              <label>Olahraga</label>
+              <strong>Futsal</strong>
+            </div>
+            <div class="field">
+              <label>Tanggal</label>
+              <strong>Hari ini</strong>
+            </div>
+            <div class="field">
+              <label>Jam</label>
+              <strong>19:00</strong>
+            </div>
+            <button class="btn btn-primary">Cari</button>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          <div class="phone-card">
+            <div class="phone-screen">
+              <div class="phone-img">
+                <span class="badge badge-success" style="position:absolute;top:14px;left:14px;">Tersedia Hari Ini</span>
+              </div>
+              <div class="phone-body">
+                <div class="phone-title">Arena Futsal Kemanggisan</div>
+                <div class="rating">⭐ 4.8 · 120 review · Palmerah</div>
+                <div class="facility-pills">
+                  <span class="pill">Indoor</span>
+                  <span class="pill">Parkir</span>
+                  <span class="pill">Mushola</span>
+                </div>
+                <strong>Pilih Jam</strong>
+                <div class="slot-grid">
+                  <div class="slot booked">18:00</div>
+                  <div class="slot selected">19:00</div>
+                  <div class="slot available">20:00</div>
+                  <div class="slot available">21:00</div>
+                  <div class="slot booked">22:00</div>
+                  <div class="slot available">23:00</div>
+                </div>
+                <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:18px;">Booking Rp120.000</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="floating-card">
+            <span class="badge badge-warning">Owner Dashboard</span>
+            <strong>84%</strong>
+            <div class="meta">Slot terisi minggu ini. Lihat booking masuk, pembayaran, dan review dari satu dashboard.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>Olahraga Populer</h2>
+            <p>Pilih jenis olahraga, cek slot kosong, lalu booking.</p>
+          </div>
+          <button class="btn btn-ghost">Lihat Semua</button>
+        </div>
+
+        <div class="sports-row">
+          <div class="sport-card"><div class="sport-icon">⚽</div><strong>Futsal</strong></div>
+          <div class="sport-card"><div class="sport-icon">🏸</div><strong>Badminton</strong></div>
+          <div class="sport-card"><div class="sport-icon">🥅</div><strong>Mini Soccer</strong></div>
+          <div class="sport-card"><div class="sport-icon">🏀</div><strong>Basket</strong></div>
+          <div class="sport-card"><div class="sport-icon">🎾</div><strong>Tenis</strong></div>
+          <div class="sport-card"><div class="sport-icon">🏐</div><strong>Voli</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="venue">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>Venue Rekomendasi</h2>
+            <p>Lapangan dengan rating bagus dan slot tersedia.</p>
+          </div>
+          <button class="btn btn-ghost">Filter Lapangan</button>
+        </div>
+
+        <div class="venue-grid">
+          <article class="venue-card">
+            <div class="venue-image" style="background-image:url('https://images.unsplash.com/photo-1577223625816-7546f13df25d?auto=format&fit=crop&w=900&q=80')">
+              <span class="badge badge-success">Tersedia</span>
+            </div>
+            <div class="venue-content">
+              <h3>Arena Futsal Kemanggisan</h3>
+              <div class="meta">⭐ 4.8 (120 review) · Palmerah, Jakarta Barat</div>
+              <div class="facility-pills">
+                <span class="pill">Indoor</span><span class="pill">Parkir</span><span class="pill">Mushola</span>
+              </div>
+              <div class="price-row">
+                <div class="price">Rp120.000 <span>/jam</span></div>
+                <button class="btn btn-primary">Lihat Jadwal</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="venue-card">
+            <div class="venue-image" style="background-image:url('https://images.unsplash.com/photo-1526232761682-d26e03ac148e?auto=format&fit=crop&w=900&q=80')">
+              <span class="badge badge-warning">Sisa 2 slot</span>
+            </div>
+            <div class="venue-content">
+              <h3>Galaxy Badminton Hall</h3>
+              <div class="meta">⭐ 4.7 (89 review) · Grogol, Jakarta Barat</div>
+              <div class="facility-pills">
+                <span class="pill">AC</span><span class="pill">Toilet</span><span class="pill">Kantin</span>
+              </div>
+              <div class="price-row">
+                <div class="price">Rp75.000 <span>/jam</span></div>
+                <button class="btn btn-primary">Lihat Jadwal</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="venue-card">
+            <div class="venue-image" style="background-image:url('https://images.unsplash.com/photo-1511886929837-354d827aae26?auto=format&fit=crop&w=900&q=80')">
+              <span class="badge badge-muted">Penuh malam ini</span>
+            </div>
+            <div class="venue-content">
+              <h3>Greenfield Mini Soccer</h3>
+              <div class="meta">⭐ 4.9 (210 review) · Kebon Jeruk, Jakarta Barat</div>
+              <div class="facility-pills">
+                <span class="pill">Outdoor</span><span class="pill">Tribun</span><span class="pill">Lampu</span>
+              </div>
+              <div class="price-row">
+                <div class="price">Rp350.000 <span>/jam</span></div>
+                <button class="btn btn-ghost">Cek Besok</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="detail">
+      <div class="container">
+        <div class="detail-preview">
+          <div class="detail-grid">
+            <div>
+              <div class="gallery">
+                <div class="gallery-main" style="background-image:url('https://images.unsplash.com/photo-1556056504-5c7696c4c28d?auto=format&fit=crop&w=900&q=80')"></div>
+                <div class="gallery-side">
+                  <div class="gallery-small" style="background-image:url('https://images.unsplash.com/photo-1518604666860-9ed391f76460?auto=format&fit=crop&w=900&q=80')"></div>
+                  <div class="gallery-small" style="background-image:url('https://images.unsplash.com/photo-1574629810360-7efbbe195018?auto=format&fit=crop&w=900&q=80')"></div>
+                </div>
+              </div>
+
+              <div class="detail-info">
+                <h2>Detail Venue yang Meyakinkan</h2>
+                <p style="color:#cbd5e1;line-height:1.7;">
+                  Foto besar, fasilitas jelas, rating terlihat, dan slot kosong langsung bisa dipilih. User tidak perlu datang langsung hanya untuk cek kualitas lapangan.
+                </p>
+                <div class="facility-pills">
+                  <span class="pill">Parkir luas</span>
+                  <span class="pill">Toilet bersih</span>
+                  <span class="pill">Mushola</span>
+                  <span class="pill">Sewa bola</span>
+                </div>
+              </div>
+            </div>
+
+            <aside class="booking-panel">
+              <h3>Booking Lapangan</h3>
+              <div class="field" style="margin-bottom:10px;"><label>Tanggal</label><strong>20 Juni 2026</strong></div>
+              <div class="field" style="margin-bottom:10px;"><label>Lapangan</label><strong>Lapangan A</strong></div>
+
+              <strong>Pilih Slot</strong>
+              <div class="slot-grid">
+                <div class="slot booked">18:00</div>
+                <div class="slot selected">19:00</div>
+                <div class="slot available">20:00</div>
+                <div class="slot available">21:00</div>
+                <div class="slot booked">22:00</div>
+                <div class="slot available">23:00</div>
+              </div>
+
+              <div style="margin-top:18px;">
+                <div class="panel-row"><span>Durasi</span><strong>1 Jam</strong></div>
+                <div class="panel-row"><span>Harga</span><strong>Rp120.000</strong></div>
+                <div class="panel-row"><span>Admin fee</span><strong>Rp2.500</strong></div>
+                <div class="panel-row" style="border-bottom:0;"><span>Total</span><strong>Rp122.500</strong></div>
+              </div>
+              <button class="btn btn-accent" style="width:100%;justify-content:center;margin-top:16px;">Lanjut Checkout</button>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="owner">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>Dashboard Owner</h2>
+            <p>Pemilik lapangan bisa mengelola venue, jadwal, harga, booking, dan review.</p>
+          </div>
+        </div>
+
+        <div class="dashboard">
+          <aside class="sidebar">
+            <div class="brand"><span class="brand-mark">⚽</span><span>Owner</span></div>
+            <div class="side-menu">
+              <div class="side-link active">Dashboard</div>
+              <div class="side-link">Venue Saya</div>
+              <div class="side-link">Lapangan</div>
+              <div class="side-link">Jadwal</div>
+              <div class="side-link">Booking Masuk</div>
+              <div class="side-link">Review</div>
+              <div class="side-link">Laporan</div>
+            </div>
+          </aside>
+
+          <div class="dash-content">
+            <h2 style="margin:0;letter-spacing:-0.05em;">Ringkasan Hari Ini</h2>
+            <p class="meta">Pantau performa venue dan booking masuk.</p>
+
+            <div class="stat-grid">
+              <div class="stat-card"><span>Booking Hari Ini</span><strong>18</strong></div>
+              <div class="stat-card"><span>Pendapatan</span><strong>2.4jt</strong></div>
+              <div class="stat-card"><span>Slot Terisi</span><strong>84%</strong></div>
+              <div class="stat-card"><span>Rating</span><strong>4.8</strong></div>
+            </div>
+
+            <div class="table-card">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Customer</th>
+                    <th>Lapangan</th>
+                    <th>Jam</th>
+                    <th>Status</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Andi Saputra</td>
+                    <td>Lapangan A</td>
+                    <td>19:00 - 20:00</td>
+                    <td><span class="badge badge-success">Terkonfirmasi</span></td>
+                    <td>Rp122.500</td>
+                  </tr>
+                  <tr>
+                    <td>Rizky Pratama</td>
+                    <td>Lapangan B</td>
+                    <td>20:00 - 21:00</td>
+                    <td><span class="badge badge-warning">Menunggu Bayar</span></td>
+                    <td>Rp122.500</td>
+                  </tr>
+                  <tr>
+                    <td>Fajar Nugroho</td>
+                    <td>Lapangan A</td>
+                    <td>21:00 - 22:00</td>
+                    <td><span class="badge badge-success">Terkonfirmasi</span></td>
+                    <td>Rp122.500</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="container footer-grid">
+        <div>
+          <div class="brand"><span class="brand-mark">⚽</span><span>LapanganGo</span></div>
+          <p>Booking lapangan olahraga jadi lebih cepat, jelas, dan terpercaya.</p>
+        </div>
+        <button class="btn btn-accent">Mulai Booking</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

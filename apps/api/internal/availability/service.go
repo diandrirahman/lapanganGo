@@ -14,6 +14,7 @@ const (
 
 	slotStatusAvailable = "AVAILABLE"
 	slotStatusBlocked   = "BLOCKED"
+	slotStatusBooked    = "BOOKED"
 
 	defaultSlotDuration = time.Hour
 	dateLayout          = "2006-01-02"
@@ -75,7 +76,12 @@ func (s *Service) GetAvailability(ctx context.Context, courtID, dateValue string
 		return AvailabilityResponse{}, err
 	}
 
-	slots, err := buildSlots(date, operatingHour, blockedSlots, defaultSlotDuration)
+	bookings, err := s.repository.ListActiveBookings(ctx, courtID, date.Format(dateLayout))
+	if err != nil {
+		return AvailabilityResponse{}, err
+	}
+
+	slots, err := buildSlots(date, operatingHour, blockedSlots, bookings, defaultSlotDuration)
 	if err != nil {
 		return AvailabilityResponse{}, err
 	}
@@ -111,7 +117,7 @@ func parseAvailabilityDate(value string, location *time.Location) (time.Time, er
 	return date, nil
 }
 
-func buildSlots(date time.Time, operatingHour OperatingHour, blockedSlots []BlockedSlot, slotDuration time.Duration) ([]SlotResponse, error) {
+func buildSlots(date time.Time, operatingHour OperatingHour, blockedSlots []BlockedSlot, bookings []ActiveBooking, slotDuration time.Duration) ([]SlotResponse, error) {
 	if operatingHour.OpenTime == nil || operatingHour.CloseTime == nil || slotDuration <= 0 {
 		return nil, ErrInvalidOperatingHours
 	}
@@ -138,6 +144,8 @@ func buildSlots(date time.Time, operatingHour OperatingHour, blockedSlots []Bloc
 		status := slotStatusAvailable
 		if overlapsAnyBlockedSlot(slotStart, slotEnd, blockedSlots) {
 			status = slotStatusBlocked
+		} else if overlapsAnyBooking(slotStart, slotEnd, bookings) {
+			status = slotStatusBooked
 		}
 
 		slots = append(slots, SlotResponse{
@@ -161,6 +169,18 @@ func overlapsAnyBlockedSlot(slotStart, slotEnd time.Time, blockedSlots []Blocked
 		}
 	}
 
+	return false
+}
+
+func overlapsAnyBooking(slotStart, slotEnd time.Time, bookings []ActiveBooking) bool {
+	for _, b := range bookings {
+		bStart := time.Date(b.Date.Year(), b.Date.Month(), b.Date.Day(), b.StartTime.Hour(), b.StartTime.Minute(), 0, 0, slotStart.Location())
+		bEnd := time.Date(b.Date.Year(), b.Date.Month(), b.Date.Day(), b.EndTime.Hour(), b.EndTime.Minute(), 0, 0, slotEnd.Location())
+
+		if slotStart.Before(bEnd) && slotEnd.After(bStart) {
+			return true
+		}
+	}
 	return false
 }
 

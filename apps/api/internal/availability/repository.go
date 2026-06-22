@@ -122,6 +122,48 @@ func (r *Repository) ListBlockedSlots(ctx context.Context, courtID string, from,
 	return blockedSlots, rows.Err()
 }
 
+type ActiveBooking struct {
+	ID        string
+	CourtID   string
+	Date      time.Time
+	StartTime time.Time
+	EndTime   time.Time
+}
+
+func (r *Repository) ListActiveBookings(ctx context.Context, courtID string, date string) ([]ActiveBooking, error) {
+	query := `
+		SELECT id::text, court_id::text, booking_date, start_time, end_time
+		FROM bookings
+		WHERE court_id = $1
+			AND booking_date = $2
+			AND status != 'CANCELLED'
+	`
+
+	rows, err := r.db.Query(ctx, query, courtID, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bookings []ActiveBooking
+	for rows.Next() {
+		var b ActiveBooking
+		err := rows.Scan(
+			&b.ID,
+			&b.CourtID,
+			&b.Date,
+			&b.StartTime,
+			&b.EndTime,
+		)
+		if err != nil {
+			return nil, err
+		}
+		bookings = append(bookings, b)
+	}
+
+	return bookings, rows.Err()
+}
+
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
 }
