@@ -12,6 +12,7 @@ import (
 	"lapangango-api/internal/auth"
 	"lapangango-api/internal/availability"
 	"lapangango-api/internal/blockedslots"
+	"lapangango-api/internal/bookings"
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
@@ -68,6 +69,11 @@ func main() {
 	scheduleService := schedules.NewService(scheduleRepository)
 	scheduleHandler := schedules.NewHandler(scheduleService)
 	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	bookingsRepository := bookings.NewRepository(dbPool)
+	bookingsService := bookings.NewService(bookingsRepository)
+	bookingsHandler := bookings.NewHandler(bookingsService)
+	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
