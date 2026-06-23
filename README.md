@@ -98,6 +98,17 @@ Customer bookings:
 
 *Note: The `/pay` endpoint is a dummy payment feature for MVP. It marks a `PENDING_PAYMENT` booking as `CONFIRMED`. This is not a real payment gateway integration.*
 
+Open Match / Mabar (MVP):
+
+- `GET /open-matches`
+- `GET /open-matches/:id`
+- `POST /bookings/:id/open-matches`
+- `POST /open-matches/:id/join`
+- `DELETE /open-matches/:id/join`
+- `PATCH /open-matches/:id/cancel`
+
+*Note: Open Match must originate from a `CONFIRMED` booking. Open matches are only listed and joinable while the source booking status is `CONFIRMED`. Payment for open match slots is informal for MVP. `remaining_slots` is calculated dynamically. Join/leave/cancel handles status updates. If the source booking is CANCELLED or any other status, the open match is excluded from public list and cannot accept new participants. The open match status itself is not automatically changed in MVP.*
+
 Owner profile:
 
 - `POST /owner/profile`
