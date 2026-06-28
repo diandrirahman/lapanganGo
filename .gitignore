@@ -1,10 +1,14 @@
 apps/api/.env
+apps/api/.env.example
 apps/api/api.exe
 apps/api/cmd/*/.env
 apps/web/node_modules
 apps/web/.env
+apps/web/.env.example
 apps/web/dist
 .gocache
 .gotmp
 outputs
+docs
+report_step_15.md
 *.exe
