@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
 
 type Handler struct {
@@ -23,7 +24,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 }
 
 func (h *Handler) CreateProfile(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -62,7 +63,7 @@ func (h *Handler) CreateProfile(c *gin.Context) {
 }
 
 func (h *Handler) GetProfile(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -91,7 +92,7 @@ func (h *Handler) GetProfile(c *gin.Context) {
 }
 
 func (h *Handler) UpdateProfile(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -124,17 +125,7 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Owner profile updated successfully",
+		"message": "Profile updated successfully",
 		"profile": profile,
 	})
-}
-
-func getAuthenticatedUserID(c *gin.Context) (string, bool) {
-	userIDValue, exists := c.Get("auth_user_id")
-	if !exists {
-		return "", false
-	}
-
-	userID, ok := userIDValue.(string)
-	return userID, ok && userID != ""
 }

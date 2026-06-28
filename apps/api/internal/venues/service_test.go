@@ -78,3 +78,17 @@ func TestIsOwnerWritableStatus(t *testing.T) {
 		t.Fatal("expected SUSPENDED to be rejected for owner updates")
 	}
 }
+
+func TestNormalizeListPublicVenuesQuery(t *testing.T) {
+	req := ListPublicVenuesQuery{} // empty request
+	req, offset := normalizeListPublicVenuesQuery(req)
+	if req.Limit != 10 {
+		t.Errorf("expected default limit 10, got %d", req.Limit)
+	}
+	if req.Page != 1 {
+		t.Errorf("expected default page 1, got %d", req.Page)
+	}
+	if offset != 0 {
+		t.Errorf("expected default offset 0, got %d", offset)
+	}
+}

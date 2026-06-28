@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
 
 type Handler struct {
@@ -20,7 +21,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine) {
 }
 
 func (h *Handler) GetAvailability(c *gin.Context) {
-	courtID, ok := getUUIDParam(c, "id", "Court ID must be a valid UUID")
+	courtID, ok := httputil.GetUUIDParam(c, "id", "Court ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -53,43 +54,4 @@ func respondAvailabilityError(c *gin.Context, err error) {
 			"message": "Failed to get availability",
 		})
 	}
-}
-
-func getUUIDParam(c *gin.Context, name, message string) (string, bool) {
-	value := c.Param(name)
-	if !isUUID(value) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": message,
-		})
-		return "", false
-	}
-
-	return value, true
-}
-
-func isUUID(value string) bool {
-	if len(value) != 36 {
-		return false
-	}
-
-	for i, char := range value {
-		switch i {
-		case 8, 13, 18, 23:
-			if char != '-' {
-				return false
-			}
-		default:
-			if !isHex(char) {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-func isHex(char rune) bool {
-	return (char >= '0' && char <= '9') ||
-		(char >= 'a' && char <= 'f') ||
-		(char >= 'A' && char <= 'F')
 }

@@ -1,40 +1,69 @@
 # LapanganGo
 
-LapanganGo is a sports venue booking API built with Go, Gin, PostgreSQL, and Redis.
+LapanganGo is a sports venue booking platform built with:
+- **Backend:** Go, Gin, PostgreSQL, Redis, golang-migrate
+- **Frontend:** React, Vite, Tailwind CSS, TypeScript
+- **Deployment:** Docker, Docker Compose, Nginx
 
 ## Prerequisites
 
-- Go 1.26.4
 - Docker and Docker Compose
+- Node.js 20+ (for local development)
+- Go 1.26.4 (for local development)
 
-## Local Setup
+## Environment Setup
 
-Start PostgreSQL and Redis:
-
-```bash
-docker compose up -d
-```
-
-Create a local environment file:
+Create local environment files for both Backend and Frontend:
 
 ```bash
+# Backend Environment
 cp apps/api/.env.example apps/api/.env
+
+# Frontend Environment
+cp apps/web/.env.example apps/web/.env
 ```
 
-Update `apps/api/.env` if your local database credentials or port are different.
+Ensure `apps/web/.env` contains `VITE_API_BASE_URL=/api` if using Docker.
 
-Run the API:
+## Running Locally (Full Stack Docker)
 
+You can run the entire application stack (PostgreSQL, Redis, Go API, React Web) with a single command:
+
+```bash
+docker compose up --build -d
+```
+
+- **Frontend Web:** `http://localhost:3000`
+- **Backend API:** `http://localhost:8080`
+- **API Healthcheck:** `http://localhost:8080/health`
+- **DB Healthcheck:** `http://localhost:8080/db-health`
+
+### Smoke Testing
+Verify the deployment with our smoke test scripts:
+- Windows: `.\scripts\smoke_test.ps1`
+- Unix/Linux: `./scripts/smoke_test.sh`
+
+## Development Mode (Local without Docker)
+
+If you prefer to run the services separately for development:
+
+1. Start databases only:
+```bash
+docker compose up -d postgres redis
+```
+
+2. Run the Backend API:
 ```bash
 cd apps/api
 go run ./cmd/api
 ```
 
-Run tests:
-
+3. Run the Frontend Web:
+Change `VITE_API_BASE_URL=http://localhost:8080` in `apps/web/.env`
 ```bash
-cd apps/api
-go test ./...
+cd apps/web
+npm install
+npm run dev
 ```
 
 ## Environment Variables
@@ -45,8 +74,18 @@ The API reads configuration from `apps/api/.env` or system environment variables
 | --- | --- | --- | --- |
 | `APP_PORT` | No | `8080` | HTTP server port |
 | `DATABASE_URL` | Yes | - | PostgreSQL connection string |
+| `REDIS_URL` | No | - | Redis connection string for rate limiting (optional) |
 | `JWT_SECRET` | Yes | - | Secret used to sign JWT access tokens |
 | `JWT_EXPIRES_IN_HOURS` | No | `24` | JWT expiry duration in hours |
+| `BOOKING_PAYMENT_TTL_MINUTES` | No | `30` | Time-to-live for PENDING_PAYMENT bookings in minutes |
+| `BOOKING_EXPIRY_SWEEP_INTERVAL_SECONDS` | No | `60` | Background sweep interval for expired bookings in seconds |
+| `GENERAL_RATE_LIMIT_PER_MINUTE` | No | `100` | Rate limit for general routes per IP per minute |
+| `AUTH_RATE_LIMIT_PER_MINUTE` | No | `100` | Rate limit for auth routes per IP per minute |
+
+For the Frontend (`apps/web/.env`), use:
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `VITE_API_BASE_URL` | No | `http://localhost:8080` | API base URL. Use `/api` in Docker Mode. |
 
 ## Database
 
@@ -64,7 +103,7 @@ Current core tables:
 - `court_operating_hours`
 - `court_blocked_slots`
 
-Apply migrations with your preferred PostgreSQL migration tool, or run the SQL files in order against the local database.
+Migrations run automatically on API startup using golang-migrate. There is no need to apply migrations manually.
 
 ## API Overview
 

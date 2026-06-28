@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-main: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-text-main: #0F172A;
+  --color-text-muted: #64748B;
+  --color-primary: #FF512F;
+  --color-secondary: #3B82F6;
+  --color-secondary-soft: #EFF6FF;
+  --color-border-main: #E2E8F0;
+  
+  --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 10px 25px -3px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 25px 50px -12px rgba(15, 23, 42, 0.15);
+  --shadow-float: 0 30px 60px -15px rgba(255, 81, 47, 0.2);
+  
+  --radius-sm: 12px;
+  --radius-md: 20px;
+  --radius-lg: 32px;
+
+  --font-sans: 'Plus Jakarta Sans', sans-serif;
+}
+
+@layer utilities {
+  .bg-primary-gradient {
+    background: linear-gradient(135deg, #FF512F 0%, #DD2476 100%);
+  }
+  
+  .text-gradient {
+    background: linear-gradient(135deg, #FF512F 0%, #DD2476 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  
+  .shadow-primary-glow {
+    box-shadow: 0 10px 20px rgba(255, 81, 47, 0.3);
+  }
+  
+  .shadow-primary-glow-lg {
+    box-shadow: 0 15px 30px rgba(255, 81, 47, 0.3);
+  }
+  
+  .bg-mesh {
+    position: fixed;
+    top: 0; left: 0; width: 100vw; height: 100vh;
+    z-index: -1;
+    background: radial-gradient(at 0% 0%, hsla(353,100%,76%,0.12) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, hsla(210,100%,82%,0.12) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, hsla(28,100%,74%,0.12) 0px, transparent 50%),
+                radial-gradient(at 0% 100%, hsla(22,100%,77%,0.12) 0px, transparent 50%);
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-bg-main text-text-main font-sans antialiased;
+  }
+}
+

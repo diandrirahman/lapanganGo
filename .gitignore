@@ -1,2 +1,10 @@
 apps/api/.env
 apps/api/api.exe
+apps/api/cmd/*/.env
+apps/web/node_modules
+apps/web/.env
+apps/web/dist
+.gocache
+.gotmp
+outputs
+*.exe

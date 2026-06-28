@@ -35,7 +35,7 @@ type MabarRepository interface {
 	FindBookingInfo(ctx context.Context, bookingID string) (BookingInfo, error)
 	CheckOpenMatchExistsByBookingID(ctx context.Context, bookingID string) (bool, error)
 	CreateOpenMatch(ctx context.Context, params CreateOpenMatchParams) (OpenMatch, error)
-	ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatch, error)
+	ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatch, int, error)
 	CountJoinedParticipants(ctx context.Context, openMatchID string) (int, error)
 	GetOpenMatchWithDetails(ctx context.Context, id string) (OpenMatch, error)
 	ListParticipants(ctx context.Context, openMatchID string) ([]Participant, error)
@@ -138,24 +138,24 @@ func (s *Service) CreateOpenMatch(ctx context.Context, bookingID, userID string,
 	return s.GetOpenMatchByID(ctx, om.ID)
 }
 
-func (s *Service) ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatchResponse, error) {
+func (s *Service) ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatchResponse, int, error) {
 	if filter.Now.IsZero() {
 		filter.Now = nowJakarta()
 	}
-	matches, err := s.repo.ListOpenMatches(ctx, filter)
+	matches, total, err := s.repo.ListOpenMatches(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	var res []OpenMatchResponse
+	var responses []OpenMatchResponse
 	for _, m := range matches {
 		joined, err := s.repo.CountJoinedParticipants(ctx, m.ID)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		res = append(res, s.mapToResponse(m, joined))
+		responses = append(responses, s.mapToResponse(m, joined))
 	}
-	return res, nil
+	return responses, total, nil
 }
 
 func (s *Service) GetOpenMatchByID(ctx context.Context, id string) (OpenMatchResponse, error) {
@@ -314,6 +314,7 @@ func (s *Service) mapToResponse(m OpenMatch, joined int) OpenMatchResponse {
 	return OpenMatchResponse{
 		ID:             m.ID,
 		BookingID:      m.BookingID,
+		HostUserID:     m.HostUserID,
 		HostName:       m.HostName,
 		Title:          m.Title,
 		Description:    m.Description,

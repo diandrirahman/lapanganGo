@@ -128,11 +128,13 @@ type ActiveBooking struct {
 	Date      time.Time
 	StartTime time.Time
 	EndTime   time.Time
+	Status    string
+	ExpiresAt *time.Time
 }
 
 func (r *Repository) ListActiveBookings(ctx context.Context, courtID string, date string) ([]ActiveBooking, error) {
 	query := `
-		SELECT id::text, court_id::text, booking_date, start_time, end_time
+		SELECT id::text, court_id::text, booking_date, start_time, end_time, status, expires_at
 		FROM bookings
 		WHERE court_id = $1
 			AND booking_date = $2
@@ -154,6 +156,8 @@ func (r *Repository) ListActiveBookings(ctx context.Context, courtID string, dat
 			&b.Date,
 			&b.StartTime,
 			&b.EndTime,
+			&b.Status,
+			&b.ExpiresAt,
 		)
 		if err != nil {
 			return nil, err

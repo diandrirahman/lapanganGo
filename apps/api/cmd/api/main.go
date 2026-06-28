@@ -36,15 +36,55 @@ func main() {
 	}
 	defer dbPool.Close()
 
+	log.Println("Starting database migrations...")
+	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
+		log.Fatal("Migration failed: ", err)
+	} else {
+		log.Println("Database migrations completed successfully.")
+	}
+
+	if err := database.EnsureBookingSchema(ctx, dbPool); err != nil {
+		log.Fatal("Failed to ensure booking schema:", err)
+	}
+
 	r := gin.Default()
 	r.Use(middleware.CORS())
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"message": "LapanganGo API is running",
+		})
+	})
+
+	r.GET("/db-health", func(c *gin.Context) {
+		err := dbPool.Ping(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "Database not connected",
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"message": "PostgreSQL connected",
+		})
+	})
+
+	generalRateLimiter := middleware.NewRateLimiter(cfg.RedisURL, "general", cfg.GeneralRateLimitPerMinute, time.Minute)
+	r.Use(generalRateLimiter)
 
 	tokenService := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpiresInHours)
 	authRepository := auth.NewRepository(dbPool)
 	authService := auth.NewService(authRepository, tokenService)
 	authHandler := auth.NewHandler(authService)
 	authMiddleware := middleware.Auth(tokenService)
-	authHandler.RegisterRoutes(r, authMiddleware)
+
+	// Increased rate limit for local demo/QA to prevent lockouts
+	authRateLimiter := middleware.NewRateLimiter(cfg.RedisURL, "auth", cfg.AuthRateLimitPerMinute, time.Minute)
+	authHandler.RegisterRoutes(r, authMiddleware, authRateLimiter)
 
 	availabilityRepository := availability.NewRepository(dbPool)
 	availabilityService := availability.NewService(availabilityRepository)
@@ -72,10 +112,13 @@ func main() {
 	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
 	bookingsRepository := bookings.NewRepository(dbPool)
-	bookingsService := bookings.NewService(bookingsRepository)
+	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes)
 	bookingsHandler := bookings.NewHandler(bookingsService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	go bookingsService.StartExpiryWorker(workerCtx, time.Duration(cfg.BookingExpirySweepIntervalSeconds)*time.Second)
 
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
@@ -87,28 +130,6 @@ func main() {
 	mabarHandler := mabar.NewHandler(mabarService)
 	mabarHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"message": "LapanganGo API is running",
-		})
-	})
-
-	r.GET("/db-health", func(c *gin.Context) {
-		err := dbPool.Ping(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"status":  "error",
-				"message": "Database not connected",
-			})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"message": "PostgreSQL connected",
-		})
-	})
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
@@ -126,6 +147,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
+	workerCancel()
 
 	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

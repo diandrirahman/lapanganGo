@@ -173,7 +173,12 @@ func overlapsAnyBlockedSlot(slotStart, slotEnd time.Time, blockedSlots []Blocked
 }
 
 func overlapsAnyBooking(slotStart, slotEnd time.Time, bookings []ActiveBooking) bool {
+	now := time.Now()
 	for _, b := range bookings {
+		if b.Status == "PENDING_PAYMENT" && (b.ExpiresAt == nil || b.ExpiresAt.Before(now) || b.ExpiresAt.Equal(now)) {
+			continue // ignore expired pending booking
+		}
+
 		bStart := time.Date(b.Date.Year(), b.Date.Month(), b.Date.Day(), b.StartTime.Hour(), b.StartTime.Minute(), 0, 0, slotStart.Location())
 		bEnd := time.Date(b.Date.Year(), b.Date.Month(), b.Date.Day(), b.EndTime.Hour(), b.EndTime.Minute(), 0, 0, slotEnd.Location())
 

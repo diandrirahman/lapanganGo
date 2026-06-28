@@ -3,6 +3,7 @@ package venues
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 )
 
@@ -21,6 +22,37 @@ type Service struct {
 
 func NewService(repository *Repository) *Service {
 	return &Service{repository: repository}
+}
+
+func (s *Service) GetSports(ctx context.Context) ([]SportResponse, error) {
+	sports, err := s.repository.GetSports(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var res []SportResponse
+	for _, sp := range sports {
+		res = append(res, SportResponse{
+			ID:   sp.ID,
+			Name: sp.Name,
+		})
+	}
+	return res, nil
+}
+
+func (s *Service) GetFacilities(ctx context.Context) ([]FacilityResponse, error) {
+	facilities, err := s.repository.GetFacilities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var res []FacilityResponse
+	for _, f := range facilities {
+		res = append(res, FacilityResponse{
+			ID:   f.ID,
+			Name: f.Name,
+			Icon: f.Icon,
+		})
+	}
+	return res, nil
 }
 
 func (s *Service) CreateVenue(ctx context.Context, userID string, req CreateVenueRequest) (VenueResponse, error) {
@@ -48,23 +80,26 @@ func (s *Service) CreateVenue(ctx context.Context, userID string, req CreateVenu
 		return VenueResponse{}, err
 	}
 
-	return toVenueResponse(venue, facilities), nil
+	return toVenueResponse(venue, facilities, nil), nil
 }
 
-func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery) ([]PublicVenueResponse, error) {
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
+func normalizeListPublicVenuesQuery(req ListPublicVenuesQuery) (ListPublicVenuesQuery, int) {
+	if req.Limit <= 0 {
+		req.Limit = 10
 	}
-	page := req.Page
-	if page <= 0 {
-		page = 1
+	if req.Page <= 0 {
+		req.Page = 1
 	}
-	offset := (page - 1) * limit
+	offset := (req.Page - 1) * req.Limit
+	return req, offset
+}
 
-	venues, err := s.repository.ListPublicVenues(ctx, limit, offset)
+func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery) ([]PublicVenueResponse, int, error) {
+	req, offset := normalizeListPublicVenuesQuery(req)
+
+	venues, total, err := s.repository.ListPublicVenues(ctx, req, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	venueIDs := make([]string, 0, len(venues))
@@ -74,7 +109,12 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 
 	facilitiesMap, err := s.repository.FindFacilitiesByVenueIDs(ctx, venueIDs)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+
+	photosMap, err := s.repository.FindPhotosByVenueIDs(ctx, venueIDs)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	responses := make([]PublicVenueResponse, 0, len(venues))
@@ -83,10 +123,14 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 		if facilities == nil {
 			facilities = []Facility{}
 		}
-		responses = append(responses, toPublicVenueResponse(venue, facilities))
+		photos := photosMap[venue.ID]
+		if photos == nil {
+			photos = []VenuePhoto{}
+		}
+		responses = append(responses, toPublicVenueResponse(venue, facilities, photos))
 	}
 
-	return responses, nil
+	return responses, total, nil
 }
 
 func (s *Service) GetPublicVenue(ctx context.Context, venueID string) (PublicVenueDetailResponse, error) {
@@ -103,13 +147,19 @@ func (s *Service) GetPublicVenue(ctx context.Context, venueID string) (PublicVen
 		return PublicVenueDetailResponse{}, err
 	}
 
+	photos, err := s.repository.GetVenuePhotos(ctx, venue.ID)
+	if err != nil {
+		return PublicVenueDetailResponse{}, err
+	}
+
 	courts, err := s.repository.FindActiveCourtsByVenueID(ctx, venue.ID)
 	if err != nil {
 		return PublicVenueDetailResponse{}, err
 	}
 
 	return PublicVenueDetailResponse{
-		PublicVenueResponse: toPublicVenueResponse(venue, facilities),
+		PublicVenueResponse: toPublicVenueResponse(venue, facilities, photos),
+		Photos:              toVenuePhotoResponses(photos),
 		Courts:              toPublicCourtResponses(courts),
 	}, nil
 }
@@ -135,13 +185,22 @@ func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueRespons
 		return nil, err
 	}
 
+	photosMap, err := s.repository.FindPhotosByVenueIDs(ctx, venueIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	responses := make([]VenueResponse, 0, len(venues))
 	for _, venue := range venues {
 		facilities := facilitiesMap[venue.ID]
 		if facilities == nil {
 			facilities = []Facility{}
 		}
-		responses = append(responses, toVenueResponse(venue, facilities))
+		photos := photosMap[venue.ID]
+		if photos == nil {
+			photos = []VenuePhoto{}
+		}
+		responses = append(responses, toVenueResponse(venue, facilities, photos))
 	}
 
 	return responses, nil
@@ -166,7 +225,12 @@ func (s *Service) GetVenue(ctx context.Context, userID, venueID string) (VenueRe
 		return VenueResponse{}, err
 	}
 
-	return toVenueResponse(venue, facilities), nil
+	photos, err := s.repository.GetVenuePhotos(ctx, venue.ID)
+	if err != nil {
+		return VenueResponse{}, err
+	}
+
+	return toVenueResponse(venue, facilities, photos), nil
 }
 
 func (s *Service) UpdateVenue(ctx context.Context, userID, venueID string, req UpdateVenueRequest) (VenueResponse, error) {
@@ -197,7 +261,12 @@ func (s *Service) UpdateVenue(ctx context.Context, userID, venueID string, req U
 		return VenueResponse{}, err
 	}
 
-	return toVenueResponse(venue, facilities), nil
+	photos, err := s.repository.GetVenuePhotos(ctx, venue.ID)
+	if err != nil {
+		return VenueResponse{}, err
+	}
+
+	return toVenueResponse(venue, facilities, photos), nil
 }
 
 func (s *Service) UpdateVenueStatus(ctx context.Context, userID, venueID, status string) (VenueResponse, error) {
@@ -224,7 +293,12 @@ func (s *Service) UpdateVenueStatus(ctx context.Context, userID, venueID, status
 		return VenueResponse{}, err
 	}
 
-	return toVenueResponse(venue, facilities), nil
+	photos, err := s.repository.GetVenuePhotos(ctx, venue.ID)
+	if err != nil {
+		return VenueResponse{}, err
+	}
+
+	return toVenueResponse(venue, facilities, photos), nil
 }
 
 func (s *Service) getOwnerProfile(ctx context.Context, userID string) (OwnerProfile, error) {
@@ -331,7 +405,7 @@ func isOwnerWritableStatus(status string) bool {
 	}
 }
 
-func toVenueResponse(venue Venue, facilities []Facility) VenueResponse {
+func toVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) VenueResponse {
 	return VenueResponse{
 		ID:             venue.ID,
 		OwnerProfileID: venue.OwnerProfileID,
@@ -345,13 +419,15 @@ func toVenueResponse(venue Venue, facilities []Facility) VenueResponse {
 		Latitude:       venue.Latitude,
 		Longitude:      venue.Longitude,
 		Status:         venue.Status,
+		PrimaryPhoto:   getPrimaryPhotoURL(photos),
+		Photos:         toVenuePhotoResponses(photos),
 		Facilities:     toFacilityResponses(facilities),
 		CreatedAt:      venue.CreatedAt,
 		UpdatedAt:      venue.UpdatedAt,
 	}
 }
 
-func toPublicVenueResponse(venue Venue, facilities []Facility) PublicVenueResponse {
+func toPublicVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) PublicVenueResponse {
 	return PublicVenueResponse{
 		ID:          venue.ID,
 		Name:        venue.Name,
@@ -363,10 +439,45 @@ func toPublicVenueResponse(venue Venue, facilities []Facility) PublicVenueRespon
 		PostalCode:  venue.PostalCode,
 		Latitude:    venue.Latitude,
 		Longitude:   venue.Longitude,
+		PrimaryPhoto: getPrimaryPhotoURL(photos),
 		Facilities:  toFacilityResponses(facilities),
 		CreatedAt:   venue.CreatedAt,
 		UpdatedAt:   venue.UpdatedAt,
 	}
+}
+
+func toVenuePhotoResponses(photos []VenuePhoto) []VenuePhotoResponse {
+	var responses []VenuePhotoResponse
+	for _, p := range photos {
+		responses = append(responses, VenuePhotoResponse{
+			ID:        p.ID,
+			VenueID:   p.VenueID,
+			ImageURL:  p.ImageURL,
+			AltText:   p.AltText,
+			SortOrder: p.SortOrder,
+			IsPrimary: p.IsPrimary,
+			CreatedAt: p.CreatedAt,
+			UpdatedAt: p.UpdatedAt,
+		})
+	}
+	if responses == nil {
+		responses = []VenuePhotoResponse{}
+	}
+	return responses
+}
+
+func getPrimaryPhotoURL(photos []VenuePhoto) *string {
+	var firstPhoto *string
+	for _, p := range photos {
+		if firstPhoto == nil {
+			firstPhoto = &p.ImageURL
+		}
+		if p.IsPrimary {
+			return &p.ImageURL
+		}
+	}
+	// Fallback to the first photo if none is primary
+	return firstPhoto
 }
 
 func toFacilityResponses(facilities []Facility) []FacilityResponse {
@@ -401,4 +512,144 @@ func toPublicCourtResponses(courts []Court) []PublicCourtResponse {
 		})
 	}
 	return responses
+}
+
+func (s *Service) AddVenuePhoto(ctx context.Context, userID, venueID string, req CreateVenuePhotoRequest) (VenuePhotoResponse, error) {
+	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	if IsNotFound(err) {
+		return VenuePhotoResponse{}, ErrVenueNotFound
+	}
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	if err := validateImageURL(req.ImageURL); err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	isPrimary := false
+	if req.IsPrimary != nil {
+		isPrimary = *req.IsPrimary
+	}
+
+	sortOrder := 0
+	if req.SortOrder != nil {
+		sortOrder = *req.SortOrder
+	}
+
+	photo := VenuePhoto{
+		VenueID:   venue.ID,
+		ImageURL:  req.ImageURL,
+		AltText:   req.AltText,
+		SortOrder: sortOrder,
+		IsPrimary: isPrimary,
+	}
+
+	createdPhoto, err := s.repository.AddVenuePhoto(ctx, photo)
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	return VenuePhotoResponse{
+		ID:        createdPhoto.ID,
+		VenueID:   createdPhoto.VenueID,
+		ImageURL:  createdPhoto.ImageURL,
+		AltText:   createdPhoto.AltText,
+		SortOrder: createdPhoto.SortOrder,
+		IsPrimary: createdPhoto.IsPrimary,
+		CreatedAt: createdPhoto.CreatedAt,
+		UpdatedAt: createdPhoto.UpdatedAt,
+	}, nil
+}
+
+func (s *Service) UpdateVenuePhoto(ctx context.Context, userID, venueID, photoID string, req UpdateVenuePhotoRequest) (VenuePhotoResponse, error) {
+	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	if IsNotFound(err) {
+		return VenuePhotoResponse{}, ErrVenueNotFound
+	}
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	photo, err := s.repository.GetVenuePhotoByID(ctx, photoID)
+	if IsNotFound(err) || photo.VenueID != venue.ID {
+		return VenuePhotoResponse{}, errors.New("photo not found")
+	}
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	if req.AltText != nil {
+		photo.AltText = req.AltText
+	}
+	if req.SortOrder != nil {
+		photo.SortOrder = *req.SortOrder
+	}
+	if req.IsPrimary != nil {
+		photo.IsPrimary = *req.IsPrimary
+	}
+
+	err = s.repository.UpdateVenuePhoto(ctx, photo)
+	if err != nil {
+		return VenuePhotoResponse{}, err
+	}
+
+	photo, _ = s.repository.GetVenuePhotoByID(ctx, photoID)
+
+	return VenuePhotoResponse{
+		ID:        photo.ID,
+		VenueID:   photo.VenueID,
+		ImageURL:  photo.ImageURL,
+		AltText:   photo.AltText,
+		SortOrder: photo.SortOrder,
+		IsPrimary: photo.IsPrimary,
+		CreatedAt: photo.CreatedAt,
+		UpdatedAt: photo.UpdatedAt,
+	}, nil
+}
+
+func (s *Service) DeleteVenuePhoto(ctx context.Context, userID, venueID, photoID string) error {
+	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	if IsNotFound(err) {
+		return ErrVenueNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	photo, err := s.repository.GetVenuePhotoByID(ctx, photoID)
+	if IsNotFound(err) || photo.VenueID != venue.ID {
+		return errors.New("photo not found")
+	}
+	if err != nil {
+		return err
+	}
+
+	return s.repository.DeleteVenuePhoto(ctx, photoID)
+}
+
+func validateImageURL(u string) error {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return errors.New("invalid image URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("image URL must use http or https scheme")
+	}
+	return nil
 }

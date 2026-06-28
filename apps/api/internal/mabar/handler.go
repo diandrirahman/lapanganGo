@@ -3,18 +3,11 @@ package mabar
 import (
 	"errors"
 	"net/http"
-	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
-
-var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-func isValidUUID(u string) bool {
-	return uuidRegex.MatchString(u)
-}
 
 type Handler struct {
 	service *Service
@@ -38,14 +31,14 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 }
 
 func (h *Handler) CreateOpenMatch(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	bookingID := c.Param("id")
-	if !isValidUUID(bookingID) {
+	if !httputil.IsUUID(bookingID) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
 		return
 	}
@@ -86,36 +79,22 @@ func (h *Handler) ListOpenMatches(c *gin.Context) {
 		}
 	}
 
-	if limitStr := c.Query("limit"); limitStr != "" {
-		limit, _ := strconv.Atoi(limitStr)
-		filter.Limit = limit
-	} else {
-		filter.Limit = 10
-	}
+	pageParams := httputil.GetPaginationParams(c)
+	filter.Limit = pageParams.Limit
+	filter.Offset = (pageParams.Page - 1) * pageParams.Limit
 
-	if pageStr := c.Query("page"); pageStr != "" {
-		page, _ := strconv.Atoi(pageStr)
-		if page > 0 {
-			filter.Offset = (page - 1) * filter.Limit
-		}
-	}
-
-	matches, err := h.service.ListOpenMatches(c.Request.Context(), filter)
+	matches, total, err := h.service.ListOpenMatches(c.Request.Context(), filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to list open matches", "error": err.Error()})
 		return
 	}
 
-	if matches == nil {
-		matches = []OpenMatchResponse{}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"open_matches": matches})
+	c.JSON(http.StatusOK, httputil.NewPaginatedResponse(matches, total, pageParams.Page, pageParams.Limit))
 }
 
 func (h *Handler) GetOpenMatchDetail(c *gin.Context) {
 	id := c.Param("id")
-	if !isValidUUID(id) {
+	if !httputil.IsUUID(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid open match ID format"})
 		return
 	}
@@ -130,14 +109,14 @@ func (h *Handler) GetOpenMatchDetail(c *gin.Context) {
 }
 
 func (h *Handler) JoinOpenMatch(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	id := c.Param("id")
-	if !isValidUUID(id) {
+	if !httputil.IsUUID(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid open match ID format"})
 		return
 	}
@@ -151,14 +130,14 @@ func (h *Handler) JoinOpenMatch(c *gin.Context) {
 }
 
 func (h *Handler) LeaveOpenMatch(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	id := c.Param("id")
-	if !isValidUUID(id) {
+	if !httputil.IsUUID(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid open match ID format"})
 		return
 	}
@@ -172,14 +151,14 @@ func (h *Handler) LeaveOpenMatch(c *gin.Context) {
 }
 
 func (h *Handler) CancelOpenMatch(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	id := c.Param("id")
-	if !isValidUUID(id) {
+	if !httputil.IsUUID(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid open match ID format"})
 		return
 	}
@@ -203,15 +182,6 @@ func respondError(c *gin.Context, err error, fallbackMessage string) {
 	case errors.Is(err, ErrMatchAlreadyExists), errors.Is(err, ErrAlreadyJoined), errors.Is(err, ErrMatchFull), errors.Is(err, ErrNotJoined), errors.Is(err, ErrBookingCancelled), errors.Is(err, ErrBookingNotConfirmed):
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage})
 	}
-}
-
-func getAuthenticatedUserID(c *gin.Context) (string, bool) {
-	userIDValue, exists := c.Get("auth_user_id")
-	if !exists {
-		return "", false
-	}
-	userID, ok := userIDValue.(string)
-	return userID, ok && userID != ""
 }

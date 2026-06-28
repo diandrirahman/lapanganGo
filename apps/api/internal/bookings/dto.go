@@ -9,24 +9,37 @@ type CreateBookingRequest struct {
 	EndTime     string `json:"end_time" binding:"required,datetime=15:04"`
 }
 
+type SubmitPaymentProofRequest struct {
+	PaymentReference string `json:"payment_reference" binding:"required,max=255"`
+}
+
+type VerifyPaymentRequest struct {
+	IsApproved bool `json:"is_approved"`
+}
+
 type BookingResponse struct {
-	ID         string    `json:"id"`
-	CustomerID string    `json:"customer_id"`
-	CourtID    string    `json:"court_id"`
-	Date       string    `json:"booking_date"`
-	StartTime  string    `json:"start_time"`
-	EndTime    string    `json:"end_time"`
-	TotalPrice float64   `json:"total_price"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID               string              `json:"id"`
+	CustomerID       string              `json:"customer_id"`
+	Venue            BookingVenueSummary `json:"venue,omitempty"`
+	Court            BookingCourtSummary `json:"court,omitempty"`
+	CourtID          string              `json:"court_id"`
+	Date             string              `json:"booking_date"`
+	StartTime        string              `json:"start_time"`
+	EndTime          string              `json:"end_time"`
+	TotalPrice       float64             `json:"total_price"`
+	Status           string              `json:"status"`
+	PaymentReference *string             `json:"payment_reference,omitempty"`
+	ExpiresAt        *time.Time          `json:"expires_at,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
 type OwnerVenueBookingsQuery struct {
 	Date   string `form:"date" binding:"omitempty,datetime=2006-01-02"`
-	Status string `form:"status" binding:"omitempty,oneof=PENDING_PAYMENT PAID CONFIRMED CANCELLED"`
+	Status string `form:"status" binding:"omitempty,oneof=PENDING_PAYMENT WAITING_VERIFICATION PAID CONFIRMED COMPLETED CANCELLED"`
 	Limit  int    `form:"limit" binding:"omitempty,min=1,max=100"`
 	Page   int    `form:"page" binding:"omitempty,min=1"`
+	Scope  string `form:"scope" binding:"omitempty,oneof=upcoming"`
 }
 
 type OwnerVenueBookingsResult struct {
@@ -38,17 +51,19 @@ type OwnerVenueBookingsResult struct {
 }
 
 type OwnerBookingResponse struct {
-	ID         string                 `json:"id"`
-	Customer   BookingCustomerSummary `json:"customer"`
-	Venue      BookingVenueSummary    `json:"venue"`
-	Court      BookingCourtSummary    `json:"court"`
-	Date       string                 `json:"booking_date"`
-	StartTime  string                 `json:"start_time"`
-	EndTime    string                 `json:"end_time"`
-	TotalPrice float64                `json:"total_price"`
-	Status     string                 `json:"status"`
-	CreatedAt  time.Time              `json:"created_at"`
-	UpdatedAt  time.Time              `json:"updated_at"`
+	ID               string                 `json:"id"`
+	Customer         BookingCustomerSummary `json:"customer"`
+	Venue            BookingVenueSummary    `json:"venue"`
+	Court            BookingCourtSummary    `json:"court"`
+	Date             string                 `json:"booking_date"`
+	StartTime        string                 `json:"start_time"`
+	EndTime          string                 `json:"end_time"`
+	TotalPrice       float64                `json:"total_price"`
+	Status           string                 `json:"status"`
+	PaymentReference *string                `json:"payment_reference,omitempty"`
+	ExpiresAt        *time.Time             `json:"expires_at,omitempty"`
+	CreatedAt        time.Time              `json:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at"`
 }
 
 type BookingCustomerSummary struct {
@@ -59,11 +74,28 @@ type BookingCustomerSummary struct {
 }
 
 type BookingVenueSummary struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Address string `json:"address,omitempty"`
+	City    string `json:"city,omitempty"`
 }
 
 type BookingCourtSummary struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	SportName string `json:"sport_name,omitempty"`
+}
+
+type OwnerMetricsQuery struct {
+	StartDate string `form:"start_date" binding:"omitempty,datetime=2006-01-02"`
+	EndDate   string `form:"end_date" binding:"omitempty,datetime=2006-01-02"`
+}
+
+type OwnerMetricsResponse struct {
+	TotalVenues          int     `json:"total_venues"`
+	UpcomingBookings     int     `json:"upcoming_bookings"`
+	PendingVerifications int     `json:"pending_verifications"`
+	RevenueCurrent       float64 `json:"revenue_current"`
+	RevenueAllTime       float64 `json:"revenue_all_time"`
+	OccupancyRate        float64 `json:"occupancy_rate"`
 }

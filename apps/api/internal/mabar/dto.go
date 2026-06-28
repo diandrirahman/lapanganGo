@@ -13,6 +13,7 @@ type CreateOpenMatchRequest struct {
 type OpenMatchResponse struct {
 	ID             string    `json:"id"`
 	BookingID      string    `json:"booking_id"`
+	HostUserID     string    `json:"host_user_id"`
 	HostName       string    `json:"host_name"`
 	Title          string    `json:"title"`
 	Description    string    `json:"description"`

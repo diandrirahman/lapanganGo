@@ -31,3 +31,9 @@ type ProfileResponse struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
+
+type OwnerMetricsResponse struct {
+	TotalVenues    int     `json:"total_venues"`
+	ActiveBookings int     `json:"active_bookings"`
+	TotalRevenue   float64 `json:"total_revenue"`
+}

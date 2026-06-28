@@ -156,7 +156,27 @@ type ListOpenMatchesFilter struct {
 	Now     time.Time
 }
 
-func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatch, error) {
+func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatchesFilter) ([]OpenMatch, int, error) {
+	countQuery := `
+		SELECT count(*)
+		FROM open_matches om
+		JOIN bookings b ON b.id = om.booking_id
+		JOIN courts c ON c.id = b.court_id
+		JOIN venues v ON v.id = c.venue_id
+		JOIN sports s ON s.id = c.sport_id
+		WHERE om.status = 'OPEN'
+		  AND b.status = 'CONFIRMED'
+		  AND (b.booking_date + b.start_time::time) > $3
+		  AND ($1 = '' OR s.id::text = $1)
+		  AND ($2 = '' OR v.city ILIKE '%' || $2 || '%')
+		  AND ($4 = '' OR b.booking_date::text = $4)
+		  AND ($5 = '' OR om.level = $5)
+	`
+	var total int
+	if err := r.db.QueryRow(ctx, countQuery, filter.SportID, filter.City, filter.Now, filter.Date, filter.Level).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	query := `
 		SELECT 
 			om.id::text, om.booking_id::text, om.host_user_id::text, u.name as host_name,
@@ -181,7 +201,7 @@ func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatches
 	`
 
 	limit := filter.Limit
-	if limit <= 0 || limit > 50 {
+	if limit <= 0 || limit > 100 {
 		limit = 10
 	}
 	offset := filter.Offset
@@ -191,7 +211,7 @@ func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatches
 
 	rows, err := r.db.Query(ctx, query, filter.SportID, filter.City, filter.Now, filter.Date, filter.Level, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -204,11 +224,11 @@ func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatches
 			&om.MatchDate, &om.StartTime, &om.EndTime,
 			&om.Level, &om.MaxPlayers, &om.PricePerPlayer, &om.Status, &om.CreatedAt, &om.UpdatedAt,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		matches = append(matches, om)
 	}
-	return matches, rows.Err()
+	return matches, total, rows.Err()
 }
 
 func (r *Repository) CountJoinedParticipants(ctx context.Context, openMatchID string) (int, error) {

@@ -190,6 +190,59 @@ func (r *Repository) UpdateByUserID(ctx context.Context, params ProfileParams) (
 	return profile, nil
 }
 
+func (r *Repository) GetMetrics(ctx context.Context, userID string) (int, int, float64, error) {
+	// 1. Get Owner Profile ID
+	queryProfile := `SELECT id FROM owner_profiles WHERE user_id = $1 LIMIT 1`
+	var ownerProfileID string
+	err := r.db.QueryRow(ctx, queryProfile, userID).Scan(&ownerProfileID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// If no profile, metrics are 0
+			return 0, 0, 0, nil
+		}
+		return 0, 0, 0, err
+	}
+
+	var totalVenues int
+	var activeBookings int
+	var totalRevenue float64
+
+	// 2. Count Venues
+	queryVenues := `SELECT count(*) FROM venues WHERE owner_profile_id = $1`
+	err = r.db.QueryRow(ctx, queryVenues, ownerProfileID).Scan(&totalVenues)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// 3. Count Active Bookings
+	queryActiveBookings := `
+		SELECT count(*)
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		WHERE v.owner_profile_id = $1 AND b.status IN ('PENDING_PAYMENT', 'CONFIRMED')
+	`
+	err = r.db.QueryRow(ctx, queryActiveBookings, ownerProfileID).Scan(&activeBookings)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// 4. Calculate Total Revenue
+	queryRevenue := `
+		SELECT COALESCE(sum(total_price), 0)
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		WHERE v.owner_profile_id = $1 AND b.status IN ('CONFIRMED', 'PAID')
+	`
+	err = r.db.QueryRow(ctx, queryRevenue, ownerProfileID).Scan(&totalRevenue)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return totalVenues, activeBookings, totalRevenue, nil
+}
+
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
 }

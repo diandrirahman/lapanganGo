@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
 
 type Handler struct {
@@ -23,7 +24,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 }
 
 func (h *Handler) CreateBlockedSlot(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -31,7 +32,7 @@ func (h *Handler) CreateBlockedSlot(c *gin.Context) {
 		return
 	}
 
-	courtID, ok := getUUIDParam(c, "id", "Court ID must be a valid UUID")
+	courtID, ok := httputil.GetUUIDParam(c, "id", "Court ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -58,7 +59,7 @@ func (h *Handler) CreateBlockedSlot(c *gin.Context) {
 }
 
 func (h *Handler) ListBlockedSlots(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -66,7 +67,7 @@ func (h *Handler) ListBlockedSlots(c *gin.Context) {
 		return
 	}
 
-	courtID, ok := getUUIDParam(c, "id", "Court ID must be a valid UUID")
+	courtID, ok := httputil.GetUUIDParam(c, "id", "Court ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -89,7 +90,7 @@ func (h *Handler) ListBlockedSlots(c *gin.Context) {
 }
 
 func (h *Handler) DeleteBlockedSlot(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -97,7 +98,7 @@ func (h *Handler) DeleteBlockedSlot(c *gin.Context) {
 		return
 	}
 
-	blockedSlotID, ok := getUUIDParam(c, "id", "Blocked slot ID must be a valid UUID")
+	blockedSlotID, ok := httputil.GetUUIDParam(c, "id", "Blocked slot ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -141,53 +142,4 @@ func respondBlockedSlotError(c *gin.Context, err error, fallbackMessage string) 
 			"message": fallbackMessage,
 		})
 	}
-}
-
-func getAuthenticatedUserID(c *gin.Context) (string, bool) {
-	userIDValue, exists := c.Get("auth_user_id")
-	if !exists {
-		return "", false
-	}
-
-	userID, ok := userIDValue.(string)
-	return userID, ok && userID != ""
-}
-
-func getUUIDParam(c *gin.Context, name, message string) (string, bool) {
-	value := c.Param(name)
-	if !isUUID(value) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": message,
-		})
-		return "", false
-	}
-
-	return value, true
-}
-
-func isUUID(value string) bool {
-	if len(value) != 36 {
-		return false
-	}
-
-	for i, char := range value {
-		switch i {
-		case 8, 13, 18, 23:
-			if char != '-' {
-				return false
-			}
-		default:
-			if !isHex(char) {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-func isHex(char rune) bool {
-	return (char >= '0' && char <= '9') ||
-		(char >= 'a' && char <= 'f') ||
-		(char >= 'A' && char <= 'F')
 }

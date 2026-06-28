@@ -82,6 +82,19 @@ func optionalString(value string) *string {
 	return &trimmed
 }
 
+func (s *Service) GetMetrics(ctx context.Context, userID string) (OwnerMetricsResponse, error) {
+	totalVenues, activeBookings, totalRevenue, err := s.repository.GetMetrics(ctx, userID)
+	if err != nil {
+		return OwnerMetricsResponse{}, errors.New("failed to retrieve metrics")
+	}
+
+	return OwnerMetricsResponse{
+		TotalVenues:    totalVenues,
+		ActiveBookings: activeBookings,
+		TotalRevenue:   totalRevenue,
+	}, nil
+}
+
 func toProfileResponse(profile Profile) ProfileResponse {
 	return ProfileResponse{
 		ID:                 profile.ID,

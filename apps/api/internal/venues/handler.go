@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
 
 type Handler struct {
@@ -18,6 +19,8 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
 	router.GET("/venues", h.GetPublicVenues)
 	router.GET("/venues/:id", h.GetPublicVenue)
+	router.GET("/sports", h.GetSports)
+	router.GET("/facilities", h.GetFacilities)
 
 	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
 	ownerGroup.POST("/venues", h.CreateVenue)
@@ -25,14 +28,13 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	ownerGroup.GET("/venues/:id", h.GetVenue)
 	ownerGroup.PUT("/venues/:id", h.UpdateVenue)
 	ownerGroup.PATCH("/venues/:id/status", h.UpdateVenueStatus)
+	ownerGroup.POST("/venues/:id/photos", h.AddVenuePhoto)
+	ownerGroup.PUT("/venues/:id/photos/:photo_id", h.UpdateVenuePhoto)
+	ownerGroup.DELETE("/venues/:id/photos/:photo_id", h.DeleteVenuePhoto)
 }
 
 func (h *Handler) GetPublicVenues(c *gin.Context) {
-	req := ListPublicVenuesQuery{
-		Limit: 10,
-		Page:  1,
-	}
-
+	req := ListPublicVenuesQuery{}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "Invalid query parameters",
@@ -41,21 +43,22 @@ func (h *Handler) GetPublicVenues(c *gin.Context) {
 		return
 	}
 
-	venues, err := h.service.GetPublicVenues(c.Request.Context(), req)
+	// Use httputil for robust parsing and limits
+	pageParams := httputil.GetPaginationParams(c)
+	req.Page = pageParams.Page
+	req.Limit = pageParams.Limit
+
+	venues, total, err := h.service.GetPublicVenues(c.Request.Context(), req)
 	if err != nil {
 		respondVenueError(c, err, "Failed to list public venues")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"venues": venues,
-		"page":   req.Page,
-		"limit":  req.Limit,
-	})
+	c.JSON(http.StatusOK, httputil.NewPaginatedResponse(venues, total, req.Page, req.Limit))
 }
 
 func (h *Handler) GetPublicVenue(c *gin.Context) {
-	venueID, ok := getVenueIDParam(c)
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -69,8 +72,32 @@ func (h *Handler) GetPublicVenue(c *gin.Context) {
 	c.JSON(http.StatusOK, venue)
 }
 
+func (h *Handler) GetSports(c *gin.Context) {
+	sports, err := h.service.GetSports(c.Request.Context())
+	if err != nil {
+		respondVenueError(c, err, "Failed to get sports")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sports": sports,
+	})
+}
+
+func (h *Handler) GetFacilities(c *gin.Context) {
+	facilities, err := h.service.GetFacilities(c.Request.Context())
+	if err != nil {
+		respondVenueError(c, err, "Failed to get facilities")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"facilities": facilities,
+	})
+}
+
 func (h *Handler) CreateVenue(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -100,7 +127,7 @@ func (h *Handler) CreateVenue(c *gin.Context) {
 }
 
 func (h *Handler) ListVenues(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -120,7 +147,7 @@ func (h *Handler) ListVenues(c *gin.Context) {
 }
 
 func (h *Handler) GetVenue(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -128,7 +155,7 @@ func (h *Handler) GetVenue(c *gin.Context) {
 		return
 	}
 
-	venueID, ok := getVenueIDParam(c)
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -145,7 +172,7 @@ func (h *Handler) GetVenue(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenue(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -153,7 +180,7 @@ func (h *Handler) UpdateVenue(c *gin.Context) {
 		return
 	}
 
-	venueID, ok := getVenueIDParam(c)
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -180,7 +207,7 @@ func (h *Handler) UpdateVenue(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenueStatus(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -188,7 +215,7 @@ func (h *Handler) UpdateVenueStatus(c *gin.Context) {
 		return
 	}
 
-	venueID, ok := getVenueIDParam(c)
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
 	if !ok {
 		return
 	}
@@ -241,57 +268,91 @@ func respondVenueError(c *gin.Context, err error, fallbackMessage string) {
 			"message": "Invalid venue status",
 		})
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": fallbackMessage,
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage, "error": err.Error()})
 	}
 }
 
-func getAuthenticatedUserID(c *gin.Context) (string, bool) {
-	userIDValue, exists := c.Get("auth_user_id")
-	if !exists {
-		return "", false
+func (h *Handler) AddVenuePhoto(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
 	}
 
-	userID, ok := userIDValue.(string)
-	return userID, ok && userID != ""
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
+	if !ok {
+		return
+	}
+
+	var req CreateVenuePhotoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body", "error": err.Error()})
+		return
+	}
+
+	photo, err := h.service.AddVenuePhoto(c.Request.Context(), userID, venueID, req)
+	if err != nil {
+		respondVenueError(c, err, "Failed to add venue photo")
+		return
+	}
+
+	c.JSON(http.StatusCreated, photo)
 }
 
-func getVenueIDParam(c *gin.Context) (string, bool) {
-	venueID := c.Param("id")
-	if !isUUID(venueID) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "Venue ID must be a valid UUID",
-		})
-		return "", false
+func (h *Handler) UpdateVenuePhoto(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
 	}
 
-	return venueID, true
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
+	if !ok {
+		return
+	}
+
+	photoID, ok := httputil.GetUUIDParam(c, "photo_id", "Photo ID must be a valid UUID")
+	if !ok {
+		return
+	}
+
+	var req UpdateVenuePhotoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body", "error": err.Error()})
+		return
+	}
+
+	photo, err := h.service.UpdateVenuePhoto(c.Request.Context(), userID, venueID, photoID, req)
+	if err != nil {
+		respondVenueError(c, err, "Failed to update venue photo")
+		return
+	}
+
+	c.JSON(http.StatusOK, photo)
 }
 
-func isUUID(value string) bool {
-	if len(value) != 36 {
-		return false
+func (h *Handler) DeleteVenuePhoto(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
 	}
 
-	for i, char := range value {
-		switch i {
-		case 8, 13, 18, 23:
-			if char != '-' {
-				return false
-			}
-		default:
-			if !isHex(char) {
-				return false
-			}
-		}
+	venueID, ok := httputil.GetUUIDParam(c, "id", "Venue ID must be a valid UUID")
+	if !ok {
+		return
 	}
 
-	return true
-}
+	photoID, ok := httputil.GetUUIDParam(c, "photo_id", "Photo ID must be a valid UUID")
+	if !ok {
+		return
+	}
 
-func isHex(char rune) bool {
-	return (char >= '0' && char <= '9') ||
-		(char >= 'a' && char <= 'f') ||
-		(char >= 'A' && char <= 'F')
+	err := h.service.DeleteVenuePhoto(c.Request.Context(), userID, venueID, photoID)
+	if err != nil {
+		respondVenueError(c, err, "Failed to delete venue photo")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Venue photo deleted successfully"})
 }

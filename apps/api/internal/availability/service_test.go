@@ -142,3 +142,53 @@ func TestIsClosedOperatingHour(t *testing.T) {
 		t.Fatal("expected valid operating hour to be open")
 	}
 }
+
+func TestBuildSlotsIgnoresExpiredBookings(t *testing.T) {
+	location := jakartaLocation()
+	date, _ := parseAvailabilityDate("2026-06-25", location)
+	openTime := "08:00"
+	closeTime := "12:00"
+
+	t0800 := time.Date(0, 1, 1, 8, 0, 0, 0, time.UTC)
+	t0900 := time.Date(0, 1, 1, 9, 0, 0, 0, time.UTC)
+	t1000 := time.Date(0, 1, 1, 10, 0, 0, 0, time.UTC)
+	t1100 := time.Date(0, 1, 1, 11, 0, 0, 0, time.UTC)
+	t1200 := time.Date(0, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	now := time.Now()
+	expiredTime := now.Add(-time.Hour)
+	activeTime := now.Add(time.Hour)
+
+	bookings := []ActiveBooking{
+		// 1. Confirmed booking -> should block (08:00 - 09:00)
+		{Date: date, StartTime: t0800, EndTime: t0900, Status: "CONFIRMED"},
+		// 2. Pending expired -> should NOT block (09:00 - 10:00)
+		{Date: date, StartTime: t0900, EndTime: t1000, Status: "PENDING_PAYMENT", ExpiresAt: &expiredTime},
+		// 3. Pending active -> should block (10:00 - 11:00)
+		{Date: date, StartTime: t1000, EndTime: t1100, Status: "PENDING_PAYMENT", ExpiresAt: &activeTime},
+		// 4. Pending null expiry -> should NOT block (11:00 - 12:00)
+		{Date: date, StartTime: t1100, EndTime: t1200, Status: "PENDING_PAYMENT", ExpiresAt: nil},
+	}
+
+	slots, err := buildSlots(date, OperatingHour{OpenTime: &openTime, CloseTime: &closeTime}, nil, bookings, time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(slots) != 4 {
+		t.Fatalf("expected 4 slots, got %d", len(slots))
+	}
+
+	expectedStatuses := []string{
+		slotStatusBooked,    // 08:00-09:00 (CONFIRMED)
+		slotStatusAvailable, // 09:00-10:00 (Expired PENDING_PAYMENT)
+		slotStatusBooked,    // 10:00-11:00 (Active PENDING_PAYMENT)
+		slotStatusAvailable, // 11:00-12:00 (Null expiry PENDING_PAYMENT)
+	}
+
+	for i, expected := range expectedStatuses {
+		if slots[i].Status != expected {
+			t.Errorf("slot %d expected status %q, got %q", i, expected, slots[i].Status)
+		}
+	}
+}

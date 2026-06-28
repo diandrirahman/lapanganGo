@@ -3,6 +3,8 @@ package venues
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +39,16 @@ type Venue struct {
 	UpdatedAt      time.Time
 }
 
+type VenuePhoto struct {
+	ID        string
+	VenueID   string
+	ImageURL  string
+	AltText   *string
+	SortOrder int
+	IsPrimary bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
 type Facility struct {
 	ID   string
 	Name string
@@ -98,6 +110,37 @@ func (r *Repository) FindOwnerProfileByUserID(ctx context.Context, userID string
 	}
 
 	return profile, nil
+}
+
+func (r *Repository) GetSports(ctx context.Context) ([]Sport, error) {
+	query := `SELECT id::text, name FROM sports ORDER BY name`
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sports []Sport
+	for rows.Next() {
+		var s Sport
+		if err := rows.Scan(&s.ID, &s.Name); err != nil {
+			return nil, err
+		}
+		sports = append(sports, s)
+	}
+
+	return sports, rows.Err()
+}
+
+func (r *Repository) GetFacilities(ctx context.Context) ([]Facility, error) {
+	query := `SELECT id::text, name, icon FROM facilities ORDER BY name`
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanFacilities(rows)
 }
 
 func (r *Repository) Create(ctx context.Context, params VenueParams, facilityIDs []string) (Venue, error) {
@@ -183,32 +226,87 @@ func (r *Repository) Create(ctx context.Context, params VenueParams, facilityIDs
 	return venue, nil
 }
 
-func (r *Repository) ListPublicVenues(ctx context.Context, limit, offset int) ([]Venue, error) {
-	query := `
-		SELECT
-			id::text,
-			owner_profile_id::text,
-			name,
-			description,
-			address,
-			district,
-			city,
-			province,
-			postal_code,
-			latitude,
-			longitude,
-			status::text,
-			created_at,
-			updated_at
-		FROM venues
-		WHERE status = 'ACTIVE'
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`
+func (r *Repository) ListPublicVenues(ctx context.Context, filter ListPublicVenuesQuery, offset int) ([]Venue, int, error) {
+	// 1. Build the conditions and args
+	var args []interface{}
+	var conditions []string
 
-	rows, err := r.db.Query(ctx, query, limit, offset)
+	conditions = append(conditions, "v.status = 'ACTIVE'")
+
+	if filter.City != "" {
+		args = append(args, "%"+filter.City+"%")
+		conditions = append(conditions, "v.city ILIKE $"+strconv.Itoa(len(args)))
+	}
+
+	needsCourtJoin := filter.SportID != "" || filter.MinPrice > 0 || filter.MaxPrice > 0
+	joins := ""
+	if needsCourtJoin {
+		joins += " JOIN courts c ON c.venue_id = v.id"
+		conditions = append(conditions, "c.status = 'ACTIVE'")
+
+		if filter.SportID != "" {
+			args = append(args, filter.SportID)
+			conditions = append(conditions, "c.sport_id = $"+strconv.Itoa(len(args)))
+		}
+
+		if filter.MinPrice > 0 {
+			args = append(args, filter.MinPrice)
+			conditions = append(conditions, "c.price_per_hour >= $"+strconv.Itoa(len(args)))
+		}
+
+		if filter.MaxPrice > 0 {
+			args = append(args, filter.MaxPrice)
+			conditions = append(conditions, "c.price_per_hour <= $"+strconv.Itoa(len(args)))
+		}
+	}
+
+	if len(filter.FacilityIDs) > 0 {
+		joins += " JOIN venue_facilities vf ON vf.venue_id = v.id"
+		args = append(args, filter.FacilityIDs)
+		conditions = append(conditions, "vf.facility_id = ANY($"+strconv.Itoa(len(args))+")")
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// 2. Count total records
+	countQuery := "SELECT COUNT(DISTINCT v.id) FROM venues v" + joins + whereClause
+	var total int
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// 3. Query the data
+	query := `
+		SELECT DISTINCT
+			v.id::text,
+			v.owner_profile_id::text,
+			v.name,
+			v.description,
+			v.address,
+			v.district,
+			v.city,
+			v.province,
+			v.postal_code,
+			v.latitude,
+			v.longitude,
+			v.status::text,
+			v.created_at,
+			v.updated_at
+		FROM venues v
+	` + joins + whereClause + " ORDER BY v.created_at DESC"
+	dataArgs := append([]interface{}{}, args...)
+	dataArgs = append(dataArgs, filter.Limit)
+	query += " LIMIT $" + strconv.Itoa(len(dataArgs))
+
+	dataArgs = append(dataArgs, offset)
+	query += " OFFSET $" + strconv.Itoa(len(dataArgs))
+
+	rows, err := r.db.Query(ctx, query, dataArgs...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -216,12 +314,12 @@ func (r *Repository) ListPublicVenues(ctx context.Context, limit, offset int) ([
 	for rows.Next() {
 		venue, err := scanVenue(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		venues = append(venues, venue)
 	}
 
-	return venues, rows.Err()
+	return venues, total, nil
 }
 
 func (r *Repository) FindPublicVenueByID(ctx context.Context, id string) (Venue, error) {
@@ -682,3 +780,161 @@ func IsUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
+
+func (r *Repository) GetVenuePhotos(ctx context.Context, venueID string) ([]VenuePhoto, error) {
+	query := `
+		SELECT id::text, venue_id::text, image_url, alt_text, sort_order, is_primary, created_at, updated_at
+		FROM venue_photos
+		WHERE venue_id = $1
+		ORDER BY sort_order ASC, created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query, venueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var photos []VenuePhoto
+	for rows.Next() {
+		var p VenuePhoto
+		if err := rows.Scan(&p.ID, &p.VenueID, &p.ImageURL, &p.AltText, &p.SortOrder, &p.IsPrimary, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		photos = append(photos, p)
+	}
+	return photos, rows.Err()
+}
+
+func (r *Repository) FindPhotosByVenueIDs(ctx context.Context, venueIDs []string) (map[string][]VenuePhoto, error) {
+	if len(venueIDs) == 0 {
+		return make(map[string][]VenuePhoto), nil
+	}
+
+	query := `
+		SELECT id::text, venue_id::text, image_url, alt_text, sort_order, is_primary, created_at, updated_at
+		FROM venue_photos
+		WHERE venue_id = ANY($1)
+		ORDER BY sort_order ASC, created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query, venueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	photosMap := make(map[string][]VenuePhoto)
+	for rows.Next() {
+		var p VenuePhoto
+		if err := rows.Scan(&p.ID, &p.VenueID, &p.ImageURL, &p.AltText, &p.SortOrder, &p.IsPrimary, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		photosMap[p.VenueID] = append(photosMap[p.VenueID], p)
+	}
+	return photosMap, rows.Err()
+}
+
+func (r *Repository) GetVenuePhotoByID(ctx context.Context, id string) (VenuePhoto, error) {
+	query := `
+		SELECT id::text, venue_id::text, image_url, alt_text, sort_order, is_primary, created_at, updated_at
+		FROM venue_photos
+		WHERE id = $1
+	`
+	var p VenuePhoto
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&p.ID, &p.VenueID, &p.ImageURL, &p.AltText, &p.SortOrder, &p.IsPrimary, &p.CreatedAt, &p.UpdatedAt,
+	)
+	return p, err
+}
+
+func (r *Repository) AddVenuePhoto(ctx context.Context, p VenuePhoto) (VenuePhoto, error) {
+	if p.IsPrimary {
+		tx, err := r.db.Begin(ctx)
+		if err != nil {
+			return p, err
+		}
+		defer tx.Rollback(ctx)
+
+		_, err = tx.Exec(ctx, `UPDATE venue_photos SET is_primary = false, updated_at = now() WHERE venue_id = $1 AND is_primary = true`, p.VenueID)
+		if err != nil {
+			return p, err
+		}
+
+		query := `
+			INSERT INTO venue_photos (venue_id, image_url, alt_text, sort_order, is_primary)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id::text, created_at, updated_at
+		`
+		err = tx.QueryRow(ctx, query, p.VenueID, p.ImageURL, p.AltText, p.SortOrder, p.IsPrimary).Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
+		if err != nil {
+			return p, err
+		}
+
+		err = tx.Commit(ctx)
+		return p, err
+	}
+
+	query := `
+		INSERT INTO venue_photos (venue_id, image_url, alt_text, sort_order, is_primary)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id::text, created_at, updated_at
+	`
+	err := r.db.QueryRow(ctx, query, p.VenueID, p.ImageURL, p.AltText, p.SortOrder, p.IsPrimary).Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
+	return p, err
+}
+
+func (r *Repository) UpdateVenuePhoto(ctx context.Context, p VenuePhoto) error {
+	if p.IsPrimary {
+		tx, err := r.db.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		_, err = tx.Exec(ctx, `UPDATE venue_photos SET is_primary = false, updated_at = now() WHERE venue_id = $1 AND is_primary = true AND id != $2`, p.VenueID, p.ID)
+		if err != nil {
+			return err
+		}
+
+		query := `
+			UPDATE venue_photos
+			SET alt_text = $1, sort_order = $2, is_primary = $3, updated_at = now()
+			WHERE id = $4
+		`
+		tag, err := tx.Exec(ctx, query, p.AltText, p.SortOrder, p.IsPrimary, p.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return tx.Commit(ctx)
+	}
+
+	query := `
+		UPDATE venue_photos
+		SET alt_text = $1, sort_order = $2, is_primary = $3, updated_at = now()
+		WHERE id = $4
+	`
+	tag, err := r.db.Exec(ctx, query, p.AltText, p.SortOrder, p.IsPrimary, p.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) DeleteVenuePhoto(ctx context.Context, id string) error {
+	query := `DELETE FROM venue_photos WHERE id = $1`
+	tag, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+

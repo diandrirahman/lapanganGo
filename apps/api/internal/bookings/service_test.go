@@ -2,6 +2,7 @@ package bookings
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,14 +22,15 @@ type mockRepo struct {
 	IsOverlap  bool
 	OverlapErr error
 
-	InsertedBooking Booking
-	InsertErr       error
-	UpdatedBooking  Booking
-	UpdateErr       error
-	FindBooking     Booking
-	FindErr         error
-	FindFallback    *Booking
-	findCallCount   int
+	LastCreateParams CreateBookingParams
+	InsertedBooking  Booking
+	InsertErr        error
+	UpdatedBooking   Booking
+	UpdateErr        error
+	FindBooking      Booking
+	FindErr          error
+	FindFallback     *Booking
+	findCallCount    int
 
 	OwnerProfile     OwnerProfile
 	OwnerProfileErr  error
@@ -36,6 +38,47 @@ type mockRepo struct {
 	OwnerVenueErr    error
 	OwnerBookings    []OwnerBooking
 	OwnerBookingsErr error
+
+	OwnerMetrics    OwnerMetrics
+	OwnerMetricsErr error
+
+	BookingOwnerProfileID    string
+	BookingOwnerProfileIDErr error
+
+	CancelExpiredCount int64
+	CancelExpiredErr   error
+}
+
+func (m *mockRepo) CancelExpiredPendingBookings(ctx context.Context) (int64, error) {
+	return m.CancelExpiredCount, m.CancelExpiredErr
+}
+
+func (m *mockRepo) GetOwnerMetrics(ctx context.Context, ownerProfileID string, startDate string, endDate string) (OwnerMetrics, error) {
+	return m.OwnerMetrics, m.OwnerMetricsErr
+}
+
+func (m *mockRepo) UpdatePaymentReference(ctx context.Context, bookingID, customerID, reference string) (Booking, error) {
+	return m.UpdatedBooking, m.UpdateErr
+}
+
+func (m *mockRepo) VerifyPayment(ctx context.Context, bookingID string, isApproved bool) (Booking, error) {
+	return m.UpdatedBooking, m.UpdateErr
+}
+
+func (m *mockRepo) GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error) {
+	if m.BookingOwnerProfileIDErr != nil {
+		return "", m.BookingOwnerProfileIDErr
+	}
+	if m.BookingOwnerProfileID != "" {
+		return m.BookingOwnerProfileID, nil
+	}
+	if m.OwnerProfileErr != nil {
+		return "", m.OwnerProfileErr
+	}
+	if m.OwnerProfile.ID != "" {
+		return m.OwnerProfile.ID, nil
+	}
+	return "mock-owner-profile-id", nil
 }
 
 func (m *mockRepo) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error) {
@@ -46,8 +89,16 @@ func (m *mockRepo) FindOperatingHours(ctx context.Context, tx pgx.Tx, courtID st
 	return m.OperatingHour, m.OpHourErr
 }
 
-func (m *mockRepo) ListByCustomerID(ctx context.Context, customerID string) ([]Booking, error) {
-	return nil, nil
+func (m *mockRepo) ListByCustomerID(ctx context.Context, customerID string, limit, offset int) ([]CustomerBooking, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockRepo) FindCustomerBookingByID(ctx context.Context, id, customerID string) (CustomerBooking, error) {
+	m.findCallCount++
+	if m.findCallCount > 1 && m.FindFallback != nil {
+		return CustomerBooking{Booking: *m.FindFallback}, m.FindErr
+	}
+	return CustomerBooking{Booking: m.FindBooking}, m.FindErr
 }
 
 func (m *mockRepo) FindByIDAndCustomerID(ctx context.Context, id, customerID string) (Booking, error) {
@@ -66,8 +117,8 @@ func (m *mockRepo) FindVenueByIDAndOwnerProfileID(ctx context.Context, venueID, 
 	return m.OwnerVenue, m.OwnerVenueErr
 }
 
-func (m *mockRepo) ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status string, limit, offset int) ([]OwnerBooking, error) {
-	return m.OwnerBookings, m.OwnerBookingsErr
+func (m *mockRepo) ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status, scope string, limit, offset int) ([]OwnerBooking, int, error) {
+	return m.OwnerBookings, 0, m.OwnerBookingsErr
 }
 
 func (m *mockRepo) ExecuteBookingTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
@@ -84,6 +135,7 @@ func (m *mockRepo) CheckExistingBookings(ctx context.Context, tx pgx.Tx, courtID
 }
 
 func (m *mockRepo) InsertBooking(ctx context.Context, tx pgx.Tx, params CreateBookingParams) (Booking, error) {
+	m.LastCreateParams = params
 	if m.InsertErr != nil {
 		return Booking{}, m.InsertErr
 	}
@@ -128,7 +180,7 @@ func TestCreateBooking_Success(t *testing.T) {
 		IsOverlap:           false,
 		InsertedBooking:     Booking{ID: "booking-1"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	req := CreateBookingRequest{
 		CourtID:     "court-1",
@@ -164,7 +216,7 @@ func TestCreateBooking_Success_PgxBaseYear2000(t *testing.T) {
 		IsOverlap:           false,
 		InsertedBooking:     Booking{ID: "booking-regression"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	// Booking from 10:00 to 11:00 should pass despite the base year difference
 	req := CreateBookingRequest{
@@ -197,7 +249,7 @@ func TestCreateBooking_Success_BoundaryOperatingHours(t *testing.T) {
 		IsOverlap:           false,
 		InsertedBooking:     Booking{ID: "booking-boundary"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	// Boundary 1: 08:00 to 09:00
 	req1 := CreateBookingRequest{
@@ -226,7 +278,7 @@ func TestCreateBooking_Fail_PastDate(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	yesterday := time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 
-	svc := NewService(&mockRepo{})
+	svc := NewService(&mockRepo{}, 30)
 	req := CreateBookingRequest{BookingDate: yesterday, StartTime: "10:00", EndTime: "12:00"}
 
 	_, err := svc.CreateBooking(context.Background(), "user-1", req)
@@ -239,7 +291,7 @@ func TestCreateBooking_Fail_InvalidTimeRange(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	tomorrow := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
 
-	svc := NewService(&mockRepo{})
+	svc := NewService(&mockRepo{}, 30)
 	req := CreateBookingRequest{BookingDate: tomorrow, StartTime: "12:00", EndTime: "10:00"}
 
 	_, err := svc.CreateBooking(context.Background(), "user-1", req)
@@ -253,7 +305,7 @@ func TestCreateBooking_Fail_InactiveCourtOrVenue(t *testing.T) {
 	tomorrow := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
 
 	repo := &mockRepo{CourtValidationInfo: CourtValidationInfo{CourtStatus: "INACTIVE", VenueStatus: "ACTIVE"}}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 	req := CreateBookingRequest{BookingDate: tomorrow, StartTime: "10:00", EndTime: "12:00"}
 
 	_, err := svc.CreateBooking(context.Background(), "user-1", req)
@@ -279,7 +331,7 @@ func TestCreateBooking_Fail_OutsideOperatingHours(t *testing.T) {
 		CourtValidationInfo: CourtValidationInfo{CourtStatus: "ACTIVE", VenueStatus: "ACTIVE"},
 		OperatingHour:       OperatingHour{IsClosed: false, OpenTime: ptrTime(start), CloseTime: ptrTime(end)},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	// Requesting 10:00 to 12:00
 	req := CreateBookingRequest{BookingDate: tomorrow, StartTime: "10:00", EndTime: "12:00"}
@@ -301,7 +353,7 @@ func TestCreateBooking_Fail_OverlapBlockedSlots(t *testing.T) {
 		OperatingHour:       OperatingHour{IsClosed: false, OpenTime: ptrTime(start), CloseTime: ptrTime(end)},
 		IsBlocked:           true,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	req := CreateBookingRequest{BookingDate: tomorrow, StartTime: "10:00", EndTime: "12:00"}
 	_, err := svc.CreateBooking(context.Background(), "user-1", req)
@@ -323,7 +375,7 @@ func TestCreateBooking_Fail_OverlapExistingBooking(t *testing.T) {
 		IsBlocked:           false,
 		IsOverlap:           true,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	req := CreateBookingRequest{BookingDate: tomorrow, StartTime: "10:00", EndTime: "12:00"}
 	_, err := svc.CreateBooking(context.Background(), "user-1", req)
@@ -359,9 +411,9 @@ func TestListOwnerVenueBookings_Success(t *testing.T) {
 			},
 		},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
-	result, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{
+	result, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{
 		Date:   "2026-06-25",
 		Status: "PENDING_PAYMENT",
 		Limit:  20,
@@ -370,13 +422,10 @@ func TestListOwnerVenueBookings_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if result.Date != "2026-06-25" || result.Status != "PENDING_PAYMENT" || result.Limit != 20 || result.Page != 2 {
-		t.Fatalf("unexpected pagination/query result: %+v", result)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 booking, got %d", len(result))
 	}
-	if len(result.Bookings) != 1 {
-		t.Fatalf("expected 1 booking, got %d", len(result.Bookings))
-	}
-	booking := result.Bookings[0]
+	booking := result[0]
 	if booking.Customer.Name != "Customer One" || booking.Venue.Name != "Arena A" || booking.Court.Name != "Court 1" {
 		t.Fatalf("unexpected owner booking response: %+v", booking)
 	}
@@ -384,9 +433,9 @@ func TestListOwnerVenueBookings_Success(t *testing.T) {
 
 func TestListOwnerVenueBookings_Fail_OwnerProfileNotFound(t *testing.T) {
 	repo := &mockRepo{OwnerProfileErr: pgx.ErrNoRows}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
-	_, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
+	_, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
 	if err != ErrOwnerProfileNotFound {
 		t.Fatalf("expected ErrOwnerProfileNotFound, got %v", err)
 	}
@@ -397,9 +446,9 @@ func TestListOwnerVenueBookings_Fail_VenueNotFound(t *testing.T) {
 		OwnerProfile:  OwnerProfile{ID: "owner-profile-1", UserID: "owner-user-1"},
 		OwnerVenueErr: pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
-	_, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
+	_, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
 	if err != ErrVenueNotFound {
 		t.Fatalf("expected ErrVenueNotFound, got %v", err)
 	}
@@ -410,7 +459,7 @@ func TestCancelBooking_Success(t *testing.T) {
 		FindBooking:    Booking{ID: "booking-1", CustomerID: "user-1", Status: "PENDING_PAYMENT"},
 		UpdatedBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CANCELLED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	resp, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != nil {
@@ -425,7 +474,7 @@ func TestCancelBooking_Fail_AlreadyCancelled(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CANCELLED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyCancelled {
@@ -437,7 +486,7 @@ func TestCancelBooking_Fail_CannotCancelPaid(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "PAID"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingCannotBeCancelled {
@@ -449,7 +498,7 @@ func TestCancelBooking_Fail_NotFound(t *testing.T) {
 	repo := &mockRepo{
 		FindErr: pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingNotFound {
@@ -461,7 +510,7 @@ func TestCancelBooking_Fail_CannotCancelConfirmed(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CONFIRMED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingCannotBeCancelled {
@@ -475,7 +524,7 @@ func TestCancelBooking_Fail_StatusChangedDuringCancel(t *testing.T) {
 		FindFallback: &Booking{ID: "booking-1", CustomerID: "user-1", Status: "PAID"},
 		UpdateErr:    pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingCannotBeCancelled {
@@ -489,7 +538,7 @@ func TestCancelBooking_Fail_BecameCancelledDuringCancel(t *testing.T) {
 		FindFallback: &Booking{ID: "booking-1", CustomerID: "user-1", Status: "CANCELLED"},
 		UpdateErr:    pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.CancelBooking(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyCancelled {
@@ -502,7 +551,7 @@ func TestConfirmBookingPayment_Success(t *testing.T) {
 		FindBooking:    Booking{ID: "booking-1", CustomerID: "user-1", Status: "PENDING_PAYMENT"},
 		UpdatedBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CONFIRMED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	resp, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != nil {
@@ -517,7 +566,7 @@ func TestConfirmBookingPayment_Fail_NotFound(t *testing.T) {
 	repo := &mockRepo{
 		FindErr: pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingNotFound {
@@ -529,7 +578,7 @@ func TestConfirmBookingPayment_Fail_AlreadyCancelled(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CANCELLED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyCancelled {
@@ -541,7 +590,7 @@ func TestConfirmBookingPayment_Fail_AlreadyConfirmed(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "CONFIRMED"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyConfirmed {
@@ -553,7 +602,7 @@ func TestConfirmBookingPayment_Fail_PaidCannotConfirm(t *testing.T) {
 	repo := &mockRepo{
 		FindBooking: Booking{ID: "booking-1", CustomerID: "user-1", Status: "PAID"},
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingCannotBeConfirmed {
@@ -567,7 +616,7 @@ func TestConfirmBookingPayment_Fail_StatusChangedToCancelledDuringConfirm(t *tes
 		FindFallback: &Booking{ID: "booking-1", CustomerID: "user-1", Status: "CANCELLED"},
 		UpdateErr:    pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyCancelled {
@@ -581,10 +630,164 @@ func TestConfirmBookingPayment_Fail_StatusChangedToConfirmedDuringConfirm(t *tes
 		FindFallback: &Booking{ID: "booking-1", CustomerID: "user-1", Status: "CONFIRMED"},
 		UpdateErr:    pgx.ErrNoRows,
 	}
-	svc := NewService(repo)
+	svc := NewService(repo, 30)
 
 	_, err := svc.ConfirmBookingPayment(context.Background(), "user-1", "booking-1")
 	if err != ErrBookingAlreadyConfirmed {
 		t.Fatalf("expected ErrBookingAlreadyConfirmed, got %v", err)
+	}
+}
+
+func TestVerifyPayment_Success(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:          OwnerProfile{ID: "owner-prof-1"},
+		BookingOwnerProfileID: "owner-prof-1",
+		UpdatedBooking:        Booking{ID: "booking-1", Status: "CONFIRMED"},
+	}
+	svc := NewService(repo, 30)
+
+	resp, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp.Status != "CONFIRMED" {
+		t.Fatalf("expected CONFIRMED status, got %s", resp.Status)
+	}
+}
+
+func TestVerifyPayment_Fail_ErrForbidden(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:          OwnerProfile{ID: "owner-prof-1"},
+		BookingOwnerProfileID: "owner-prof-2",
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	if err != ErrForbidden {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestVerifyPayment_Fail_ErrBookingNotFound(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:             OwnerProfile{ID: "owner-prof-1"},
+		BookingOwnerProfileIDErr: pgx.ErrNoRows,
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	if err != ErrBookingNotFound {
+		t.Fatalf("expected ErrBookingNotFound, got %v", err)
+	}
+}
+
+func TestVerifyPayment_Fail_ErrOwnerProfileNotFound(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfileErr: pgx.ErrNoRows,
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	if err != ErrOwnerProfileNotFound {
+		t.Fatalf("expected ErrOwnerProfileNotFound, got %v", err)
+	}
+}
+
+func TestCreateBooking_Success_CustomTTL(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+	tomorrow := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
+	start, _ := time.Parse("15:04", "10:00")
+	end, _ := time.Parse("15:04", "12:00")
+
+	repo := &mockRepo{
+		CourtValidationInfo: CourtValidationInfo{PricePerHour: 150000, CourtStatus: "ACTIVE", VenueStatus: "ACTIVE"},
+		OperatingHour:       OperatingHour{IsClosed: false, OpenTime: ptrTime(start.Add(-time.Hour)), CloseTime: ptrTime(end.Add(time.Hour))},
+		IsBlocked:           false,
+		IsOverlap:           false,
+		InsertedBooking:     Booking{ID: "b1"},
+	}
+
+	customTTL := 45
+	svc := NewService(repo, customTTL)
+
+	req := CreateBookingRequest{
+		CourtID:     "court1",
+		BookingDate: tomorrow,
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	}
+
+	_, err := svc.CreateBooking(context.Background(), "cust1", req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if repo.LastCreateParams.ExpiresAt == nil {
+		t.Fatalf("expected ExpiresAt to be set, got nil")
+	}
+
+	expectedExpires := time.Now().In(loc).Add(time.Duration(customTTL) * time.Minute)
+	diff := repo.LastCreateParams.ExpiresAt.Sub(expectedExpires).Abs()
+
+	if diff > 5*time.Second {
+		t.Errorf("ExpiresAt is %v, expected %v (diff: %v)", repo.LastCreateParams.ExpiresAt, expectedExpires, diff)
+	}
+}
+
+func TestSweepExpiredBookings_Success(t *testing.T) {
+	repo := &mockRepo{
+		CancelExpiredCount: 5,
+	}
+	svc := NewService(repo, 30)
+
+	count, err := svc.SweepExpiredBookings(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("expected 5 updated rows, got %d", count)
+	}
+}
+
+func TestSweepExpiredBookings_Error(t *testing.T) {
+	expectedErr := errors.New("database timeout")
+	repo := &mockRepo{
+		CancelExpiredErr: expectedErr,
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.SweepExpiredBookings(context.Background())
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if err.Error() != expectedErr.Error() {
+		t.Fatalf("expected %v, got %v", expectedErr, err)
+	}
+}
+
+func TestStartExpiryWorker(t *testing.T) {
+	repo := &mockRepo{}
+	svc := NewService(repo, 30)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		svc.StartExpiryWorker(ctx, 10*time.Millisecond)
+		close(done)
+	}()
+
+	// Wait briefly to allow worker to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context to stop the worker
+	cancel()
+
+	// Ensure the worker goroutine exits promptly
+	select {
+	case <-done:
+		// Success
+	case <-time.After(1 * time.Second):
+		t.Fatalf("worker did not exit promptly after context cancellation")
 	}
 }

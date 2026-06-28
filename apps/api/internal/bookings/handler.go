@@ -4,16 +4,9 @@ import (
 	"errors"
 	"net/http"
 
-	"regexp"
-
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/httputil"
 )
-
-var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-func isValidUUID(u string) bool {
-	return uuidRegex.MatchString(u)
-}
 
 type Handler struct {
 	service *Service
@@ -30,15 +23,18 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	group.GET("/:id", h.GetBooking)
 	group.PATCH("/:id/cancel", h.CancelBooking)
 	group.POST("/:id/pay", h.ConfirmBookingPayment)
+	group.POST("/:id/payment-proof", h.SubmitPaymentProof)
 }
 
 func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	group := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	group.GET("/venues/:id/bookings", h.ListOwnerVenueBookings)
+	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
+	ownerGroup.GET("/venues/:id/bookings", h.ListOwnerVenueBookings)
+	ownerGroup.PATCH("/bookings/:id/verify-payment", h.VerifyPayment)
+	ownerGroup.GET("/metrics", h.GetOwnerMetrics)
 }
 
 func (h *Handler) CreateBooking(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -66,30 +62,32 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 }
 
 func (h *Handler) ListBookings(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
-	bookings, err := h.service.ListBookings(c.Request.Context(), userID)
+	pageParams := httputil.GetPaginationParams(c)
+
+	bookings, total, err := h.service.ListBookings(c.Request.Context(), userID, pageParams.Page, pageParams.Limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to list bookings"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"bookings": bookings})
+	c.JSON(http.StatusOK, httputil.NewPaginatedResponse(bookings, total, pageParams.Page, pageParams.Limit))
 }
 
 func (h *Handler) GetBooking(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	bookingID := c.Param("id")
-	if !isValidUUID(bookingID) {
+	if !httputil.IsUUID(bookingID) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
 		return
 	}
@@ -104,18 +102,44 @@ func (h *Handler) GetBooking(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"booking": booking})
+	c.JSON(http.StatusOK, gin.H{
+		"booking": booking,
+	})
+}
+
+func (h *Handler) GetOwnerMetrics(c *gin.Context) {
+	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	var req OwnerMetricsQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		respondBookingError(c, err, "Invalid query parameters")
+		return
+	}
+
+	metrics, err := h.service.GetOwnerMetrics(c.Request.Context(), ownerUserID, req)
+	if err != nil {
+		respondBookingError(c, err, "Failed to get owner metrics")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"metrics": metrics,
+	})
 }
 
 func (h *Handler) ConfirmBookingPayment(c *gin.Context) {
-	customerID, ok := getAuthenticatedUserID(c)
+	customerID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	bookingID := c.Param("id")
-	if !isValidUUID(bookingID) {
+	if !httputil.IsUUID(bookingID) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
 		return
 	}
@@ -133,22 +157,19 @@ func (h *Handler) ConfirmBookingPayment(c *gin.Context) {
 }
 
 func (h *Handler) ListOwnerVenueBookings(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	venueID := c.Param("id")
-	if !isValidUUID(venueID) {
+	if !httputil.IsUUID(venueID) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid venue ID format"})
 		return
 	}
 
-	req := OwnerVenueBookingsQuery{
-		Limit: 10,
-		Page:  1,
-	}
+	req := OwnerVenueBookingsQuery{}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "Invalid query parameters",
@@ -157,24 +178,28 @@ func (h *Handler) ListOwnerVenueBookings(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.ListOwnerVenueBookings(c.Request.Context(), userID, venueID, req)
+	pageParams := httputil.GetPaginationParams(c)
+	req.Page = pageParams.Page
+	req.Limit = pageParams.Limit
+
+	bookings, total, err := h.service.ListOwnerVenueBookings(c.Request.Context(), userID, venueID, req)
 	if err != nil {
 		respondBookingError(c, err, "Failed to list owner venue bookings")
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, httputil.NewPaginatedResponse(bookings, total, req.Page, req.Limit))
 }
 
 func (h *Handler) CancelBooking(c *gin.Context) {
-	userID, ok := getAuthenticatedUserID(c)
+	userID, ok := httputil.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	bookingID := c.Param("id")
-	if !isValidUUID(bookingID) {
+	if !httputil.IsUUID(bookingID) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
 		return
 	}
@@ -191,6 +216,74 @@ func (h *Handler) CancelBooking(c *gin.Context) {
 	})
 }
 
+func (h *Handler) SubmitPaymentProof(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	bookingID := c.Param("id")
+	if !httputil.IsUUID(bookingID) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
+		return
+	}
+
+	var req SubmitPaymentProofRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid request payload",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	booking, err := h.service.SubmitPaymentProof(c.Request.Context(), userID, bookingID, req.PaymentReference)
+	if err != nil {
+		respondBookingError(c, err, "Failed to submit payment proof")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Payment proof submitted successfully",
+		"booking": booking,
+	})
+}
+
+func (h *Handler) VerifyPayment(c *gin.Context) {
+	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	bookingID := c.Param("id")
+	if !httputil.IsUUID(bookingID) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
+		return
+	}
+
+	var req VerifyPaymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid request payload",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	booking, err := h.service.VerifyPayment(c.Request.Context(), ownerUserID, bookingID, req.IsApproved)
+	if err != nil {
+		respondBookingError(c, err, "Failed to verify payment")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Payment verified successfully",
+		"booking": booking,
+	})
+}
+
 func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	switch {
 	case errors.Is(err, ErrPastDate), errors.Is(err, ErrInvalidTimeRange):
@@ -201,6 +294,8 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrOverlapBlockedSlot), errors.Is(err, ErrOverlapBooking), errors.Is(err, ErrBookingAlreadyCancelled), errors.Is(err, ErrBookingCannotBeCancelled), errors.Is(err, ErrBookingAlreadyConfirmed), errors.Is(err, ErrBookingCannotBeConfirmed):
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrForbidden):
+		c.JSON(http.StatusForbidden, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrBookingNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "Booking not found"})
 	case errors.Is(err, ErrCourtNotFound):
@@ -212,13 +307,4 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage})
 	}
-}
-
-func getAuthenticatedUserID(c *gin.Context) (string, bool) {
-	userIDValue, exists := c.Get("auth_user_id")
-	if !exists {
-		return "", false
-	}
-	userID, ok := userIDValue.(string)
-	return userID, ok && userID != ""
 }

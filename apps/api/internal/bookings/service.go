@@ -3,6 +3,7 @@ package bookings
 import (
 	"context"
 	"errors"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -25,30 +26,38 @@ var (
 	ErrBookingCannotBeConfirmed = errors.New("booking cannot be confirmed in current status")
 	ErrOwnerProfileNotFound     = errors.New("owner profile not found")
 	ErrVenueNotFound            = errors.New("venue not found")
+	ErrForbidden                = errors.New("forbidden: you do not own this booking's venue")
 )
 
 type BookingRepository interface {
 	LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error)
 	FindOperatingHours(ctx context.Context, tx pgx.Tx, courtID string, dayOfWeek int) (OperatingHour, error)
-	ListByCustomerID(ctx context.Context, customerID string) ([]Booking, error)
+	ListByCustomerID(ctx context.Context, customerID string, limit, offset int) ([]CustomerBooking, int, error)
 	FindByIDAndCustomerID(ctx context.Context, id, customerID string) (Booking, error)
+	FindCustomerBookingByID(ctx context.Context, id, customerID string) (CustomerBooking, error)
 	FindOwnerProfileByUserID(ctx context.Context, userID string) (OwnerProfile, error)
 	FindVenueByIDAndOwnerProfileID(ctx context.Context, venueID, ownerProfileID string) (OwnerVenue, error)
-	ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status string, limit, offset int) ([]OwnerBooking, error)
+	ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status, scope string, limit, offset int) ([]OwnerBooking, int, error)
 	ExecuteBookingTx(ctx context.Context, fn func(tx pgx.Tx) error) error
 	CheckBlockedSlots(ctx context.Context, tx pgx.Tx, courtID string, startTz, endTz time.Time) (bool, error)
 	CheckExistingBookings(ctx context.Context, tx pgx.Tx, courtID, date, startTime, endTime string) (bool, error)
 	InsertBooking(ctx context.Context, tx pgx.Tx, params CreateBookingParams) (Booking, error)
 	CancelPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error)
 	ConfirmPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error)
+	GetOwnerMetrics(ctx context.Context, ownerProfileID string, startDate string, endDate string) (OwnerMetrics, error)
+	UpdatePaymentReference(ctx context.Context, bookingID, customerID, reference string) (Booking, error)
+	VerifyPayment(ctx context.Context, bookingID string, isApproved bool) (Booking, error)
+	GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error)
+	CancelExpiredPendingBookings(ctx context.Context) (int64, error)
 }
 
 type Service struct {
 	repository BookingRepository
+	ttlMinutes int
 }
 
-func NewService(repository BookingRepository) *Service {
-	return &Service{repository: repository}
+func NewService(repository BookingRepository, ttlMinutes int) *Service {
+	return &Service{repository: repository, ttlMinutes: ttlMinutes}
 }
 
 func (s *Service) CreateBooking(ctx context.Context, customerID string, req CreateBookingRequest) (BookingResponse, error) {
@@ -144,6 +153,8 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 			return ErrOverlapBooking
 		}
 
+		expiresAt := nowTz.Add(time.Duration(s.ttlMinutes) * time.Minute)
+
 		// Insert
 		params := CreateBookingParams{
 			CustomerID: customerID,
@@ -152,6 +163,7 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 			StartTime:  req.StartTime,
 			EndTime:    req.EndTime,
 			TotalPrice: totalPrice,
+			ExpiresAt:  &expiresAt,
 		}
 		b, err := s.repository.InsertBooking(ctx, tx, params)
 		if err != nil {
@@ -168,22 +180,8 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 	return toBookingResponse(created), nil
 }
 
-func (s *Service) ListBookings(ctx context.Context, customerID string) ([]BookingResponse, error) {
-	bookings, err := s.repository.ListByCustomerID(ctx, customerID)
-	if err != nil {
-		return nil, err
-	}
-
-	responses := make([]BookingResponse, len(bookings))
-	for i, b := range bookings {
-		responses[i] = toBookingResponse(b)
-	}
-
-	return responses, nil
-}
-
-func (s *Service) GetBooking(ctx context.Context, customerID, bookingID string) (BookingResponse, error) {
-	b, err := s.repository.FindByIDAndCustomerID(ctx, bookingID, customerID)
+func (s *Service) SubmitPaymentProof(ctx context.Context, customerID, bookingID, reference string) (BookingResponse, error) {
+	b, err := s.repository.UpdatePaymentReference(ctx, bookingID, customerID, reference)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -193,28 +191,93 @@ func (s *Service) GetBooking(ctx context.Context, customerID, bookingID string) 
 	return toBookingResponse(b), nil
 }
 
-func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerUserID, venueID string, req OwnerVenueBookingsQuery) (OwnerVenueBookingsResult, error) {
+func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID string, isApproved bool) (BookingResponse, error) {
+	// 1. Ensure the owner actually owns this booking's venue
 	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return OwnerVenueBookingsResult{}, ErrOwnerProfileNotFound
+			return BookingResponse{}, ErrOwnerProfileNotFound
 		}
-		return OwnerVenueBookingsResult{}, err
+		return BookingResponse{}, err
+	}
+
+	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	if ownerProfileID != profile.ID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	b, err := s.repository.VerifyPayment(ctx, bookingID, isApproved)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+	return toBookingResponse(b), nil
+}
+
+func (s *Service) ListBookings(ctx context.Context, customerID string, page, limit int) ([]BookingResponse, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+
+	bookings, total, err := s.repository.ListByCustomerID(ctx, customerID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	responses := make([]BookingResponse, 0, len(bookings))
+	for _, b := range bookings {
+		responses = append(responses, toCustomerBookingResponse(b))
+	}
+
+	return responses, total, nil
+}
+
+func (s *Service) GetBooking(ctx context.Context, customerID, bookingID string) (BookingResponse, error) {
+	b, err := s.repository.FindCustomerBookingByID(ctx, bookingID, customerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+	return toCustomerBookingResponse(b), nil
+}
+
+func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerUserID, venueID string, req OwnerVenueBookingsQuery) ([]OwnerBookingResponse, int, error) {
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, ErrOwnerProfileNotFound
+		}
+		return nil, 0, err
 	}
 
 	_, err = s.repository.FindVenueByIDAndOwnerProfileID(ctx, venueID, profile.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return OwnerVenueBookingsResult{}, ErrVenueNotFound
+			return nil, 0, ErrVenueNotFound
 		}
-		return OwnerVenueBookingsResult{}, err
+		return nil, 0, err
 	}
 
 	query := normalizeOwnerVenueBookingsQuery(req)
 	offset := (query.Page - 1) * query.Limit
-	bookings, err := s.repository.ListOwnerVenueBookings(ctx, profile.ID, venueID, query.Date, query.Status, query.Limit, offset)
+	bookings, total, err := s.repository.ListOwnerVenueBookings(ctx, profile.ID, venueID, query.Date, query.Status, query.Scope, query.Limit, offset)
 	if err != nil {
-		return OwnerVenueBookingsResult{}, err
+		return nil, 0, err
 	}
 
 	responses := make([]OwnerBookingResponse, len(bookings))
@@ -222,13 +285,7 @@ func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerUserID, venue
 		responses[i] = toOwnerBookingResponse(booking)
 	}
 
-	return OwnerVenueBookingsResult{
-		Bookings: responses,
-		Date:     query.Date,
-		Status:   query.Status,
-		Page:     query.Page,
-		Limit:    query.Limit,
-	}, nil
+	return responses, total, nil
 }
 
 func (s *Service) CancelBooking(ctx context.Context, customerID, bookingID string) (BookingResponse, error) {
@@ -329,9 +386,7 @@ func normalizeOwnerVenueBookingsQuery(req OwnerVenueBookingsQuery) OwnerVenueBoo
 	}
 	req.Status = strings.TrimSpace(req.Status)
 	req.Date = strings.TrimSpace(req.Date)
-	if req.Date == "" {
-		req.Date = todayJakarta().Format("2006-01-02")
-	}
+	// Removed: defaulting to today if empty to allow viewing all bookings
 	return req
 }
 
@@ -346,17 +401,26 @@ func todayJakarta() time.Time {
 
 func toBookingResponse(b Booking) BookingResponse {
 	return BookingResponse{
-		ID:         b.ID,
-		CustomerID: b.CustomerID,
-		CourtID:    b.CourtID,
-		Date:       b.Date.Format("2006-01-02"),
-		StartTime:  b.StartTime.Format("15:04"),
-		EndTime:    b.EndTime.Format("15:04"),
-		TotalPrice: b.TotalPrice,
-		Status:     b.Status,
-		CreatedAt:  b.CreatedAt,
-		UpdatedAt:  b.UpdatedAt,
+		ID:               b.ID,
+		CustomerID:       b.CustomerID,
+		CourtID:          b.CourtID,
+		Date:             b.Date.Format("2006-01-02"),
+		StartTime:        b.StartTime.Format("15:04"),
+		EndTime:          b.EndTime.Format("15:04"),
+		TotalPrice:       b.TotalPrice,
+		Status:           b.Status,
+		PaymentReference: b.PaymentReference,
+		ExpiresAt:        b.ExpiresAt,
+		CreatedAt:        b.CreatedAt,
+		UpdatedAt:        b.UpdatedAt,
 	}
+}
+
+func toCustomerBookingResponse(cb CustomerBooking) BookingResponse {
+	resp := toBookingResponse(cb.Booking)
+	resp.Venue = BookingVenueSummary{ID: cb.VenueID, Name: cb.VenueName, Address: cb.VenueAddress, City: cb.VenueCity}
+	resp.Court = BookingCourtSummary{ID: cb.CourtID, Name: cb.CourtName, SportName: cb.CourtSportName}
+	return resp
 }
 
 func toOwnerBookingResponse(b OwnerBooking) OwnerBookingResponse {
@@ -376,12 +440,58 @@ func toOwnerBookingResponse(b OwnerBooking) OwnerBookingResponse {
 			ID:   b.CourtID,
 			Name: b.CourtName,
 		},
-		Date:       b.Date.Format("2006-01-02"),
-		StartTime:  b.StartTime.Format("15:04"),
-		EndTime:    b.EndTime.Format("15:04"),
-		TotalPrice: b.TotalPrice,
-		Status:     b.Status,
-		CreatedAt:  b.CreatedAt,
-		UpdatedAt:  b.UpdatedAt,
+		Date:             b.Date.Format("2006-01-02"),
+		StartTime:        b.StartTime.Format("15:04"),
+		EndTime:          b.EndTime.Format("15:04"),
+		TotalPrice:       b.TotalPrice,
+		Status:           b.Status,
+		PaymentReference: b.PaymentReference,
+		ExpiresAt:        b.ExpiresAt,
+		CreatedAt:        b.CreatedAt,
+		UpdatedAt:        b.UpdatedAt,
+	}
+}
+func (s *Service) GetOwnerMetrics(ctx context.Context, ownerUserID string, query OwnerMetricsQuery) (OwnerMetricsResponse, error) {
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return OwnerMetricsResponse{}, ErrOwnerProfileNotFound
+		}
+		return OwnerMetricsResponse{}, err
+	}
+
+	metrics, err := s.repository.GetOwnerMetrics(ctx, profile.ID, query.StartDate, query.EndDate)
+	if err != nil {
+		return OwnerMetricsResponse{}, err
+	}
+
+	return OwnerMetricsResponse{
+		TotalVenues:          metrics.TotalVenues,
+		UpcomingBookings:     metrics.UpcomingBookings,
+		PendingVerifications: metrics.PendingVerifications,
+		RevenueCurrent:       metrics.RevenueCurrent,
+		RevenueAllTime:       metrics.RevenueAllTime,
+		OccupancyRate:        metrics.OccupancyRate,
+	}, nil
+}
+
+func (s *Service) SweepExpiredBookings(ctx context.Context) (int64, error) {
+	return s.repository.CancelExpiredPendingBookings(ctx)
+}
+
+func (s *Service) StartExpiryWorker(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, err := s.SweepExpiredBookings(ctx)
+			if err != nil {
+				log.Printf("Error sweeping expired bookings: %v", err)
+			}
+		}
 	}
 }
