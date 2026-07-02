@@ -14,7 +14,7 @@ export const Badge = React.forwardRef<HTMLDivElement, BadgeProps>(
       success: 'bg-green-100 text-green-700',
       warning: 'bg-yellow-100 text-yellow-700',
       danger: 'bg-red-100 text-red-700',
-      gradient: 'bg-gradient-to-r from-[#FF512F] to-[#DD2476] text-white shadow-sm'
+      gradient: 'bg-primary text-white shadow-sm'
     };
 
     return (

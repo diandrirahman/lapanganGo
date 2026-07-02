@@ -165,7 +165,7 @@ func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatches
 		JOIN venues v ON v.id = c.venue_id
 		JOIN sports s ON s.id = c.sport_id
 		WHERE om.status = 'OPEN'
-		  AND b.status = 'CONFIRMED'
+		  AND b.status IN ('PAID', 'CONFIRMED')
 		  AND (b.booking_date + b.start_time::time) > $3
 		  AND ($1 = '' OR s.id::text = $1)
 		  AND ($2 = '' OR v.city ILIKE '%' || $2 || '%')
@@ -190,7 +190,7 @@ func (r *Repository) ListOpenMatches(ctx context.Context, filter ListOpenMatches
 		JOIN venues v ON v.id = c.venue_id
 		JOIN sports s ON s.id = c.sport_id
 		WHERE om.status = 'OPEN'
-		  AND b.status = 'CONFIRMED'
+		  AND b.status IN ('PAID', 'CONFIRMED')
 		  AND (b.booking_date + b.start_time::time) > $3
 		  AND ($1 = '' OR s.id::text = $1)
 		  AND ($2 = '' OR v.city ILIKE '%' || $2 || '%')

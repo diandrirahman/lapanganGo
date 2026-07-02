@@ -26,11 +26,8 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole, ch
   }
 
   if (requiredRole && user?.role !== requiredRole) {
-    // If a specific role is required and user doesn't have it
-    // Or if it's an owner trying to access customer routes (though maybe we just let them, usually owner routes are stricter)
-    // The requirement says: "Customer tidak bisa akses route owner. Owner route tetap bisa diakses owner."
-    // If they aren't the required role, redirect to home or login. We'll use / for now.
-    return <Navigate to="/" replace />;
+    const redirectPath = user?.role === 'OWNER' ? '/owner/dashboard' : '/';
+    return <Navigate to={redirectPath} replace />;
   }
 
   // Render children if provided (for individual routes), otherwise render Outlet (for nested routes layout)

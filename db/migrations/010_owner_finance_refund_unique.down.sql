@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_owner_finance_transactions_unique_refund_booking;

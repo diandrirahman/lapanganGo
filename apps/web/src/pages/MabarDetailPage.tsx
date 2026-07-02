@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ConfirmModal } from '../components/ui/ConfirmModal';
 import { formatRupiah, formatDate } from '../lib/utils';
+import toast from 'react-hot-toast';
 
 export const MabarDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -26,7 +27,6 @@ export const MabarDetailPage: React.FC = () => {
   // Modals
   const [leaveModalOpen, setLeaveModalOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
-  const [errorModal, setErrorModal] = useState<{isOpen: boolean, message: string}>({isOpen: false, message: ''});
 
   const loadDetail = useCallback(async () => {
     if (!id) return;
@@ -55,9 +55,10 @@ export const MabarDetailPage: React.FC = () => {
     try {
       setActionLoading('join');
       await joinOpenMatch(id, token);
+      toast.success('Berhasil bergabung ke mabar!');
       await loadDetail();
     } catch (err: any) {
-      setErrorModal({ isOpen: true, message: err.message || 'Gagal bergabung ke mabar' });
+      toast.error(err.message || 'Gagal bergabung ke mabar');
     } finally {
       setActionLoading(null);
     }
@@ -71,9 +72,10 @@ export const MabarDetailPage: React.FC = () => {
       setActionLoading('leave');
       setLeaveModalOpen(false);
       await leaveOpenMatch(id, token);
+      toast.success('Berhasil keluar dari mabar');
       await loadDetail();
     } catch (err: any) {
-      setErrorModal({ isOpen: true, message: err.message || 'Gagal keluar dari mabar' });
+      toast.error(err.message || 'Gagal keluar dari mabar');
     } finally {
       setActionLoading(null);
     }
@@ -87,9 +89,10 @@ export const MabarDetailPage: React.FC = () => {
       setActionLoading('cancel');
       setCancelModalOpen(false);
       await cancelOpenMatch(id, token);
+      toast.success('Mabar berhasil dibatalkan');
       await loadDetail();
     } catch (err: any) {
-      setErrorModal({ isOpen: true, message: err.message || 'Gagal membatalkan mabar' });
+      toast.error(err.message || 'Gagal membatalkan mabar');
     } finally {
       setActionLoading(null);
     }
@@ -341,14 +344,6 @@ export const MabarDetailPage: React.FC = () => {
         isLoading={actionLoading === 'cancel'}
       />
 
-      <ConfirmModal
-        isOpen={errorModal.isOpen}
-        title="Gagal Memproses"
-        message={errorModal.message}
-        confirmText="Tutup"
-        onConfirm={() => setErrorModal({ isOpen: false, message: '' })}
-        onCancel={() => setErrorModal({ isOpen: false, message: '' })}
-      />
     </PageShell>
   );
 };

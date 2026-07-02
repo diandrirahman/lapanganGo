@@ -52,7 +52,7 @@ export const OpenMatchesPage: React.FC = () => {
           </div>
           <button
             onClick={() => navigate(isAuthenticated ? '/bookings' : '/login')}
-            className="px-6 py-3.5 rounded-xl font-bold transition-all bg-primary-gradient text-white shadow-primary-glow hover:-translate-y-1 w-full md:w-auto shrink-0 whitespace-nowrap"
+            className="px-6 py-3.5 rounded-xl font-bold transition-all bg-primary text-white shadow-sm hover:shadow-md hover:-translate-y-1 w-full md:w-auto shrink-0 whitespace-nowrap"
           >
             Buat Jadwal Mabar
           </button>

@@ -9,10 +9,13 @@ import type { VenueDetail } from '../types/venue';
 import { CourtCard } from '../components/CourtCard';
 import { SafeVenueImage } from '../components/ui/SafeVenueImage';
 import { MapPin, Info } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { toast } from 'react-hot-toast';
 
 export const VenueDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   
   const [venue, setVenue] = useState<VenueDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -144,12 +147,18 @@ export const VenueDetailPage: React.FC = () => {
                 <CourtCard 
                   key={court.id} 
                   court={court} 
-                  onSelect={(courtId) => navigate(`/venues/${venue.id}/courts/${courtId}/availability`, { 
-                    state: { 
-                      venue: { name: venue.name, address: venue.address }, 
-                      court: { name: court.name, price_per_hour: court.price_per_hour } 
-                    } 
-                  })}
+                  onSelect={(courtId) => {
+                    if (user?.role === 'OWNER') {
+                      toast.error('Gunakan akun customer untuk membuat booking.');
+                      return;
+                    }
+                    navigate(`/venues/${venue.id}/courts/${courtId}/availability`, { 
+                      state: { 
+                        venue: { name: venue.name, address: venue.address }, 
+                        court: { name: court.name, price_per_hour: court.price_per_hour } 
+                      } 
+                    });
+                  }}
                 />
               ))}
             </div>

@@ -31,25 +31,25 @@ export const VenueSection: React.FC = () => {
   }, []);
 
   return (
-    <section className="py-20 relative z-20">
-      <div className="max-w-7xl mx-auto px-6">
+    <section className="py-14 md:py-20 relative z-20 bg-bg-main">
+      <div className="max-w-7xl mx-auto px-5 md:px-6">
         
         {/* Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 gap-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-4">
           <div>
-            <h2 className="text-[36px] font-extrabold tracking-tight text-text-main mb-2">Rekomendasi Venue</h2>
-            <p className="text-lg text-text-muted font-medium">
+            <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-text-main mb-2">Rekomendasi Venue</h2>
+            <p className="text-base md:text-lg text-text-muted font-medium">
               Lapangan terbaik yang bisa langsung dibooking hari ini.
             </p>
           </div>
-          <Link to="/venues" className="flex items-center gap-2 font-bold text-text-main hover:text-primary transition-colors shrink-0">
-            Lihat Semua <ArrowRight className="w-5 h-5" />
+          <Link to="/venues" className="flex items-center gap-2 font-bold text-primary transition-colors shrink-0 bg-primary/10 px-5 py-2.5 rounded-full hover:bg-primary/20 active:scale-95">
+            Lihat Semua <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
 
         {/* Content */}
         {isLoading ? (
-          <LoadingState message="Memuat daftar venue..." />
+          <LoadingState message="Memuat daftar venue..." variant="cards" />
         ) : error ? (
           <ErrorState message={error} onRetry={() => window.location.reload()} />
         ) : venues.length === 0 ? (

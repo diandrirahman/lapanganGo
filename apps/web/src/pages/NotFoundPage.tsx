@@ -24,7 +24,7 @@ export const NotFoundPage: React.FC = () => {
             </Button>
           </Link>
           <Link to="/venues">
-            <Button className="w-full sm:w-auto px-8 bg-primary-gradient text-white font-bold shadow-primary-glow border-none">
+            <Button className="w-full sm:w-auto px-8 bg-primary text-white font-bold shadow-sm border-none">
               Cari Lapangan
             </Button>
           </Link>

@@ -61,7 +61,19 @@ func (m *mockRepo) UpdatePaymentReference(ctx context.Context, bookingID, custom
 	return m.UpdatedBooking, m.UpdateErr
 }
 
-func (m *mockRepo) VerifyPayment(ctx context.Context, bookingID string, isApproved bool) (Booking, error) {
+func (m *mockRepo) VerifyPayment(ctx context.Context, ownerUserID string, bookingID string, isApproved bool) (Booking, error) {
+	return m.UpdatedBooking, m.UpdateErr
+}
+
+func (m *mockRepo) MarkBookingPaid(ctx context.Context, ownerUserID string, bookingID string) (Booking, error) {
+	return m.UpdatedBooking, m.UpdateErr
+}
+
+func (m *mockRepo) CompleteBooking(ctx context.Context, bookingID string) (Booking, error) {
+	return m.UpdatedBooking, m.UpdateErr
+}
+
+func (m *mockRepo) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error) {
 	return m.UpdatedBooking, m.UpdateErr
 }
 
@@ -119,6 +131,10 @@ func (m *mockRepo) FindVenueByIDAndOwnerProfileID(ctx context.Context, venueID, 
 
 func (m *mockRepo) ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status, scope string, limit, offset int) ([]OwnerBooking, int, error) {
 	return m.OwnerBookings, 0, m.OwnerBookingsErr
+}
+
+func (m *mockRepo) ListOwnerBookings(ctx context.Context, ownerProfileID string, query OwnerBookingsQuery, limit, offset int) ([]OwnerBooking, int, error) {
+	return m.OwnerBookings, len(m.OwnerBookings), m.OwnerBookingsErr
 }
 
 func (m *mockRepo) ExecuteBookingTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
@@ -789,5 +805,49 @@ func TestStartExpiryWorker(t *testing.T) {
 		// Success
 	case <-time.After(1 * time.Second):
 		t.Fatalf("worker did not exit promptly after context cancellation")
+	}
+}
+
+func TestCancelPaidBookingWithRefund_Success(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:          OwnerProfile{ID: "profile-1", UserID: "user-1"},
+		BookingOwnerProfileID: "profile-1",
+		UpdatedBooking:        Booking{ID: "booking-1", Status: "CANCELLED"},
+	}
+	svc := NewService(repo, 30)
+
+	resp, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-1", "booking-1", "Customer requested")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp.Status != "CANCELLED" {
+		t.Errorf("expected status CANCELLED, got %v", resp.Status)
+	}
+}
+
+func TestCancelPaidBookingWithRefund_Forbidden(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:          OwnerProfile{ID: "profile-2", UserID: "user-2"},
+		BookingOwnerProfileID: "profile-1",
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-2", "booking-1", "Customer requested")
+	if err != ErrForbidden {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestCancelPaidBookingWithRefund_NoIncomeLedger(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:          OwnerProfile{ID: "profile-1", UserID: "user-1"},
+		BookingOwnerProfileID: "profile-1",
+		UpdateErr:             ErrBookingIncomeLedgerNotFound,
+	}
+	svc := NewService(repo, 30)
+
+	_, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-1", "booking-1", "Customer requested")
+	if err != ErrBookingIncomeLedgerNotFound {
+		t.Fatalf("expected ErrBookingIncomeLedgerNotFound, got %v", err)
 	}
 }

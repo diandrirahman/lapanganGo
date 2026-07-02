@@ -13,6 +13,10 @@ type SubmitPaymentProofRequest struct {
 	PaymentReference string `json:"payment_reference" binding:"required,max=255"`
 }
 
+type OwnerCancelRefundRequest struct {
+	Reason string `json:"reason" binding:"omitempty,max=500"`
+}
+
 type VerifyPaymentRequest struct {
 	IsApproved bool `json:"is_approved"`
 }
@@ -48,6 +52,26 @@ type OwnerVenueBookingsResult struct {
 	Status   string                 `json:"status,omitempty"`
 	Page     int                    `json:"page"`
 	Limit    int                    `json:"limit"`
+}
+
+type OwnerBookingsQuery struct {
+	VenueID   string `form:"venue_id" binding:"omitempty,uuid"`
+	Status    string `form:"status" binding:"omitempty,oneof=PENDING_PAYMENT WAITING_VERIFICATION PAID CONFIRMED COMPLETED CANCELLED"`
+	Scope     string `form:"scope" binding:"omitempty,oneof=upcoming"`
+	StartDate string `form:"start_date" binding:"omitempty,datetime=2006-01-02"`
+	EndDate   string `form:"end_date" binding:"omitempty,datetime=2006-01-02"`
+	Q         string `form:"q" binding:"omitempty"`
+	Sort      string `form:"sort" binding:"omitempty,oneof=newest oldest date_asc date_desc"`
+	Limit     int    `form:"limit" binding:"omitempty,min=1,max=100"`
+	Page      int    `form:"page" binding:"omitempty,min=1"`
+}
+
+type OwnerBookingsResult struct {
+	Data       []OwnerBookingResponse `json:"data"`
+	Page       int                    `json:"page"`
+	Limit      int                    `json:"limit"`
+	Total      int                    `json:"total"`
+	TotalPages int                    `json:"total_pages"`
 }
 
 type OwnerBookingResponse struct {
@@ -92,10 +116,13 @@ type OwnerMetricsQuery struct {
 }
 
 type OwnerMetricsResponse struct {
-	TotalVenues          int     `json:"total_venues"`
-	UpcomingBookings     int     `json:"upcoming_bookings"`
-	PendingVerifications int     `json:"pending_verifications"`
-	RevenueCurrent       float64 `json:"revenue_current"`
-	RevenueAllTime       float64 `json:"revenue_all_time"`
-	OccupancyRate        float64 `json:"occupancy_rate"`
+	TotalVenues           int     `json:"total_venues"`
+	UpcomingBookings      int     `json:"upcoming_bookings"`
+	PendingVerifications  int     `json:"pending_verifications"`
+	RevenueCurrent        float64 `json:"revenue_current"`
+	BookingRevenueCurrent float64 `json:"booking_revenue_current"`
+	RefundCurrent         float64 `json:"refund_current"`
+	NetRevenueCurrent     float64 `json:"net_revenue_current"`
+	RevenueAllTime        float64 `json:"revenue_all_time"`
+	OccupancyRate         float64 `json:"occupancy_rate"`
 }

@@ -233,6 +233,12 @@ func (r *Repository) ListPublicVenues(ctx context.Context, filter ListPublicVenu
 
 	conditions = append(conditions, "v.status = 'ACTIVE'")
 
+	if filter.Q != "" {
+		args = append(args, "%"+filter.Q+"%")
+		n := strconv.Itoa(len(args))
+		conditions = append(conditions, "(v.name ILIKE $"+n+" OR v.city ILIKE $"+n+" OR v.address ILIKE $"+n+")")
+	}
+
 	if filter.City != "" {
 		args = append(args, "%"+filter.City+"%")
 		conditions = append(conditions, "v.city ILIKE $"+strconv.Itoa(len(args)))

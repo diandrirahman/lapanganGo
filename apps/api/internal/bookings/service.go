@@ -27,6 +27,11 @@ var (
 	ErrOwnerProfileNotFound     = errors.New("owner profile not found")
 	ErrVenueNotFound            = errors.New("venue not found")
 	ErrForbidden                = errors.New("forbidden: you do not own this booking's venue")
+	ErrBookingCannotBeMarkedPaid = errors.New("Booking tidak dapat ditandai lunas pada status ini")
+	ErrBookingCannotBeCompleted  = errors.New("Gagal menyelesaikan booking. Pastikan jadwal main telah terlewati dan status sudah Lunas.")
+	ErrBookingCannotBeRefunded   = errors.New("booking cannot be cancelled/refunded in current status")
+	ErrBookingRefundAlreadyExists = errors.New("refund already recorded for this booking")
+	ErrBookingIncomeLedgerNotFound = errors.New("booking income ledger not found; backfill ledger before refund")
 )
 
 type BookingRepository interface {
@@ -38,6 +43,7 @@ type BookingRepository interface {
 	FindOwnerProfileByUserID(ctx context.Context, userID string) (OwnerProfile, error)
 	FindVenueByIDAndOwnerProfileID(ctx context.Context, venueID, ownerProfileID string) (OwnerVenue, error)
 	ListOwnerVenueBookings(ctx context.Context, ownerProfileID, venueID, date, status, scope string, limit, offset int) ([]OwnerBooking, int, error)
+	ListOwnerBookings(ctx context.Context, ownerProfileID string, query OwnerBookingsQuery, limit, offset int) ([]OwnerBooking, int, error)
 	ExecuteBookingTx(ctx context.Context, fn func(tx pgx.Tx) error) error
 	CheckBlockedSlots(ctx context.Context, tx pgx.Tx, courtID string, startTz, endTz time.Time) (bool, error)
 	CheckExistingBookings(ctx context.Context, tx pgx.Tx, courtID, date, startTime, endTime string) (bool, error)
@@ -46,9 +52,12 @@ type BookingRepository interface {
 	ConfirmPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error)
 	GetOwnerMetrics(ctx context.Context, ownerProfileID string, startDate string, endDate string) (OwnerMetrics, error)
 	UpdatePaymentReference(ctx context.Context, bookingID, customerID, reference string) (Booking, error)
-	VerifyPayment(ctx context.Context, bookingID string, isApproved bool) (Booking, error)
+	VerifyPayment(ctx context.Context, ownerUserID string, bookingID string, isApproved bool) (Booking, error)
+	MarkBookingPaid(ctx context.Context, ownerUserID string, bookingID string) (Booking, error)
+	CompleteBooking(ctx context.Context, bookingID string) (Booking, error)
 	GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error)
 	CancelExpiredPendingBookings(ctx context.Context) (int64, error)
+	CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error)
 }
 
 type Service struct {
@@ -213,13 +222,110 @@ func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID stri
 		return BookingResponse{}, ErrForbidden
 	}
 
-	b, err := s.repository.VerifyPayment(ctx, bookingID, isApproved)
+	b, err := s.repository.VerifyPayment(ctx, ownerUserID, bookingID, isApproved)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
 		}
 		return BookingResponse{}, err
 	}
+	return toBookingResponse(b), nil
+}
+
+func (s *Service) MarkBookingPaid(ctx context.Context, ownerUserID, bookingID string) (BookingResponse, error) {
+	// 1. Ensure the owner actually owns this booking's venue
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrOwnerProfileNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	if ownerProfileID != profile.ID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	b, err := s.repository.MarkBookingPaid(ctx, ownerUserID, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingCannotBeMarkedPaid
+		}
+		return BookingResponse{}, err
+	}
+	return toBookingResponse(b), nil
+}
+
+func (s *Service) CompleteBooking(ctx context.Context, ownerUserID, bookingID string) (BookingResponse, error) {
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrOwnerProfileNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	if ownerProfileID != profile.ID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	b, err := s.repository.CompleteBooking(ctx, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingCannotBeCompleted
+		}
+		return BookingResponse{}, err
+	}
+	return toBookingResponse(b), nil
+}
+
+func (s *Service) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID, bookingID string, reason string) (BookingResponse, error) {
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrOwnerProfileNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	if ownerProfileID != profile.ID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	trimmedReason := strings.TrimSpace(reason)
+
+	b, err := s.repository.CancelPaidBookingWithRefund(ctx, profile.UserID, bookingID, trimmedReason)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrBookingNotFound
+		}
+		return BookingResponse{}, err
+	}
+
 	return toBookingResponse(b), nil
 }
 
@@ -286,6 +392,59 @@ func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerUserID, venue
 	}
 
 	return responses, total, nil
+}
+
+func normalizeOwnerBookingsQuery(req OwnerBookingsQuery) OwnerBookingsQuery {
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	return req
+}
+
+func (s *Service) ListOwnerBookings(ctx context.Context, ownerUserID string, req OwnerBookingsQuery) (OwnerBookingsResult, error) {
+	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return OwnerBookingsResult{}, ErrOwnerProfileNotFound
+		}
+		return OwnerBookingsResult{}, err
+	}
+
+	query := normalizeOwnerBookingsQuery(req)
+	
+	// Apply search trim and length logic
+	if query.Q != "" {
+		trimmedQ := strings.TrimSpace(query.Q)
+		if len(trimmedQ) >= 2 {
+			query.Q = trimmedQ
+		} else {
+			query.Q = ""
+		}
+	}
+
+	offset := (query.Page - 1) * query.Limit
+	bookings, total, err := s.repository.ListOwnerBookings(ctx, profile.ID, query, query.Limit, offset)
+	if err != nil {
+		return OwnerBookingsResult{}, err
+	}
+
+	responses := make([]OwnerBookingResponse, len(bookings))
+	for i, booking := range bookings {
+		responses[i] = toOwnerBookingResponse(booking)
+	}
+
+	totalPages := (total + query.Limit - 1) / query.Limit
+
+	return OwnerBookingsResult{
+		Data:       responses,
+		Page:       query.Page,
+		Limit:      query.Limit,
+		Total:      total,
+		TotalPages: totalPages,
+	}, nil
 }
 
 func (s *Service) CancelBooking(ctx context.Context, customerID, bookingID string) (BookingResponse, error) {
@@ -469,8 +628,11 @@ func (s *Service) GetOwnerMetrics(ctx context.Context, ownerUserID string, query
 		TotalVenues:          metrics.TotalVenues,
 		UpcomingBookings:     metrics.UpcomingBookings,
 		PendingVerifications: metrics.PendingVerifications,
-		RevenueCurrent:       metrics.RevenueCurrent,
-		RevenueAllTime:       metrics.RevenueAllTime,
+		RevenueCurrent:        metrics.RevenueCurrent,
+		BookingRevenueCurrent: metrics.BookingRevenueCurrent,
+		RefundCurrent:         metrics.RefundCurrent,
+		NetRevenueCurrent:     metrics.NetRevenueCurrent,
+		RevenueAllTime:        metrics.RevenueAllTime,
 		OccupancyRate:        metrics.OccupancyRate,
 	}, nil
 }

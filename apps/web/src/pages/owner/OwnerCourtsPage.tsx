@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { PageShell } from '../../components/layout/PageShell';
 import { useAuth } from '../../contexts/AuthContext';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { fetchOwnerVenueById, fetchOwnerCourtsByVenueId } from '../../lib/api';
 import type { OwnerVenueDetail } from '../../types/venue';
-import { Plus, MapPin } from 'lucide-react';
+import { Plus, MapPin, ArrowLeft, Info } from 'lucide-react';
 import { LoadingState } from '../../components/feedback/LoadingState';
 import { ErrorState } from '../../components/feedback/ErrorState';
 import { CourtModal } from '../../components/owner/CourtModal';
@@ -14,6 +14,7 @@ import { BlockedSlotsModal } from '../../components/owner/BlockedSlotsModal';
 export const OwnerCourtsPage: React.FC = () => {
   const { token } = useAuth();
   const { id: venueId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [venue, setVenue] = useState<OwnerVenueDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,10 +70,17 @@ export const OwnerCourtsPage: React.FC = () => {
       <div className="pt-24 pb-40 max-w-6xl mx-auto px-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-extrabold text-text-main mb-2">Kelola Lapangan</h1>
+            <button 
+              onClick={() => navigate('/owner/venues')}
+              className="flex items-center gap-1.5 text-text-muted hover:text-text-main text-sm font-bold mb-3 transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Kembali ke Manajemen Venue
+            </button>
+            <h1 className="text-3xl font-extrabold text-text-main mb-2">Pusat Kontrol Lapangan</h1>
             {venue && (
-              <p className="text-text-muted flex items-center gap-1.5 font-medium">
-                <MapPin className="w-4 h-4 text-primary" /> {venue.name}
+              <p className="text-text-muted flex items-center gap-1.5 font-medium text-sm">
+                <MapPin className="w-4 h-4 text-primary" /> {venue.name} - {venue.city}
               </p>
             )}
           </div>
@@ -85,6 +93,14 @@ export const OwnerCourtsPage: React.FC = () => {
           </button>
         </div>
 
+        <div className="mb-6 p-4 bg-blue-50/50 text-blue-800 rounded-xl flex items-start gap-3 border border-blue-100/50">
+          <Info className="w-5 h-5 shrink-0 mt-0.5" />
+          <p className="text-sm">
+            <strong className="block mb-1">Panduan Operasional:</strong>
+            Atur <b>Jam Operasional</b> untuk menentukan slot waktu yang bisa dipesan pelanggan. Gunakan <b>Blokir Slot</b> jika lapangan sedang dalam perbaikan atau disewa secara privat di luar sistem.
+          </p>
+        </div>
+
         {isLoading ? (
           <LoadingState message="Memuat daftar lapangan..." className="bg-white rounded-3xl" />
         ) : error ? (
@@ -92,10 +108,10 @@ export const OwnerCourtsPage: React.FC = () => {
         ) : !venue?.courts || venue.courts.length === 0 ? (
           <div className="bg-white rounded-3xl p-12 border border-border-main text-center shadow-sm">
             <h2 className="text-xl font-extrabold text-text-main mb-2">Belum Ada Lapangan</h2>
-            <p className="text-text-muted mb-6">Tambahkan lapangan baru untuk mulai menerima pesanan.</p>
+            <p className="text-text-muted mb-6">Tambahkan lapangan baru untuk mulai menerima pesanan di venue ini.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {venue.courts.map(court => (
               <div key={court.id} className="bg-white rounded-2xl border border-border-main p-5 shadow-sm flex flex-col hover:shadow-md transition-shadow">
                 <div className="flex justify-between items-start mb-1">
@@ -120,25 +136,28 @@ export const OwnerCourtsPage: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="mt-auto grid grid-cols-2 gap-2">
-                  <button 
-                    onClick={() => { setSelectedCourtForHours({ id: court.id, name: court.name }); setIsHoursModalOpen(true); }}
-                    className="w-full py-2 bg-blue-50 text-blue-700 font-bold rounded-xl text-xs hover:bg-blue-100 transition-colors border border-blue-100"
-                  >
-                    Jam Operasional
-                  </button>
-                  <button 
-                    onClick={() => { setSelectedCourtForBlocked({ id: court.id, name: court.name }); setIsBlockedModalOpen(true); }}
-                    className="w-full py-2 bg-red-50 text-red-700 font-bold rounded-xl text-xs hover:bg-red-100 transition-colors border border-red-100"
-                  >
-                    Blokir Slot
-                  </button>
+                <div className="mt-auto pt-4 border-t border-border-main/50 space-y-2">
+                  <div className="text-[10px] font-bold text-text-muted uppercase tracking-wider mb-2">Aksi Operasional</div>
                   <button 
                     onClick={() => { setSelectedCourt(court); setIsCourtModalOpen(true); }}
-                    className="col-span-2 w-full py-2 bg-gray-100 text-text-main font-bold rounded-xl text-xs hover:bg-gray-200 transition-colors border border-gray-200"
+                    className="w-full py-2 bg-gray-50 text-text-main font-bold rounded-xl text-xs hover:bg-gray-100 transition-colors border border-border-main/50 mb-2"
                   >
                     Edit Detail Lapangan
                   </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      onClick={() => { setSelectedCourtForHours({ id: court.id, name: court.name }); setIsHoursModalOpen(true); }}
+                      className="w-full py-2 bg-blue-50 text-blue-700 font-bold rounded-xl text-xs hover:bg-blue-100 transition-colors border border-blue-100"
+                    >
+                      Jam Operasional
+                    </button>
+                    <button 
+                      onClick={() => { setSelectedCourtForBlocked({ id: court.id, name: court.name }); setIsBlockedModalOpen(true); }}
+                      className="w-full py-2 bg-red-50 text-red-700 font-bold rounded-xl text-xs hover:bg-red-100 transition-colors border border-red-100"
+                    >
+                      Blokir Slot
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}

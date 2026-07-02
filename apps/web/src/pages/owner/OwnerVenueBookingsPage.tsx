@@ -40,7 +40,7 @@ export const OwnerVenueBookingsPage: React.FC = () => {
   };
 
   const setPage = (p: number) => updateParams({ page: p.toString() });
-  
+
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [modalState, setModalState] = useState<{ type: 'verify' | 'reject' | null, bookingId: string | null, isOpen: boolean, error?: string }>({ type: null, bookingId: null, isOpen: false });
 
@@ -84,7 +84,7 @@ export const OwnerVenueBookingsPage: React.FC = () => {
     }
   };
 
-	const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string) => {
     switch (status) {
       case 'PENDING_PAYMENT':
         return <span className="px-3 py-1 bg-yellow-100 text-yellow-800 text-xs font-bold rounded-full flex items-center gap-1"><AlertCircle className="w-3 h-3" /> Menunggu Pembayaran</span>;
@@ -119,8 +119,8 @@ export const OwnerVenueBookingsPage: React.FC = () => {
         <div className="bg-white p-4 rounded-2xl border border-border-main mb-8 shadow-sm flex flex-col sm:flex-row gap-4 items-end">
           <div className="flex-1 w-full">
             <label className="block text-sm font-bold text-text-main mb-2">Tanggal</label>
-            <input 
-              type="date" 
+            <input
+              type="date"
               className="w-full px-4 py-2.5 rounded-xl border border-border-main focus:ring-2 focus:ring-primary focus:border-primary transition-all outline-none"
               value={filterDate}
               onChange={(e) => {
@@ -130,7 +130,7 @@ export const OwnerVenueBookingsPage: React.FC = () => {
           </div>
           <div className="flex-1 w-full">
             <label className="block text-sm font-bold text-text-main mb-2">Status</label>
-            <select 
+            <select
               className="w-full px-4 py-2.5 rounded-xl border border-border-main focus:ring-2 focus:ring-primary focus:border-primary transition-all outline-none bg-white"
               value={filterStatus}
               onChange={(e) => {
@@ -140,7 +140,6 @@ export const OwnerVenueBookingsPage: React.FC = () => {
               <option value="">Semua Status</option>
               <option value="PENDING_PAYMENT">Menunggu Pembayaran</option>
               <option value="WAITING_VERIFICATION">Menunggu Verifikasi</option>
-              <option value="CONFIRMED">Dikonfirmasi</option>
               <option value="PAID">Lunas</option>
               <option value="COMPLETED">Selesai</option>
               <option value="CANCELLED">Dibatalkan</option>
@@ -164,68 +163,68 @@ export const OwnerVenueBookingsPage: React.FC = () => {
           <>
             <div className="space-y-6">
               {bookings.map((booking) => {
-              const courtLabel = booking.court.name;
+                const courtLabel = booking.court.name;
 
-              return (
-                <div key={booking.id} className="bg-white rounded-2xl p-6 md:p-8 border border-border-main shadow-sm hover:shadow-md transition-shadow">
-                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-6 pb-6 border-b border-border-main">
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        {getStatusBadge(booking.status)}
-                        <span className="text-xs text-text-muted font-medium">ID: {booking.id.substring(0, 8).toUpperCase()}</span>
-                      </div>
-                      <h2 className="text-xl font-extrabold text-text-main mb-1">{booking.customer.name}</h2>
-                      <p className="text-sm text-text-muted mb-2">
-                        {booking.customer.email} | ID: {booking.customer.id.substring(0, 8)}
-                      </p>
-                      <div className="flex items-center gap-1.5 text-text-muted text-sm font-medium">
-                        <MapPin className="w-4 h-4 text-primary" />
-                        <span>{booking.venue.name} - {courtLabel}</span>
-                      </div>
-                    </div>
-                    <div className="text-left md:text-right">
-                      <p className="text-sm font-bold text-text-muted mb-1">Total Pendapatan</p>
-                      <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col md:flex-row justify-between items-start gap-6">
-                    <div className="flex gap-6">
+                return (
+                  <div key={booking.id} className="bg-white rounded-2xl p-6 md:p-8 border border-border-main shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-6 pb-6 border-b border-border-main">
                       <div>
-                        <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Tanggal Main</p>
-                        <p className="text-[15px] font-bold text-text-main">{formatDate(booking.booking_date)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Waktu</p>
-                        <p className="text-[15px] font-bold text-text-main">{booking.start_time} - {booking.end_time}</p>
-                      </div>
-                    </div>
-
-                    {booking.status === 'WAITING_VERIFICATION' && (
-                      <div className="w-full md:w-auto p-4 bg-background-base rounded-2xl border border-border-main">
-                        <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1">Referensi Pembayaran</p>
-                        <p className="text-sm font-bold text-text-main mb-3">{booking.payment_reference || '-'}</p>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setModalState({ type: 'verify', bookingId: booking.id, isOpen: true })}
-                            disabled={actionLoading !== null}
-                            className="flex-1 px-4 py-2 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary/90 transition-colors"
-                          >
-                            Terima
-                          </button>
-                          <button
-                            onClick={() => setModalState({ type: 'reject', bookingId: booking.id, isOpen: true })}
-                            disabled={actionLoading !== null}
-                            className="flex-1 px-4 py-2 bg-red-50 text-red-600 text-sm font-bold rounded-xl hover:bg-red-100 transition-colors"
-                          >
-                            Tolak
-                          </button>
+                        <div className="flex items-center gap-2 mb-2">
+                          {getStatusBadge(booking.status)}
+                          <span className="text-xs text-text-muted font-medium">ID: {booking.id.substring(0, 8).toUpperCase()}</span>
+                        </div>
+                        <h2 className="text-xl font-extrabold text-text-main mb-1">{booking.customer.name}</h2>
+                        <p className="text-sm text-text-muted mb-2">
+                          {booking.customer.email} | ID: {booking.customer.id.substring(0, 8)}
+                        </p>
+                        <div className="flex items-center gap-1.5 text-text-muted text-sm font-medium">
+                          <MapPin className="w-4 h-4 text-primary" />
+                          <span>{booking.venue.name} - {courtLabel}</span>
                         </div>
                       </div>
-                    )}
+                      <div className="text-left md:text-right">
+                        <p className="text-sm font-bold text-text-muted mb-1">Total Pendapatan</p>
+                        <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row justify-between items-start gap-6">
+                      <div className="flex gap-6">
+                        <div>
+                          <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Tanggal Main</p>
+                          <p className="text-[15px] font-bold text-text-main">{formatDate(booking.booking_date)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Waktu</p>
+                          <p className="text-[15px] font-bold text-text-main">{booking.start_time} - {booking.end_time}</p>
+                        </div>
+                      </div>
+
+                      {booking.status === 'WAITING_VERIFICATION' && (
+                        <div className="w-full md:w-auto p-4 bg-background-base rounded-2xl border border-border-main">
+                          <p className="text-xs font-bold text-text-muted mb-1 flex items-center gap-1">Referensi Pembayaran</p>
+                          <p className="text-sm font-bold text-text-main mb-3">{booking.payment_reference || '-'}</p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setModalState({ type: 'verify', bookingId: booking.id, isOpen: true })}
+                              disabled={actionLoading !== null}
+                              className="flex-1 px-4 py-2 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary/90 transition-colors"
+                            >
+                              Terima
+                            </button>
+                            <button
+                              onClick={() => setModalState({ type: 'reject', bookingId: booking.id, isOpen: true })}
+                              disabled={actionLoading !== null}
+                              className="flex-1 px-4 py-2 bg-red-50 text-red-600 text-sm font-bold rounded-xl hover:bg-red-100 transition-colors"
+                            >
+                              Tolak
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
+                );
               })}
             </div>
             <Pagination
@@ -248,7 +247,7 @@ export const OwnerVenueBookingsPage: React.FC = () => {
         onCancel={() => setModalState({ type: null, bookingId: null, isOpen: false })}
         isLoading={actionLoading !== null}
       />
-      
+
       {modalState.error && (
         <ConfirmModal
           isOpen={!!modalState.error}

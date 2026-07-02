@@ -92,7 +92,7 @@ func TestService_CreateOpenMatch_Success(t *testing.T) {
 	repo := &mockRepo{
 		bookingInfo: mabar.BookingInfo{
 			CustomerID: "user-1",
-			Status:     "CONFIRMED",
+			Status:     "PAID",
 			Date:       time.Now().Add(24 * time.Hour),
 			StartTime:  time.Now().Add(24 * time.Hour),
 		},
@@ -222,7 +222,7 @@ func TestService_JoinOpenMatch_Success(t *testing.T) {
 			MaxPlayers: 10,
 		},
 		joinCtx: mabar.OpenMatchJoinContext{
-			BookingStatus: "CONFIRMED",
+			BookingStatus: "PAID",
 			MatchStatus:   "OPEN",
 			MatchDate:     time.Now().Add(24 * time.Hour),
 			StartTime:     time.Now().Add(24 * time.Hour),
@@ -353,7 +353,7 @@ func TestService_JoinOpenMatch_BookingNotConfirmed(t *testing.T) {
 			Status:     "OPEN",
 		},
 		joinCtx: mabar.OpenMatchJoinContext{
-			BookingStatus: "CANCELLED", // Or any non-CONFIRMED status
+			BookingStatus: "WAITING_VERIFICATION", // Or any non-PAID/non-CONFIRMED status
 		},
 	}
 	svc := mabar.NewService(repo)

@@ -5,7 +5,7 @@ import { Button } from './Button';
 interface ConfirmModalProps {
   isOpen: boolean;
   title: string;
-  message: string;
+  message: React.ReactNode;
   confirmText?: string;
   cancelText?: string;
   onConfirm: () => void;
@@ -45,9 +45,9 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </div>
           
           <h3 className="text-xl font-bold text-text-main mb-2">{title}</h3>
-          <p className="text-text-muted text-sm leading-relaxed mb-6">
+          <div className="text-text-muted text-sm leading-relaxed mb-6">
             {message}
-          </p>
+          </div>
 
           <div className="flex gap-3">
             <Button 

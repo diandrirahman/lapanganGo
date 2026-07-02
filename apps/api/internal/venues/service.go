@@ -90,6 +90,10 @@ func normalizeListPublicVenuesQuery(req ListPublicVenuesQuery) (ListPublicVenues
 	if req.Page <= 0 {
 		req.Page = 1
 	}
+	req.Q = strings.TrimSpace(req.Q)
+	if len(req.Q) < 2 {
+		req.Q = ""
+	}
 	offset := (req.Page - 1) * req.Limit
 	return req, offset
 }

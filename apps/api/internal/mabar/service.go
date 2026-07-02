@@ -12,7 +12,7 @@ import (
 var (
 	ErrUnauthorized            = errors.New("unauthorized action")
 	ErrBookingNotFound         = errors.New("booking not found")
-	ErrBookingInvalid          = errors.New("booking is not confirmed or cancelled")
+	ErrBookingInvalid          = errors.New("Booking harus sudah lunas/dikonfirmasi untuk membuat mabar.")
 	ErrBookingPassed           = errors.New("booking time has already passed")
 	ErrMatchAlreadyExists      = errors.New("open match already exists for this booking")
 	ErrMatchPassed             = errors.New("match time has already passed")
@@ -23,7 +23,7 @@ var (
 	ErrNotJoined               = errors.New("user is not joined to this match")
 	ErrInvalidLevel            = errors.New("invalid level")
 	ErrBookingCancelled        = errors.New("booking for this open match is cancelled")
-	ErrBookingNotConfirmed     = errors.New("booking for this open match is not confirmed")
+	ErrBookingNotConfirmed     = errors.New("Booking harus sudah lunas/dikonfirmasi untuk join mabar.")
 	ErrInvalidTitle            = errors.New("title is required")
 	ErrInvalidMaxPlayers       = errors.New("max_players must be greater than 0")
 	ErrInvalidPricePerPlayer   = errors.New("price_per_player cannot be negative")
@@ -100,7 +100,7 @@ func (s *Service) CreateOpenMatch(ctx context.Context, bookingID, userID string,
 	if b.CustomerID != userID {
 		return OpenMatchResponse{}, ErrUnauthorized
 	}
-	if b.Status != "CONFIRMED" {
+	if b.Status != "CONFIRMED" && b.Status != "PAID" {
 		return OpenMatchResponse{}, ErrBookingInvalid
 	}
 
@@ -217,7 +217,7 @@ func (s *Service) JoinOpenMatch(ctx context.Context, openMatchID, userID string)
 			return err
 		}
 
-		if joinCtx.BookingStatus != "CONFIRMED" {
+		if joinCtx.BookingStatus != "CONFIRMED" && joinCtx.BookingStatus != "PAID" {
 			return ErrBookingNotConfirmed
 		}
 

@@ -41,7 +41,7 @@ export interface Booking {
   start_time: string;
   end_time: string;
   total_price: number;
-  status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION';
+  status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
   created_at: string;
   updated_at: string;
@@ -61,7 +61,7 @@ export interface OwnerBooking {
   start_time: string;
   end_time: string;
   total_price: number;
-  status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION';
+  status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
   created_at: string;
   updated_at: string;

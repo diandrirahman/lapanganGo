@@ -5,7 +5,7 @@ import { fetchVenues, fetchSports, fetchFacilities } from '../lib/api';
 import type { Venue } from '../types/venue';
 import { VenueCard } from '../components/VenueCard';
 import { Pagination } from '../components/ui/Pagination';
-import { MapPin, X } from 'lucide-react';
+import { MapPin, X, Search } from 'lucide-react';
 import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
 import { EmptyState } from '../components/feedback/EmptyState';
@@ -28,6 +28,7 @@ export const VenuesSearchPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const page = parseInt(searchParams.get('page') || '1', 10);
+  const q = searchParams.get('q') || '';
   const city = searchParams.get('city') || '';
   const minPrice = searchParams.get('minPrice') || '';
   const maxPrice = searchParams.get('maxPrice') || '';
@@ -51,6 +52,7 @@ export const VenuesSearchPage: React.FC = () => {
   };
 
   const setPage = (p: number) => updateParams({ page: p.toString() });
+  const setQ = (value: string) => updateParams({ q: value, page: '1' });
   const setCity = (c: string) => updateParams({ city: c, page: '1' });
   const setMinPrice = (p: string) => updateParams({ minPrice: p, page: '1' });
   const setMaxPrice = (p: string) => updateParams({ maxPrice: p, page: '1' });
@@ -68,6 +70,7 @@ export const VenuesSearchPage: React.FC = () => {
     fetchFacilities().then(setFacilities).catch(console.error);
   }, []);
 
+  const debouncedQ = useDebounce(q, 500);
   const debouncedCity = useDebounce(city, 500);
   const debouncedMinPrice = useDebounce(minPrice, 500);
   const debouncedMaxPrice = useDebounce(maxPrice, 500);
@@ -78,6 +81,7 @@ export const VenuesSearchPage: React.FC = () => {
       setIsLoading(true);
       setError(null);
       const data = await fetchVenues(page, 20, {
+        q: debouncedQ || undefined,
         city: debouncedCity || undefined,
         sport_id: debouncedSportId || undefined,
         facility_ids: facilityIds.length > 0 ? facilityIds : undefined,
@@ -91,7 +95,7 @@ export const VenuesSearchPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedCity, debouncedMinPrice, debouncedMaxPrice, debouncedSportId, facilityIds, page]);
+  }, [debouncedQ, debouncedCity, debouncedMinPrice, debouncedMaxPrice, debouncedSportId, facilityIds, page]);
 
 
 
@@ -120,7 +124,32 @@ export const VenuesSearchPage: React.FC = () => {
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+            {/* Search Q Filter */}
+            <div className="flex flex-col gap-1.5 md:col-span-2">
+              <label className="text-sm font-bold text-text-main">Nama Venue</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <Search className="w-4 h-4 text-text-muted" />
+                </div>
+                <input
+                  type="text"
+                  placeholder="Cari nama venue, kota, atau alamat"
+                  className="w-full pl-10 pr-10 py-3 rounded-xl border border-border-main focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all text-sm font-medium bg-bg-main"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                />
+                {q && (
+                  <button 
+                    onClick={() => setQ('')}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-text-muted hover:text-text-main transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* City Filter */}
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-bold text-text-main">Kota</label>
@@ -221,7 +250,7 @@ export const VenuesSearchPage: React.FC = () => {
           <ErrorState message={error} onRetry={loadVenues} />
         ) : venues.length === 0 ? (
           <EmptyState 
-            title="Tidak Ada Hasil" 
+            title="Venue Tidak Ditemukan" 
             description="Tidak ditemukan venue yang cocok dengan kriteria pencarian Anda."
           />
         ) : (

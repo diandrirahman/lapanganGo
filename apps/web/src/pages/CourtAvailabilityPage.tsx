@@ -7,7 +7,7 @@ import { ErrorState } from '../components/feedback/ErrorState';
 import { fetchCourtAvailability, createBooking, fetchVenueById } from '../lib/api';
 import type { AvailabilitySlot } from '../types/booking';
 import type { VenueDetail } from '../types/venue';
-import { Calendar, Clock, MapPin, CheckCircle2 } from 'lucide-react';
+import { Calendar, Clock, MapPin, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 export const CourtAvailabilityPage: React.FC = () => {
@@ -100,8 +100,8 @@ export const CourtAvailabilityPage: React.FC = () => {
       return;
     }
 
-    if (user?.role !== 'CUSTOMER') {
-      setError('Hanya akun customer yang dapat membuat pesanan lapangan.');
+    if (user?.role === 'OWNER') {
+      toast.error('Gunakan akun customer untuk membuat booking.');
       return;
     }
 
@@ -198,6 +198,16 @@ export const CourtAvailabilityPage: React.FC = () => {
             ) : (
               <div className="bg-white rounded-2xl p-6 md:p-8 border border-border-main shadow-sm">
                 
+                {!isCustomerAccount && (
+                  <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-800 text-sm">
+                    <p className="font-bold flex items-center gap-2 mb-1">
+                      <AlertCircle className="w-4 h-4" />
+                      Akses Terbatas
+                    </p>
+                    <p>Booking hanya tersedia untuk akun customer. Gunakan akun customer untuk membuat booking.</p>
+                  </div>
+                )}
+
                 {/* Legend */}
                 <div className="flex items-center gap-6 mb-6 pb-6 border-b border-border-main flex-wrap">
                   <div className="flex items-center gap-2">

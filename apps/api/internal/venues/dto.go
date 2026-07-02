@@ -35,6 +35,7 @@ type UpdateVenueStatusRequest struct {
 type ListPublicVenuesQuery struct {
 	Limit       int      `form:"limit" binding:"omitempty,min=1,max=50"`
 	Page        int      `form:"page" binding:"omitempty,min=1"`
+	Q           string   `form:"q" binding:"omitempty,max=100"`
 	City        string   `form:"city" binding:"omitempty,max=100"`
 	SportID     string   `form:"sport_id" binding:"omitempty,uuid"`
 	FacilityIDs []string `form:"facility_ids" binding:"omitempty,dive,uuid"`

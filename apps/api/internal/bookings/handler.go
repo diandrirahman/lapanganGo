@@ -28,8 +28,12 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 
 func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
 	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
+	ownerGroup.GET("/bookings", h.ListOwnerBookings)
 	ownerGroup.GET("/venues/:id/bookings", h.ListOwnerVenueBookings)
 	ownerGroup.PATCH("/bookings/:id/verify-payment", h.VerifyPayment)
+	ownerGroup.PATCH("/bookings/:id/mark-paid", h.MarkBookingPaid)
+	ownerGroup.PATCH("/bookings/:id/complete", h.CompleteBooking)
+	ownerGroup.PATCH("/bookings/:id/cancel-refund", h.CancelPaidBookingWithRefund)
 	ownerGroup.GET("/metrics", h.GetOwnerMetrics)
 }
 
@@ -284,15 +288,71 @@ func (h *Handler) VerifyPayment(c *gin.Context) {
 	})
 }
 
+func (h *Handler) MarkBookingPaid(c *gin.Context) {
+	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	bookingID := c.Param("id")
+	if !httputil.IsUUID(bookingID) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
+		return
+	}
+
+	booking, err := h.service.MarkBookingPaid(c.Request.Context(), ownerUserID, bookingID)
+	if err != nil {
+		respondBookingError(c, err, "Failed to mark booking as paid")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Booking marked as paid successfully",
+		"booking": booking,
+	})
+}
+
+func (h *Handler) CompleteBooking(c *gin.Context) {
+	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	bookingID := c.Param("id")
+	if !httputil.IsUUID(bookingID) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
+		return
+	}
+
+	booking, err := h.service.CompleteBooking(c.Request.Context(), ownerUserID, bookingID)
+	if err != nil {
+		respondBookingError(c, err, "Failed to complete booking")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Booking completed successfully",
+		"booking": booking,
+	})
+}
+
 func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	switch {
 	case errors.Is(err, ErrPastDate), errors.Is(err, ErrInvalidTimeRange):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-	case errors.Is(err, ErrCourtInactive), errors.Is(err, ErrVenueInactive):
+	case errors.Is(err, ErrCourtInactive), errors.Is(err, ErrVenueInactive), errors.Is(err, ErrOutsideOpHours):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-	case errors.Is(err, ErrOutsideOpHours):
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-	case errors.Is(err, ErrOverlapBlockedSlot), errors.Is(err, ErrOverlapBooking), errors.Is(err, ErrBookingAlreadyCancelled), errors.Is(err, ErrBookingCannotBeCancelled), errors.Is(err, ErrBookingAlreadyConfirmed), errors.Is(err, ErrBookingCannotBeConfirmed):
+	case errors.Is(err, ErrOverlapBlockedSlot), errors.Is(err, ErrOverlapBooking):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrBookingCannotBeMarkedPaid), errors.Is(err, ErrBookingCannotBeCompleted):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrBookingCannotBeRefunded),
+		errors.Is(err, ErrBookingRefundAlreadyExists),
+		errors.Is(err, ErrBookingIncomeLedgerNotFound):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrBookingAlreadyCancelled), errors.Is(err, ErrBookingCannotBeCancelled), errors.Is(err, ErrBookingAlreadyConfirmed), errors.Is(err, ErrBookingCannotBeConfirmed):
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrForbidden):
 		c.JSON(http.StatusForbidden, gin.H{"message": err.Error()})
@@ -307,4 +367,64 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage})
 	}
+}
+
+func (h *Handler) ListOwnerBookings(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	var req OwnerBookingsQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	result, err := h.service.ListOwnerBookings(c.Request.Context(), userID, req)
+	if err != nil {
+		if errors.Is(err, ErrOwnerProfileNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *Handler) CancelPaidBookingWithRefund(c *gin.Context) {
+	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	bookingID := c.Param("id")
+	if !httputil.IsUUID(bookingID) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid booking ID format"})
+		return
+	}
+
+	var req OwnerCancelRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid request payload",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	booking, err := h.service.CancelPaidBookingWithRefund(c.Request.Context(), ownerUserID, bookingID, req.Reason)
+	if err != nil {
+		respondBookingError(c, err, "Failed to cancel and refund booking")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Booking cancelled and refund recorded successfully",
+		"booking": booking,
+	})
 }

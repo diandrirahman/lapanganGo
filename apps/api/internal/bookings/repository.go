@@ -499,13 +499,19 @@ func (r *Repository) UpdatePaymentReference(ctx context.Context, bookingID, cust
 	return b, nil
 }
 
-func (r *Repository) VerifyPayment(ctx context.Context, bookingID string, isApproved bool) (Booking, error) {
+func (r *Repository) VerifyPayment(ctx context.Context, ownerUserID string, bookingID string, isApproved bool) (Booking, error) {
 	var newStatus string
 	if isApproved {
-		newStatus = "CONFIRMED"
+		newStatus = "PAID"
 	} else {
 		newStatus = "PENDING_PAYMENT"
 	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Booking{}, err
+	}
+	defer tx.Rollback(ctx)
 
 	query := `
 		UPDATE bookings
@@ -515,7 +521,7 @@ func (r *Repository) VerifyPayment(ctx context.Context, bookingID string, isAppr
 		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
 	var b Booking
-	err := r.db.QueryRow(ctx, query, bookingID, newStatus).Scan(
+	err = tx.QueryRow(ctx, query, bookingID, newStatus).Scan(
 		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
 		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
 	)
@@ -525,6 +531,261 @@ func (r *Repository) VerifyPayment(ctx context.Context, bookingID string, isAppr
 		}
 		return b, err
 	}
+
+	if isApproved {
+		// Insert or Upsert to owner_finance_transactions
+		financeQuery := `
+			INSERT INTO owner_finance_transactions 
+				(owner_id, venue_id, booking_id, created_by_user_id, type, source, category, amount, transaction_date, description)
+			SELECT 
+				op.user_id,
+				v.id,
+				b.id,
+				$2,
+				'INCOME',
+				'BOOKING',
+				'BOOKING_PAYMENT',
+				b.total_price,
+				CURRENT_DATE,
+				'Pembayaran booking ' || b.id
+			FROM bookings b
+			JOIN courts c ON c.id = b.court_id
+			JOIN venues v ON v.id = c.venue_id
+			JOIN owner_profiles op ON v.owner_profile_id = op.id
+			WHERE b.id = $1
+			ON CONFLICT (booking_id) WHERE source = 'BOOKING' AND booking_id IS NOT NULL DO NOTHING
+		`
+		_, err = tx.Exec(ctx, financeQuery, bookingID, ownerUserID)
+		if err != nil {
+			return b, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return b, err
+	}
+
+	return b, nil
+}
+
+func (r *Repository) MarkBookingPaid(ctx context.Context, ownerUserID string, bookingID string) (Booking, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Booking{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		UPDATE bookings
+		SET status = 'PAID',
+		    updated_at = now()
+		WHERE id = $1 AND status = 'CONFIRMED'
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+	`
+	var b Booking
+	err = tx.QueryRow(ctx, query, bookingID).Scan(
+		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
+		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return b, pgx.ErrNoRows
+		}
+		return b, err
+	}
+
+	financeQuery := `
+		INSERT INTO owner_finance_transactions 
+			(owner_id, venue_id, booking_id, created_by_user_id, type, source, category, amount, transaction_date, description)
+		SELECT 
+			op.user_id,
+			v.id,
+			b.id,
+			$2,
+			'INCOME',
+			'BOOKING',
+			'BOOKING_PAYMENT',
+			b.total_price,
+			CURRENT_DATE,
+			'Pembayaran booking ' || b.id
+		FROM bookings b
+		JOIN courts c ON c.id = b.court_id
+		JOIN venues v ON v.id = c.venue_id
+		JOIN owner_profiles op ON v.owner_profile_id = op.id
+		WHERE b.id = $1
+		ON CONFLICT (booking_id) WHERE source = 'BOOKING' AND booking_id IS NOT NULL DO NOTHING
+	`
+	_, err = tx.Exec(ctx, financeQuery, bookingID, ownerUserID)
+	if err != nil {
+		return b, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return b, err
+	}
+
+	return b, nil
+}
+
+func (r *Repository) CompleteBooking(ctx context.Context, bookingID string) (Booking, error) {
+	query := `
+		UPDATE bookings
+		SET status = 'COMPLETED', updated_at = now()
+		WHERE id = $1
+		  AND status = 'PAID'
+		  AND (
+		    booking_date < (NOW() AT TIME ZONE 'Asia/Jakarta')::DATE
+		    OR (
+		      booking_date = (NOW() AT TIME ZONE 'Asia/Jakarta')::DATE 
+		      AND end_time <= (NOW() AT TIME ZONE 'Asia/Jakarta')::TIME
+		    )
+		  )
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+	`
+	var b Booking
+	err := r.db.QueryRow(ctx, query, bookingID).Scan(
+		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
+		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
+	)
+	if err != nil {
+		return b, err
+	}
+	return b, nil
+}
+
+func (r *Repository) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Booking{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock the target booking row
+	lockQuery := `
+		SELECT
+			b.id::text,
+			b.customer_id::text,
+			b.court_id::text,
+			b.booking_date,
+			b.start_time,
+			b.end_time,
+			b.total_price,
+			b.status,
+			b.payment_reference,
+			b.expires_at,
+			b.created_at,
+			b.updated_at,
+			v.id::text AS venue_id,
+			op.user_id::text AS owner_user_id
+		FROM bookings b
+		JOIN courts c ON c.id = b.court_id
+		JOIN venues v ON v.id = c.venue_id
+		JOIN owner_profiles op ON op.id = v.owner_profile_id
+		WHERE b.id = $1
+		FOR UPDATE
+	`
+	var b Booking
+	var venueID string
+	var dbOwnerUserID string
+	err = tx.QueryRow(ctx, lockQuery, bookingID).Scan(
+		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
+		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
+		&venueID, &dbOwnerUserID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return b, pgx.ErrNoRows
+		}
+		return b, err
+	}
+
+	// 2. Validate ownership
+	if dbOwnerUserID != ownerUserID {
+		return b, ErrForbidden
+	}
+
+	// 3. Validate status
+	if b.Status != "PAID" {
+		return b, ErrBookingCannotBeRefunded
+	}
+
+	// 4. Ensure original booking income ledger exists
+	var hasIncome bool
+	incomeQuery := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM owner_finance_transactions
+			WHERE booking_id = $1
+			  AND source = 'BOOKING'
+			  AND type = 'INCOME'
+		)
+	`
+	err = tx.QueryRow(ctx, incomeQuery, bookingID).Scan(&hasIncome)
+	if err != nil {
+		return b, err
+	}
+	if !hasIncome {
+		return b, ErrBookingIncomeLedgerNotFound
+	}
+
+	// 5. Prevent duplicate refund ledger
+	var hasRefund bool
+	refundQuery := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM owner_finance_transactions
+			WHERE booking_id = $1
+			  AND source = 'REFUND'
+			  AND type = 'EXPENSE'
+		)
+	`
+	err = tx.QueryRow(ctx, refundQuery, bookingID).Scan(&hasRefund)
+	if err != nil {
+		return b, err
+	}
+	if hasRefund {
+		return b, ErrBookingRefundAlreadyExists
+	}
+
+	// 6. Update booking
+	updateQuery := `
+		UPDATE bookings
+		SET status = 'CANCELLED',
+		    updated_at = now()
+		WHERE id = $1
+		  AND status = 'PAID'
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+	`
+	err = tx.QueryRow(ctx, updateQuery, bookingID).Scan(
+		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
+		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
+	)
+	if err != nil {
+		return b, err
+	}
+
+	// 7. Insert refund ledger
+	description := "Refund booking " + bookingID
+	if reason != "" {
+		description += ": " + reason
+	}
+
+	insertRefundQuery := `
+		INSERT INTO owner_finance_transactions
+		  (owner_id, venue_id, booking_id, created_by_user_id, type, source, category, amount, transaction_date, description)
+		VALUES
+		  ($1, $2, $3, $4, 'EXPENSE', 'REFUND', 'BOOKING_REFUND', $5, CURRENT_DATE, $6)
+	`
+	_, err = tx.Exec(ctx, insertRefundQuery, ownerUserID, venueID, bookingID, ownerUserID, b.TotalPrice, description)
+	if err != nil {
+		return b, err
+	}
+
+	// 8. Commit
+	if err := tx.Commit(ctx); err != nil {
+		return b, err
+	}
+
 	return b, nil
 }
 
@@ -551,9 +812,12 @@ type OwnerMetrics struct {
 	TotalVenues          int
 	UpcomingBookings     int
 	PendingVerifications int
-	RevenueCurrent       float64
-	RevenueAllTime       float64
-	OccupancyRate        float64
+	RevenueCurrent        float64
+	BookingRevenueCurrent float64
+	RefundCurrent         float64
+	NetRevenueCurrent     float64
+	RevenueAllTime        float64
+	OccupancyRate         float64
 }
 
 func (r *Repository) GetOwnerMetrics(ctx context.Context, ownerProfileID string, startDate string, endDate string) (OwnerMetrics, error) {
@@ -594,40 +858,57 @@ func (r *Repository) GetOwnerMetrics(ctx context.Context, ownerProfileID string,
 
 	// 3. Revenue All Time
 	err = r.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(b.total_price), 0)
-		FROM bookings b 
-		JOIN courts c ON b.court_id = c.id 
-		JOIN venues v ON c.venue_id = v.id 
-		WHERE v.owner_profile_id = $1 
-		  AND b.status IN ('CONFIRMED', 'PAID', 'COMPLETED')
+		SELECT COALESCE(SUM(t.amount), 0)
+		FROM owner_profiles op
+		LEFT JOIN owner_finance_transactions t ON t.owner_id = op.user_id
+		  AND t.type = 'INCOME'
+		  AND t.source = 'BOOKING'
+		WHERE op.id = $1
 	`, ownerProfileID).Scan(&metrics.RevenueAllTime)
 	if err != nil {
 		return metrics, err
 	}
 
-	// 4. Revenue Current
-	revenueCurrentQuery := `
-		SELECT COALESCE(SUM(b.total_price), 0)
-		FROM bookings b 
-		JOIN courts c ON b.court_id = c.id 
-		JOIN venues v ON c.venue_id = v.id 
-		WHERE v.owner_profile_id = $1 
-		  AND b.status IN ('CONFIRMED', 'PAID', 'COMPLETED')
+	// 4. Revenue Current (Booking Income)
+	bookingRevenueQuery := `
+		SELECT COALESCE(SUM(t.amount), 0)
+		FROM owner_profiles op
+		LEFT JOIN owner_finance_transactions t ON t.owner_id = op.user_id
+		  AND t.type = 'INCOME'
+		  AND t.source = 'BOOKING'
 	`
+	// 5. Refund Current
+	refundQuery := `
+		SELECT COALESCE(SUM(t.amount), 0)
+		FROM owner_profiles op
+		LEFT JOIN owner_finance_transactions t ON t.owner_id = op.user_id
+		  AND t.type = 'EXPENSE'
+		  AND t.source = 'REFUND'
+	`
+
 	var args []interface{}
 	args = append(args, ownerProfileID)
-
+	
+	condition := ` WHERE op.id = $1`
 	if startDate != "" && endDate != "" {
-		revenueCurrentQuery += ` AND b.booking_date >= $2 AND b.booking_date <= $3`
+		condition += ` AND t.transaction_date >= $2 AND t.transaction_date <= $3`
 		args = append(args, startDate, endDate)
 	} else {
-		revenueCurrentQuery += ` AND date_trunc('month', b.booking_date) = date_trunc('month', CURRENT_DATE)`
+		condition += ` AND date_trunc('month', t.transaction_date) = date_trunc('month', CURRENT_DATE)`
 	}
 
-	err = r.db.QueryRow(ctx, revenueCurrentQuery, args...).Scan(&metrics.RevenueCurrent)
+	err = r.db.QueryRow(ctx, bookingRevenueQuery+condition, args...).Scan(&metrics.BookingRevenueCurrent)
 	if err != nil {
 		return metrics, err
 	}
+	metrics.RevenueCurrent = metrics.BookingRevenueCurrent
+
+	err = r.db.QueryRow(ctx, refundQuery+condition, args...).Scan(&metrics.RefundCurrent)
+	if err != nil {
+		return metrics, err
+	}
+
+	metrics.NetRevenueCurrent = metrics.BookingRevenueCurrent - metrics.RefundCurrent
 
 	// TODO: Occupancy rate calculation requires a separate batch analytics process
 	// to calculate the ratio of booked slots vs total available slots.
@@ -650,4 +931,126 @@ func (r *Repository) CancelExpiredPendingBookings(ctx context.Context) (int64, e
 		return 0, err
 	}
 	return cmdTag.RowsAffected(), nil
+}
+
+func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID string, query OwnerBookingsQuery, limit, offset int) ([]OwnerBooking, int, error) {
+	countQuery := `
+		SELECT count(*)
+		FROM bookings b
+		JOIN users u ON u.id = b.customer_id
+		JOIN courts c ON c.id = b.court_id
+		JOIN venues v ON v.id = c.venue_id
+		WHERE v.owner_profile_id = $1
+			AND ($2 = '' OR v.id::text = $2)
+			AND ($3 = '' OR b.status = $3)
+			AND ($4 = '' OR ($4 = 'upcoming' AND b.booking_date >= CURRENT_DATE AND b.status NOT IN ('CANCELLED', 'COMPLETED')))
+			AND ($5 = '' OR b.booking_date >= NULLIF($5, '')::date)
+			AND ($6 = '' OR b.booking_date <= NULLIF($6, '')::date)
+			AND ($7 = '' OR (
+				u.name ILIKE '%' || $7 || '%' OR
+				u.email ILIKE '%' || $7 || '%' OR
+				v.name ILIKE '%' || $7 || '%' OR
+				c.name ILIKE '%' || $7 || '%' OR
+				b.id::text ILIKE '%' || $7 || '%'
+			))
+	`
+	var total int
+	if err := r.db.QueryRow(ctx, countQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	orderClause := "ORDER BY b.created_at DESC"
+	switch query.Sort {
+	case "oldest":
+		orderClause = "ORDER BY b.created_at ASC"
+	case "date_asc":
+		orderClause = "ORDER BY b.booking_date ASC, b.start_time ASC"
+	case "date_desc":
+		orderClause = "ORDER BY b.booking_date DESC, b.start_time DESC"
+	case "newest":
+		fallthrough
+	default:
+		orderClause = "ORDER BY b.created_at DESC"
+	}
+
+	sqlQuery := `
+		SELECT
+			b.id::text,
+			u.id::text,
+			u.name,
+			u.email,
+			u.phone,
+			v.id::text,
+			v.name,
+			c.id::text,
+			c.name,
+			b.booking_date,
+			b.start_time,
+			b.end_time,
+			b.total_price,
+			b.status,
+			b.payment_reference,
+			b.expires_at,
+			b.created_at,
+			b.updated_at
+		FROM bookings b
+		JOIN users u ON u.id = b.customer_id
+		JOIN courts c ON c.id = b.court_id
+		JOIN venues v ON v.id = c.venue_id
+		WHERE v.owner_profile_id = $1
+			AND ($2 = '' OR v.id::text = $2)
+			AND ($3 = '' OR b.status = $3)
+			AND ($4 = '' OR ($4 = 'upcoming' AND b.booking_date >= CURRENT_DATE AND b.status NOT IN ('CANCELLED', 'COMPLETED')))
+			AND ($5 = '' OR b.booking_date >= NULLIF($5, '')::date)
+			AND ($6 = '' OR b.booking_date <= NULLIF($6, '')::date)
+			AND ($7 = '' OR (
+				u.name ILIKE '%' || $7 || '%' OR
+				u.email ILIKE '%' || $7 || '%' OR
+				v.name ILIKE '%' || $7 || '%' OR
+				c.name ILIKE '%' || $7 || '%' OR
+				b.id::text ILIKE '%' || $7 || '%'
+			))
+		` + orderClause + `
+		LIMIT $8 OFFSET $9
+	`
+
+	rows, err := r.db.Query(ctx, sqlQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var bookings []OwnerBooking
+	for rows.Next() {
+		var booking OwnerBooking
+		if err := rows.Scan(
+			&booking.ID,
+			&booking.CustomerID,
+			&booking.CustomerName,
+			&booking.CustomerEmail,
+			&booking.CustomerPhone,
+			&booking.VenueID,
+			&booking.VenueName,
+			&booking.CourtID,
+			&booking.CourtName,
+			&booking.Date,
+			&booking.StartTime,
+			&booking.EndTime,
+			&booking.TotalPrice,
+			&booking.Status,
+			&booking.PaymentReference,
+			&booking.ExpiresAt,
+			&booking.CreatedAt,
+			&booking.UpdatedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		bookings = append(bookings, booking)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return bookings, total, nil
 }

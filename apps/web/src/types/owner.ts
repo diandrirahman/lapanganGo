@@ -29,6 +29,9 @@ export interface OwnerMetrics {
   upcoming_bookings: number;
   pending_verifications: number;
   revenue_current: number;
+  booking_revenue_current?: number;
+  refund_current?: number;
+  net_revenue_current?: number;
   revenue_all_time: number;
   occupancy_rate: number;
 }

@@ -71,7 +71,7 @@ export const LoginPage: React.FC = () => {
         <div className="w-full max-w-[900px] bg-surface rounded-3xl shadow-float border border-border-main overflow-hidden flex flex-col md:flex-row">
           
           {/* Left Side - Branding */}
-          <div className="md:w-5/12 bg-primary-gradient p-12 text-white flex flex-col justify-between relative overflow-hidden hidden md:flex">
+          <div className="md:w-5/12 bg-primary p-12 text-white flex flex-col justify-between relative overflow-hidden hidden md:flex">
             
             <div className="relative z-10">
               <h2 className="text-3xl font-extrabold mb-4 leading-tight">Mulai<br/>Langkah<br/>Juaramu!</h2>
@@ -83,7 +83,7 @@ export const LoginPage: React.FC = () => {
             <div className="relative z-10">
               <div className="flex -space-x-3 mb-3">
                 {[1,2,3,4].map(i => (
-                  <div key={i} className="w-8 h-8 rounded-full border-2 border-[#FF512F] bg-white/20 backdrop-blur-sm flex items-center justify-center text-[10px] font-bold">
+                  <div key={i} className="w-8 h-8 rounded-full border-2 border-white/40 bg-white/20 backdrop-blur-sm flex items-center justify-center text-[10px] font-bold">
                     User
                   </div>
                 ))}
@@ -127,7 +127,7 @@ export const LoginPage: React.FC = () => {
               <div className="pt-2">
                 <Button 
                   type="submit" 
-                  className="w-full py-3.5 rounded-xl text-base shadow-primary-glow" 
+                  className="w-full py-3.5 rounded-xl text-base shadow-sm" 
                   isLoading={isLoading}
                 >
                   Masuk Sekarang

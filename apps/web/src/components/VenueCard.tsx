@@ -14,7 +14,7 @@ export const VenueCard: React.FC<Props> = ({ venue }) => {
   const extraFacilities = venue.facilities.length - 3;
 
   return (
-    <Link to={`/venues/${venue.id}`} className="bg-white rounded-2xl p-4 flex flex-col group cursor-pointer border border-border-main shadow-sm hover:shadow-md hover:border-primary/30 transition-all duration-300">
+    <Link to={`/venues/${venue.id}`} className="animate-fade-up bg-white rounded-2xl p-4 flex flex-col group cursor-pointer border border-border-main shadow-sm hover:shadow-lg md:hover:-translate-y-1 hover:border-primary/30 transition-all duration-300">
       {/* Image Wrapper */}
       <div className="relative h-48 rounded-xl overflow-hidden mb-4 bg-gray-100 flex items-center justify-center">
         <SafeVenueImage 
@@ -63,4 +63,3 @@ export const VenueCard: React.FC<Props> = ({ venue }) => {
     </Link>
   );
 };
-

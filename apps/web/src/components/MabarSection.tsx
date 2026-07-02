@@ -58,44 +58,42 @@ export const MabarSection: React.FC = () => {
   }, [useMockMabar]);
 
   return (
-    <section className="mt-24 px-6 relative z-10 max-w-7xl mx-auto">
-      {/* Section Header */}
-      <div className="bg-text-main rounded-[32px] p-10 md:p-[60px] text-white relative overflow-hidden flex flex-col md:flex-row justify-between items-center shadow-lg mb-8 md:mb-[-40px]">
-        {/* Glow effect */}
-        <div className="absolute top-[-50%] left-[-20%] w-[600px] h-[600px] bg-[radial-gradient(circle,rgba(255,81,47,0.4)_0%,transparent_60%)] pointer-events-none"></div>
-        
-        <div className="relative z-10 text-center md:text-left mb-8 md:mb-0">
-          <h2 className="text-3xl md:text-[40px] font-extrabold mb-3">Cari Lawan / Open Match</h2>
-          <p className="text-lg text-slate-400 max-w-[500px]">
-            Kurang orang buat main? Gabung pertandingan yang sedang butuh pemain di sekitarmu, atau buat jadwal mabarmu sendiri.
-          </p>
-        </div>
-        
-        <Button onClick={() => navigate('/open-matches')} variant="secondary" className="relative z-10 shrink-0 border-none font-bold">
-          <span className="bg-gradient-to-r from-[#FF512F] to-[#DD2476] text-transparent bg-clip-text">
-            Lihat Semua Mabar
-          </span>
-        </Button>
-      </div>
-
-      {/* States & Grid */}
-      <div className="relative z-20 md:px-6">
-        {isLoading ? (
-          <LoadingState message="Memuat jadwal mabar terdekat..." className="bg-surface rounded-2xl shadow-sm" />
-        ) : error ? (
-          <ErrorState message={error} onRetry={() => window.location.reload()} />
-        ) : matches.length === 0 && !useMockMabar ? (
-          <EmptyState 
-            title="Belum Ada Jadwal Mabar" 
-            description="Jadilah yang pertama membuat jadwal mabar hari ini dan temukan teman baru untuk berolahraga!"
-          />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {matches.map((match) => (
-              <MabarCard key={match.id} match={match} />
-            ))}
+    <section className="py-14 md:py-20 bg-white border-y border-gray-100">
+      <div className="max-w-7xl mx-auto px-5 md:px-6">
+      
+        {/* Section Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-4">
+          <div>
+            <h2 className="text-3xl md:text-4xl font-extrabold mb-2 text-text-main">Cari Lawan / Open Match</h2>
+            <p className="text-base md:text-lg text-text-muted font-medium">
+              Gabung pertandingan yang sedang butuh pemain di sekitarmu.
+            </p>
           </div>
-        )}
+          
+          <Button onClick={() => navigate('/open-matches')} variant="outline" className="shrink-0 font-bold border-gray-300">
+            Lihat Semua Mabar
+          </Button>
+        </div>
+
+        {/* States & Grid */}
+        <div className="relative z-20 mt-8">
+          {isLoading ? (
+            <LoadingState message="Memuat jadwal mabar terdekat..." variant="cards" />
+          ) : error ? (
+            <ErrorState message={error} onRetry={() => window.location.reload()} />
+          ) : matches.length === 0 && !useMockMabar ? (
+            <EmptyState 
+              title="Belum Ada Jadwal Mabar" 
+              description="Jadilah yang pertama membuat jadwal mabar hari ini dan temukan teman baru untuk berolahraga!"
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {matches.map((match) => (
+                <MabarCard key={match.id} match={match} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

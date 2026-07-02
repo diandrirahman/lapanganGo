@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"lapangango-api/internal/analytics"
 	"lapangango-api/internal/auth"
 	"lapangango-api/internal/availability"
 	"lapangango-api/internal/blockedslots"
@@ -16,9 +17,11 @@ import (
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
+	"lapangango-api/internal/finance"
 	"lapangango-api/internal/mabar"
 	"lapangango-api/internal/middleware"
 	"lapangango-api/internal/owners"
+	"lapangango-api/internal/refunds"
 	"lapangango-api/internal/schedules"
 	"lapangango-api/internal/venues"
 
@@ -111,6 +114,11 @@ func main() {
 	scheduleHandler := schedules.NewHandler(scheduleService)
 	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
+	financeRepository := finance.NewRepository(dbPool)
+	financeService := finance.NewService(financeRepository)
+	financeHandler := finance.NewHandler(financeService)
+	financeHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+
 	bookingsRepository := bookings.NewRepository(dbPool)
 	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes)
 	bookingsHandler := bookings.NewHandler(bookingsService)
@@ -130,7 +138,12 @@ func main() {
 	mabarHandler := mabar.NewHandler(mabarService)
 	mabarHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 
+	refundsRepository := refunds.NewRepository(dbPool)
+	refundsService := refunds.NewService(refundsRepository)
+	refundsHandler := refunds.NewHandler(refundsService)
+	refundsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"), middleware.RequireRole("OWNER"))
 
+	analytics.RegisterRoutes(r, dbPool, authMiddleware, middleware.RequireRole("OWNER"))
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
 		Handler: r,

@@ -3,8 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { PageShell } from '../components/layout/PageShell';
 import { useAuth } from '../contexts/AuthContext';
-import { fetchBookingById, cancelBooking, submitPaymentProof } from '../lib/api';
+import { fetchBookingById, cancelBooking, submitPaymentProof, fetchRefundRequestByBooking, createRefundRequest } from '../lib/api';
 import type { Booking } from '../types/booking';
+import type { RefundRequest } from '../types/refund';
 import { Calendar, Clock, MapPin, CheckCircle, AlertCircle, XCircle, ChevronLeft } from 'lucide-react';
 import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
@@ -21,7 +22,9 @@ export const CustomerBookingDetailPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [paymentReference, setPaymentReference] = useState('');
-  const [modalState, setModalState] = useState<{ type: 'cancel' | 'pay' | null, isOpen: boolean, error?: string }>({ type: null, isOpen: false });
+  const [modalState, setModalState] = useState<{ type: 'cancel' | 'pay' | 'refund' | null, isOpen: boolean, error?: string }>({ type: null, isOpen: false });
+  const [refundRequest, setRefundRequest] = useState<RefundRequest | null>(null);
+  const [refundReason, setRefundReason] = useState('');
 
   const loadBooking = useCallback(async () => {
     if (!token || !id) return;
@@ -30,6 +33,15 @@ export const CustomerBookingDetailPage: React.FC = () => {
       setError(null);
       const data = await fetchBookingById(id, token);
       setBooking(data);
+
+      if (data.status === 'PAID' || data.status === 'CANCELLED') {
+        try {
+          const refund = await fetchRefundRequestByBooking(id, token);
+          setRefundRequest(refund);
+        } catch (e) {
+          console.error("Failed to fetch refund request", e);
+        }
+      }
     } catch (err: any) {
       setError(err.message || 'Gagal memuat detail pesanan');
     } finally {
@@ -84,16 +96,52 @@ export const CustomerBookingDetailPage: React.FC = () => {
     }
   };
 
+  const handleRequestRefund = async () => {
+    if (!token || !id) return;
+    if (refundReason.trim().length < 10) {
+      setModalState(prev => ({ ...prev, error: 'Alasan refund minimal 10 karakter' }));
+      return;
+    }
+    try {
+      setActionLoading('refund');
+      await createRefundRequest(id, refundReason, token);
+      toast.success('Pengajuan refund berhasil dikirim');
+      await loadBooking();
+      setModalState({ type: null, isOpen: false });
+      setRefundReason('');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Gagal mengajukan refund';
+      setModalState(prev => ({ ...prev, error: msg }));
+      toast.error(msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const canRequestRefund = () => {
+    if (!booking) return false;
+    const now = new Date();
+    const [hours, minutes] = booking.start_time.split(':').map(Number);
+    const startDateTime = new Date(booking.booking_date);
+    startDateTime.setHours(hours, minutes, 0, 0);
+    const oneHourBefore = new Date(startDateTime.getTime() - 60 * 60 * 1000);
+    return now < oneHourBefore;
+  };
+
 	const getStatusBadge = (status: string) => {
     switch (status) {
       case 'PENDING_PAYMENT':
         return <span className="px-4 py-1.5 bg-yellow-100 text-yellow-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><AlertCircle className="w-4 h-4" /> Menunggu Pembayaran</span>;
       case 'WAITING_VERIFICATION':
-        return <span className="px-4 py-1.5 bg-blue-100 text-blue-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><AlertCircle className="w-4 h-4" /> Menunggu Verifikasi</span>;
-      case 'CONFIRMED':
-        return <span className="px-4 py-1.5 bg-blue-100 text-blue-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><CheckCircle className="w-4 h-4" /> Dikonfirmasi</span>;
+        return <span className="px-4 py-1.5 bg-blue-100 text-blue-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><Clock className="w-4 h-4" /> Menunggu Verifikasi</span>;
+      case 'PAID':
+        return <span className="px-4 py-1.5 bg-green-100 text-green-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><CheckCircle className="w-4 h-4" /> Lunas</span>;
+      case 'COMPLETED':
+        return <span className="px-4 py-1.5 bg-gray-100 text-gray-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><CheckCircle className="w-4 h-4" /> Selesai</span>;
       case 'CANCELLED':
         return <span className="px-4 py-1.5 bg-red-100 text-red-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><XCircle className="w-4 h-4" /> Dibatalkan</span>;
+      case 'CONFIRMED':
+        return <span className="px-4 py-1.5 bg-blue-100 text-blue-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><CheckCircle className="w-4 h-4" /> Dikonfirmasi</span>;
       default:
         return <span className="px-4 py-1.5 bg-gray-100 text-gray-800 text-sm font-bold rounded-full w-fit">{status}</span>;
     }
@@ -164,7 +212,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
                       <AlertCircle className="w-4 h-4" /> Info Pembayaran
                     </p>
                     <p className="text-sm text-blue-700">
-                      Silakan lakukan pembayaran manual dan konfirmasi dengan mengisi referensi (nama pengirim / bank).
+                      Silakan lakukan pembayaran manual dan kirim referensi pembayaran agar owner dapat melakukan verifikasi.
                     </p>
                   </div>
                   
@@ -197,7 +245,142 @@ export const CustomerBookingDetailPage: React.FC = () => {
                   </div>
 
                   <p className="text-xs text-text-muted mt-4 text-center">
-                    * Kebijakan Pembatalan: Anda hanya dapat membatalkan pesanan jika status masih Menunggu Pembayaran. Jika sudah dikonfirmasi, pembatalan tidak diizinkan.
+                    * Kebijakan Pembatalan: Anda hanya dapat membatalkan pesanan saat status masih Menunggu Pembayaran. Setelah bukti pembayaran dikirim atau pembayaran diverifikasi, pembatalan diproses oleh owner sesuai kebijakan venue.
+                  </p>
+                </div>
+              )}
+
+              {booking.status === 'WAITING_VERIFICATION' && (
+                <div className="mt-8 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
+                  <p className="text-sm text-blue-800 mb-2 font-bold flex items-center gap-2">
+                    <Clock className="w-4 h-4" /> Verifikasi Pembayaran
+                  </p>
+                  <p className="text-sm text-blue-700">
+                    Bukti pembayaran sudah dikirim. Pesanan Anda sedang menunggu verifikasi dari owner.
+                  </p>
+                  {booking.payment_reference && (
+                    <p className="text-sm text-blue-700 mt-2 font-medium">
+                      Referensi: {booking.payment_reference}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {booking.status === 'PAID' && (
+                <div className="mt-8">
+                  <div className="p-4 bg-green-50 border border-green-100 rounded-2xl mb-6">
+                    <p className="text-sm text-green-800 mb-2 font-bold flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4" /> Pembayaran Berhasil
+                    </p>
+                    <p className="text-sm text-green-700">
+                      Pembayaran sudah diverifikasi. Booking Anda sudah lunas dan siap digunakan sesuai jadwal.
+                    </p>
+                  </div>
+                  
+                  {refundRequest ? (
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-2xl">
+                      <p className="text-sm text-orange-800 mb-2 font-bold flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" /> Pengajuan Refund
+                      </p>
+                      <p className="text-sm text-orange-700 mb-2">
+                        Anda telah mengajukan refund untuk pesanan ini.
+                      </p>
+                      <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm mb-3">
+                        <span className="font-bold text-orange-800">Status: </span>
+                        <span className="font-semibold">{refundRequest.status}</span>
+                      </div>
+                      <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm">
+                        <span className="font-bold text-orange-800">Alasan: </span>
+                        <span>{refundRequest.reason}</span>
+                      </div>
+                      {refundRequest.owner_note && (
+                        <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm mt-3">
+                          <span className="font-bold text-orange-800">Catatan Owner: </span>
+                          <span>{refundRequest.owner_note}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : canRequestRefund() ? (
+                    <div className="p-4 border border-border-main rounded-2xl bg-surface">
+                      <p className="text-sm font-bold text-text-main mb-2">Perubahan Jadwal?</p>
+                      <p className="text-xs text-text-muted mb-4">
+                        Anda dapat mengajukan pembatalan & refund hingga maksimal 1 jam sebelum jadwal mulai. Persetujuan dan jumlah dana yang dikembalikan bergantung pada kebijakan masing-masing venue.
+                      </p>
+                      <button 
+                        onClick={() => setModalState({ type: 'refund', isOpen: true })}
+                        className="w-full bg-white border-2 border-border-main text-text-main py-2.5 rounded-xl font-bold text-[14px] hover:border-text-main transition-colors"
+                      >
+                        Ajukan Batalkan & Refund
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-gray-50 rounded-2xl">
+                      <p className="text-xs text-text-muted text-center italic">
+                        Batas waktu pengajuan refund telah lewat (maksimal 1 jam sebelum jadwal mulai).
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {booking.status === 'COMPLETED' && (
+                <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-2xl">
+                  <p className="text-sm text-gray-800 mb-2 font-bold flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" /> Pesanan Selesai
+                  </p>
+                  <p className="text-sm text-gray-700">
+                    Booking ini sudah selesai.
+                  </p>
+                </div>
+              )}
+
+              {booking.status === 'CANCELLED' && (
+                <div className="mt-8">
+                  <div className="p-4 bg-red-50 border border-red-100 rounded-2xl mb-6">
+                    <p className="text-sm text-red-800 mb-2 font-bold flex items-center gap-2">
+                      <XCircle className="w-4 h-4" /> Pesanan Dibatalkan
+                    </p>
+                    <p className="text-sm text-red-700">
+                      Booking ini telah dibatalkan.
+                    </p>
+                    {!refundRequest && (
+                      <p className="text-sm text-red-700 mt-2">
+                        Jika booking sudah lunas, refund diproses oleh owner sesuai kebijakan venue.
+                      </p>
+                    )}
+                  </div>
+
+                  {refundRequest && (
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-2xl">
+                      <p className="text-sm text-orange-800 mb-2 font-bold flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" /> Detail Refund
+                      </p>
+                      <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm mb-3">
+                        <span className="font-bold text-orange-800">Status: </span>
+                        <span className="font-semibold">{refundRequest.status}</span>
+                      </div>
+                      <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm">
+                        <span className="font-bold text-orange-800">Alasan: </span>
+                        <span>{refundRequest.reason}</span>
+                      </div>
+                      {refundRequest.owner_note && (
+                        <div className="bg-white p-3 rounded-xl border border-orange-100 text-sm mt-3">
+                          <span className="font-bold text-orange-800">Catatan Owner: </span>
+                          <span>{refundRequest.owner_note}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {booking.status === 'CONFIRMED' && (
+                <div className="mt-8 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
+                  <p className="text-sm text-blue-800 mb-2 font-bold flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" /> Status Legacy
+                  </p>
+                  <p className="text-sm text-blue-700">
+                    Booking ini berstatus dikonfirmasi pada data lama. Jika diperlukan, owner akan menandai booking sebagai lunas.
                   </p>
                 </div>
               )}
@@ -207,7 +390,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
       </div>
 
       <ConfirmModal
-        isOpen={modalState.isOpen}
+        isOpen={modalState.isOpen && (modalState.type === 'cancel' || modalState.type === 'pay')}
         title={modalState.type === 'cancel' ? 'Batalkan Pesanan?' : 'Konfirmasi Pembayaran'}
         message={modalState.type === 'cancel' ? 'Pesanan yang belum dibayar akan dibatalkan secara permanen. Apakah Anda yakin?' : 'Apakah Anda yakin ingin melakukan konfirmasi bahwa Anda telah membayar tagihan ini?'}
         confirmText={modalState.type === 'cancel' ? 'Ya, Batalkan' : 'Ya, Konfirmasi'}
@@ -217,6 +400,42 @@ export const CustomerBookingDetailPage: React.FC = () => {
         onCancel={() => setModalState({ type: null, isOpen: false })}
         isLoading={actionLoading !== null}
       />
+
+      {modalState.isOpen && modalState.type === 'refund' && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl relative">
+            <h2 className="text-2xl font-extrabold text-text-main mb-2">Ajukan Refund</h2>
+            <p className="text-text-muted mb-6">
+              Jelaskan alasan Anda membatalkan pesanan. Dana akan dikembalikan sesuai dengan kebijakan venue jika disetujui.
+            </p>
+            <div className="mb-6">
+              <label className="block text-sm font-bold text-text-main mb-2">Alasan Pembatalan</label>
+              <textarea
+                value={refundReason}
+                onChange={(e) => setRefundReason(e.target.value)}
+                placeholder="Contoh: Jadwal mendadak bentrok dengan acara keluarga..."
+                className="w-full px-4 py-3 bg-surface border border-border-main rounded-2xl text-[15px] font-medium text-text-main focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all min-h-[120px] resize-y"
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setModalState({ type: null, isOpen: false })}
+                className="flex-1 px-4 py-3 rounded-2xl font-bold text-[15px] bg-surface text-text-main hover:bg-border-main transition-colors"
+                disabled={actionLoading !== null}
+              >
+                Kembali
+              </button>
+              <button
+                onClick={handleRequestRefund}
+                disabled={actionLoading !== null}
+                className="flex-1 px-4 py-3 rounded-2xl font-bold text-[15px] bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {actionLoading === 'refund' ? 'Memproses...' : 'Kirim Pengajuan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {modalState.error && (
         <ConfirmModal

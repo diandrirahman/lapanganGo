@@ -91,4 +91,16 @@ func TestNormalizeListPublicVenuesQuery(t *testing.T) {
 	if offset != 0 {
 		t.Errorf("expected default offset 0, got %d", offset)
 	}
+
+	reqWithQ := ListPublicVenuesQuery{Q: " GBK "}
+	reqWithQ, _ = normalizeListPublicVenuesQuery(reqWithQ)
+	if reqWithQ.Q != "GBK" {
+		t.Errorf("expected Q to be trimmed to 'GBK', got '%s'", reqWithQ.Q)
+	}
+
+	reqWithShortQ := ListPublicVenuesQuery{Q: " a "}
+	reqWithShortQ, _ = normalizeListPublicVenuesQuery(reqWithShortQ)
+	if reqWithShortQ.Q != "" {
+		t.Errorf("expected short Q to be emptied, got '%s'", reqWithShortQ.Q)
+	}
 }
