@@ -5,6 +5,7 @@ import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
 import { formatRupiah, formatDate } from '../lib/utils';
 import { fetchCustomerBookings } from '../lib/api';
+import { formatPaymentDeadline, getRemainingPaymentMs } from '../lib/paymentExpiry';
 import type { Booking } from '../types/booking';
 import { Calendar, Clock, MapPin, CheckCircle, XCircle, AlertCircle, Users } from 'lucide-react';
 import { CreateMabarModal } from '../components/CreateMabarModal';
@@ -102,6 +103,14 @@ export const CustomerBookingsPage: React.FC = () => {
                         <MapPin className="w-4 h-4 text-primary" />
                         <span>{courtLabel}{sportLabel}</span>
                       </div>
+                      {booking.status === 'PENDING_PAYMENT' && booking.expires_at && (
+                        <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-50 text-orange-700">
+                          <AlertCircle className="w-3.5 h-3.5" />
+                          {getRemainingPaymentMs(booking.expires_at) > 0
+                            ? `Bayar sebelum ${formatPaymentDeadline(booking.expires_at)}`
+                            : 'Batas pembayaran lewat'}
+                        </div>
+                      )}
                     </div>
                     <div className="text-left md:text-right">
                       <p className="text-sm font-bold text-text-muted mb-1">Total Harga</p>
@@ -128,7 +137,7 @@ export const CustomerBookingsPage: React.FC = () => {
                       >
                         Lihat Detail
                       </button>
-                      {booking.status === 'PENDING_PAYMENT' && (
+                      {booking.status === 'PENDING_PAYMENT' && (!booking.expires_at || getRemainingPaymentMs(booking.expires_at) > 0) && (
                         <button 
                           onClick={() => navigate(`/bookings/${booking.id}`)}
                           className="w-full sm:w-auto bg-primary text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-primary-dark transition-colors flex items-center justify-center gap-2"

@@ -47,6 +47,8 @@ type mockRepo struct {
 
 	CancelExpiredCount int64
 	CancelExpiredErr   error
+
+	LastOperatingHourDayOfWeek int
 }
 
 func (m *mockRepo) CancelExpiredPendingBookings(ctx context.Context) (int64, error) {
@@ -97,7 +99,19 @@ func (m *mockRepo) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, court
 	return m.CourtValidationInfo, m.CourtInfoErr
 }
 
+func (m *mockRepo) LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID, venueID, ownerProfileID string) (CourtValidationInfo, error) {
+	return m.CourtValidationInfo, m.CourtInfoErr
+}
+
+func (m *mockRepo) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, params CreateOfflineBookingParams) (Booking, error) {
+	if m.InsertErr != nil {
+		return Booking{}, m.InsertErr
+	}
+	return m.InsertedBooking, nil
+}
+
 func (m *mockRepo) FindOperatingHours(ctx context.Context, tx pgx.Tx, courtID string, dayOfWeek int) (OperatingHour, error) {
+	m.LastOperatingHourDayOfWeek = dayOfWeek
 	return m.OperatingHour, m.OpHourErr
 }
 
@@ -849,5 +863,183 @@ func TestCancelPaidBookingWithRefund_NoIncomeLedger(t *testing.T) {
 	_, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-1", "booking-1", "Customer requested")
 	if err != ErrBookingIncomeLedgerNotFound {
 		t.Fatalf("expected ErrBookingIncomeLedgerNotFound, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Success(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus: "ACTIVE",
+			VenueStatus: "ACTIVE",
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			CloseTime: &tm,
+		},
+		IsBlocked:       false,
+		IsOverlap:       false,
+		InsertedBooking: Booking{ID: "booking-1", Status: "PAID"},
+	}
+	svc := NewService(repo, 30)
+
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:      "venue-1",
+		CourtID:      "court-1",
+		BookingDate:  "2026-10-10",
+		StartTime:    "10:00",
+		EndTime:      "12:00",
+		CustomerName: "Budi",
+		TotalPrice:   150000,
+		Status:       "PAID",
+	}
+	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp.ID != "booking-1" {
+		t.Fatalf("expected booking-1, got %s", resp.ID)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Fail_Forbidden(t *testing.T) {
+	repo := &mockRepo{
+		OwnerProfile:  OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenueErr: pgx.ErrNoRows,
+	}
+	svc := NewService(repo, 30)
+
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:     "venue-2", // not owned
+		BookingDate: "2026-10-10",
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	if err != ErrForbidden {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Fail_Overlap(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus: "ACTIVE",
+			VenueStatus: "ACTIVE",
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			CloseTime: &tm,
+		},
+		IsBlocked: false,
+		IsOverlap: true, // Overlap!
+	}
+	svc := NewService(repo, 30)
+
+	req := OwnerCreateOfflineBookingRequest{
+		BookingDate: "2026-10-10",
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	if err != ErrOverlapBooking {
+		t.Fatalf("expected ErrOverlapBooking, got %v", err)
+	}
+
+	// Partial overlap start
+	reqPartialStart := OwnerCreateOfflineBookingRequest{
+		BookingDate: "2026-10-10",
+		StartTime:   "09:00",
+		EndTime:     "11:00",
+	}
+	_, err = svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", reqPartialStart)
+	if err != ErrOverlapBooking {
+		t.Fatalf("expected ErrOverlapBooking for partial overlap start, got %v", err)
+	}
+
+	// Partial overlap end
+	reqPartialEnd := OwnerCreateOfflineBookingRequest{
+		BookingDate: "2026-10-10",
+		StartTime:   "11:00",
+		EndTime:     "13:00",
+	}
+	_, err = svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", reqPartialEnd)
+	if err != ErrOverlapBooking {
+		t.Fatalf("expected ErrOverlapBooking for partial overlap end, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Fail_OutsideOpHours(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus: "ACTIVE",
+			VenueStatus: "ACTIVE",
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  true, // Closed!
+			CloseTime: &tm,
+		},
+	}
+	svc := NewService(repo, 30)
+
+	req := OwnerCreateOfflineBookingRequest{
+		BookingDate: "2026-10-10",
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	if err != ErrOutsideOpHours {
+		t.Fatalf("expected ErrOutsideOpHours, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_SundayUsesDayOfWeekZero(t *testing.T) {
+	closeTime, _ := time.Parse("15:04", "22:00")
+	openTime, _ := time.Parse("15:04", "08:00")
+
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus: "ACTIVE",
+			VenueStatus: "ACTIVE",
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			OpenTime:  &openTime,
+			CloseTime: &closeTime,
+		},
+		IsBlocked:       false,
+		IsOverlap:       false,
+		InsertedBooking: Booking{ID: "booking-1", Status: "PAID"},
+	}
+	svc := NewService(repo, 30)
+
+	// 2026-07-05 is a Sunday
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:      "venue-1",
+		CourtID:      "court-1",
+		BookingDate:  "2026-07-05",
+		StartTime:    "10:00",
+		EndTime:      "12:00",
+		CustomerName: "Budi",
+		TotalPrice:   150000,
+		Status:       "PAID",
+	}
+
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if repo.LastOperatingHourDayOfWeek != 0 {
+		t.Fatalf("expected Sunday day_of_week 0, got %d", repo.LastOperatingHourDayOfWeek)
 	}
 }

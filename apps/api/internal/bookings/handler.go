@@ -34,6 +34,7 @@ func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.Han
 	ownerGroup.PATCH("/bookings/:id/mark-paid", h.MarkBookingPaid)
 	ownerGroup.PATCH("/bookings/:id/complete", h.CompleteBooking)
 	ownerGroup.PATCH("/bookings/:id/cancel-refund", h.CancelPaidBookingWithRefund)
+	ownerGroup.POST("/bookings/offline", h.OwnerCreateOfflineBooking)
 	ownerGroup.GET("/metrics", h.GetOwnerMetrics)
 }
 
@@ -365,8 +366,30 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	case errors.Is(err, ErrVenueNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "Venue not found"})
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"message": fallbackMessage})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Internal server error"})
 	}
+}
+
+func (h *Handler) OwnerCreateOfflineBooking(c *gin.Context) {
+	userID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
+		return
+	}
+
+	var req OwnerCreateOfflineBookingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request payload", "error": err.Error()})
+		return
+	}
+
+	res, err := h.service.OwnerCreateOfflineBooking(c.Request.Context(), userID, req)
+	if err != nil {
+		respondBookingError(c, err, "Failed to create offline booking")
+		return
+	}
+
+	c.JSON(http.StatusCreated, res)
 }
 
 func (h *Handler) ListOwnerBookings(c *gin.Context) {

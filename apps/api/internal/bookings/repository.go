@@ -35,6 +35,21 @@ type CreateBookingParams struct {
 	ExpiresAt  *time.Time
 }
 
+type CreateOfflineBookingParams struct {
+	VenueID       string
+	CourtID       string
+	Date          string
+	StartTime     string
+	EndTime       string
+	TotalPrice    float64
+	Status        string
+	OwnerUserID   string
+	CustomerName  string
+	CustomerPhone *string
+	CustomerEmail *string
+	Note          *string
+}
+
 type Booking struct {
 	ID               string
 	CustomerID       string
@@ -107,6 +122,25 @@ func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, cou
 	`
 	var info CourtValidationInfo
 	err := tx.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return info, ErrCourtNotFound
+		}
+		return info, err
+	}
+	return info, nil
+}
+
+func (r *Repository) LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID, venueID, ownerProfileID string) (CourtValidationInfo, error) {
+	query := `
+		SELECT c.price_per_hour, c.status, v.status
+		FROM courts c
+		JOIN venues v ON v.id = c.venue_id
+		WHERE c.id = $1 AND v.id = $2 AND v.owner_profile_id = $3
+		FOR UPDATE
+	`
+	var info CourtValidationInfo
+	err := tx.QueryRow(ctx, query, courtID, venueID, ownerProfileID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return info, ErrCourtNotFound
@@ -269,9 +303,9 @@ func (r *Repository) ListOwnerVenueBookings(ctx context.Context, ownerProfileID,
 		SELECT
 			b.id::text,
 			u.id::text,
-			u.name,
-			u.email,
-			u.phone,
+			COALESCE(obc.name, u.name),
+			COALESCE(obc.email, u.email),
+			COALESCE(obc.phone, u.phone),
 			v.id::text,
 			v.name,
 			c.id::text,
@@ -287,6 +321,7 @@ func (r *Repository) ListOwnerVenueBookings(ctx context.Context, ownerProfileID,
 			b.updated_at
 		FROM bookings b
 		JOIN users u ON u.id = b.customer_id
+		LEFT JOIN offline_booking_customers obc ON obc.booking_id = b.id
 		JOIN courts c ON c.id = b.court_id
 		JOIN venues v ON v.id = c.venue_id
 		WHERE v.owner_profile_id = $1
@@ -409,6 +444,49 @@ func (r *Repository) InsertBooking(ctx context.Context, tx pgx.Tx, params Create
 		&b.UpdatedAt,
 	)
 	return b, err
+}
+
+func (r *Repository) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, params CreateOfflineBookingParams) (Booking, error) {
+	// 1. Insert booking
+	queryBooking := `
+		INSERT INTO bookings (customer_id, court_id, booking_date, start_time, end_time, total_price, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+	`
+	var b Booking
+	err := tx.QueryRow(
+		ctx, queryBooking,
+		params.OwnerUserID, params.CourtID, params.Date, params.StartTime, params.EndTime, params.TotalPrice, params.Status,
+	).Scan(
+		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
+		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
+	)
+	if err != nil {
+		return b, err
+	}
+
+	// 2. Insert offline_booking_customers
+	queryOBC := `
+		INSERT INTO offline_booking_customers (booking_id, name, phone, email, notes)
+		VALUES ($1, $2, $3, $4, $5)
+	`
+	_, err = tx.Exec(ctx, queryOBC, b.ID, params.CustomerName, params.CustomerPhone, params.CustomerEmail, params.Note)
+	if err != nil {
+		return b, err
+	}
+
+	// 3. Insert into owner_finance_transactions
+	queryLedger := `
+		INSERT INTO owner_finance_transactions (owner_id, venue_id, booking_id, created_by_user_id, type, source, category, amount, transaction_date, description)
+		VALUES ($1, $2, $3, $4, 'INCOME', 'BOOKING', 'BOOKING_PAYMENT', $5, CURRENT_DATE, $6)
+	`
+	desc := "Offline booking payment for booking " + b.ID
+	_, err = tx.Exec(ctx, queryLedger, params.OwnerUserID, params.VenueID, b.ID, params.OwnerUserID, params.TotalPrice, desc)
+	if err != nil {
+		return b, err
+	}
+
+	return b, nil
 }
 
 func (r *Repository) CancelPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error) {
@@ -938,6 +1016,7 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 		SELECT count(*)
 		FROM bookings b
 		JOIN users u ON u.id = b.customer_id
+		LEFT JOIN offline_booking_customers obc ON obc.booking_id = b.id
 		JOIN courts c ON c.id = b.court_id
 		JOIN venues v ON v.id = c.venue_id
 		WHERE v.owner_profile_id = $1
@@ -948,7 +1027,9 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 			AND ($6 = '' OR b.booking_date <= NULLIF($6, '')::date)
 			AND ($7 = '' OR (
 				u.name ILIKE '%' || $7 || '%' OR
+				obc.name ILIKE '%' || $7 || '%' OR
 				u.email ILIKE '%' || $7 || '%' OR
+				obc.email ILIKE '%' || $7 || '%' OR
 				v.name ILIKE '%' || $7 || '%' OR
 				c.name ILIKE '%' || $7 || '%' OR
 				b.id::text ILIKE '%' || $7 || '%'
@@ -977,9 +1058,9 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 		SELECT
 			b.id::text,
 			u.id::text,
-			u.name,
-			u.email,
-			u.phone,
+			COALESCE(obc.name, u.name),
+			COALESCE(obc.email, u.email),
+			COALESCE(obc.phone, u.phone),
 			v.id::text,
 			v.name,
 			c.id::text,
@@ -995,6 +1076,7 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 			b.updated_at
 		FROM bookings b
 		JOIN users u ON u.id = b.customer_id
+		LEFT JOIN offline_booking_customers obc ON obc.booking_id = b.id
 		JOIN courts c ON c.id = b.court_id
 		JOIN venues v ON v.id = c.venue_id
 		WHERE v.owner_profile_id = $1
@@ -1005,7 +1087,9 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 			AND ($6 = '' OR b.booking_date <= NULLIF($6, '')::date)
 			AND ($7 = '' OR (
 				u.name ILIKE '%' || $7 || '%' OR
+				obc.name ILIKE '%' || $7 || '%' OR
 				u.email ILIKE '%' || $7 || '%' OR
+				obc.email ILIKE '%' || $7 || '%' OR
 				v.name ILIKE '%' || $7 || '%' OR
 				c.name ILIKE '%' || $7 || '%' OR
 				b.id::text ILIKE '%' || $7 || '%'

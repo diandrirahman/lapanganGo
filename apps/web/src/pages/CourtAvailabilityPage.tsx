@@ -1,14 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { PageShell } from '../components/layout/PageShell';
 import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
 import { fetchCourtAvailability, createBooking, fetchVenueById } from '../lib/api';
+import { formatPaymentDeadline } from '../lib/paymentExpiry';
 import type { AvailabilitySlot } from '../types/booking';
 import type { VenueDetail } from '../types/venue';
 import { Calendar, Clock, MapPin, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { toggleContiguousSlotSelection, getSelectedSlotRange, areSelectedSlotsStillAvailable } from '../lib/slotSelection';
 
 export const CourtAvailabilityPage: React.FC = () => {
   const { venueId, courtId, id } = useParams<{ venueId?: string; courtId?: string; id?: string }>();
@@ -22,7 +24,7 @@ export const CourtAvailabilityPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [selectedSlots, setSelectedSlots] = useState<AvailabilitySlot[]>([]);
   const [isBooking, setIsBooking] = useState(false);
   
   const { token, isAuthenticated, user } = useAuth();
@@ -69,7 +71,7 @@ export const CourtAvailabilityPage: React.FC = () => {
       try {
         setIsLoading(true);
         setError(null);
-        setSelectedTime(null);
+        setSelectedSlots([]);
         
         const data = await fetchCourtAvailability(activeCourtId, selectedDate);
         setSlots(data.slots || []);
@@ -83,17 +85,66 @@ export const CourtAvailabilityPage: React.FC = () => {
     loadAvailability();
   }, [activeCourtId, selectedDate]);
 
+  // Auto refresh availability
+  const refreshAvailability = useCallback(async (preserveSelection: boolean, currentSelected: AvailabilitySlot[]) => {
+    if (!activeCourtId || !selectedDate) return;
+    try {
+      const data = await fetchCourtAvailability(activeCourtId, selectedDate);
+      const latestSlots = data.slots || [];
+      setSlots(latestSlots);
+      
+      if (preserveSelection && currentSelected.length > 0) {
+        if (!areSelectedSlotsStillAvailable(currentSelected, latestSlots)) {
+           setSelectedSlots([]);
+           toast.error('Slot yang dipilih sudah tidak tersedia. Silakan pilih jadwal lain.');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to refresh availability', err);
+    }
+  }, [activeCourtId, selectedDate]);
+
+  useEffect(() => {
+    if (!activeCourtId || !selectedDate) return;
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      refreshAvailability(true, selectedSlots);
+    }, 30_000);
+
+    return () => window.clearInterval(interval);
+  }, [activeCourtId, selectedDate, refreshAvailability, selectedSlots]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAvailability(true, selectedSlots);
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [refreshAvailability, selectedSlots]);
+
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(e.target.value);
   };
 
   const handleSlotClick = (slot: AvailabilitySlot) => {
     if (slot.status !== 'AVAILABLE') return;
-    setSelectedTime(slot.start_at);
+    if (new Date(slot.start_at) < new Date()) return;
+
+    setSelectedSlots(prev => {
+      const result = toggleContiguousSlotSelection(prev, slot);
+      if (result.resetHappened && prev.length > 1) {
+         toast('Pilih slot berurutan', { icon: '💡' });
+      }
+      return result.selection;
+    });
   };
 
   const handleCreateBooking = async () => {
-    if (!activeCourtId || !selectedTime || !selectedDate) return;
+    if (!activeCourtId || selectedSlots.length === 0 || !selectedDate) return;
     
     if (!isAuthenticated || !token) {
       navigate('/login');
@@ -109,17 +160,35 @@ export const CourtAvailabilityPage: React.FC = () => {
       setIsBooking(true);
       setError(null);
       
-      const selectedSlot = slots.find(s => s.start_at === selectedTime);
-      if (!selectedSlot) return;
+      const selectedRange = getSelectedSlotRange(selectedSlots);
+      if (!selectedRange) {
+        setIsBooking(false);
+        return;
+      }
+
+      const latestAvailability = await fetchCourtAvailability(activeCourtId, selectedDate);
+      const latestSlots = latestAvailability.slots || [];
+
+      if (!areSelectedSlotsStillAvailable(selectedSlots, latestSlots)) {
+        setSlots(latestSlots);
+        setSelectedSlots([]);
+        toast.error('Slot yang dipilih sudah tidak tersedia. Silakan pilih jadwal lain.');
+        setIsBooking(false);
+        return;
+      }
 
       const booking = await createBooking({
         court_id: activeCourtId,
         booking_date: selectedDate,
-        start_time: formatTime(selectedSlot.start_at),
-        end_time: formatTime(selectedSlot.end_at)
+        start_time: selectedRange.startTime,
+        end_time: selectedRange.endTime
       }, token);
 
-      toast.success('Pemesanan lapangan berhasil!');
+      if (booking.expires_at) {
+        toast.success(`Pesanan dibuat. Selesaikan pembayaran sebelum ${formatPaymentDeadline(booking.expires_at)}.`);
+      } else {
+        toast.success('Pesanan dibuat. Selesaikan pembayaran dalam 30 menit.');
+      }
       navigate(`/bookings/${booking.id}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Gagal membuat pesanan. Silakan coba lagi.';
@@ -149,7 +218,9 @@ export const CourtAvailabilityPage: React.FC = () => {
     }
   };
 
-  const selectedSlotData = slots.find(s => s.start_at === selectedTime);
+  const selectedRange = getSelectedSlotRange(selectedSlots);
+  const selectedSlotCount = selectedSlots.length;
+  const totalPrice = pricePerHour ? pricePerHour * selectedSlotCount : null;
   const isCustomerAccount = !isAuthenticated || user?.role === 'CUSTOMER';
 
   return (
@@ -209,6 +280,9 @@ export const CourtAvailabilityPage: React.FC = () => {
                 )}
 
                 {/* Legend */}
+                <div className="mb-4">
+                  <p className="text-sm text-text-muted italic">Pilih satu atau beberapa slot berurutan.</p>
+                </div>
                 <div className="flex items-center gap-6 mb-6 pb-6 border-b border-border-main flex-wrap">
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-white border border-border-main"></div>
@@ -231,7 +305,7 @@ export const CourtAvailabilityPage: React.FC = () => {
                 {/* Grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-4">
                   {slots.map(slot => {
-                    const isSelected = selectedTime === slot.start_at;
+                    const isSelected = selectedSlots.some(s => s.start_at === slot.start_at);
                     const isPast = new Date(slot.start_at) < new Date();
                     const isDisabled = slot.status !== 'AVAILABLE' || isPast;
 
@@ -287,18 +361,21 @@ export const CourtAvailabilityPage: React.FC = () => {
                   <div className="text-right">
                     <p className="text-sm font-bold text-text-muted mb-1">Waktu</p>
                     <p className="font-bold text-text-main">
-                      {selectedTime && selectedSlotData 
-                        ? `${formatTime(selectedSlotData.start_at)} - ${formatTime(selectedSlotData.end_at)}`
+                      {selectedRange 
+                        ? `${selectedRange.startTime} - ${selectedRange.endTime}`
                         : '-'}
                     </p>
                   </div>
                 </div>
 
                 <div className="pt-4 border-t border-border-main flex justify-between items-center">
-                  <p className="text-sm font-bold text-text-muted">Total Pembayaran</p>
-                  {pricePerHour !== null && selectedTime ? (
+                  <div>
+                    <p className="text-sm font-bold text-text-muted">Total Pembayaran</p>
+                    <p className="text-xs text-text-muted mt-0.5">{selectedSlotCount} Jam</p>
+                  </div>
+                  {totalPrice !== null && selectedSlotCount > 0 ? (
                     <p className="text-lg font-extrabold text-primary">
-                      Rp {pricePerHour.toLocaleString('id-ID')}
+                      Rp {totalPrice.toLocaleString('id-ID')}
                     </p>
                   ) : (
                     <p className="text-sm font-bold text-text-main text-right italic">
@@ -309,16 +386,17 @@ export const CourtAvailabilityPage: React.FC = () => {
               </div>
 
               <button 
-                disabled={!selectedTime || isBooking || !isCustomerAccount}
+                disabled={selectedSlotCount === 0 || isBooking || !isCustomerAccount}
                 onClick={handleCreateBooking}
                 className={`w-full py-4 rounded-xl font-extrabold text-white transition-all duration-300 ${
-                  selectedTime && !isBooking && isCustomerAccount
+                  selectedSlotCount > 0 && !isBooking && isCustomerAccount
                     ? 'bg-primary hover:bg-primary/90' 
                     : 'bg-gray-300 cursor-not-allowed'
                 }`}
               >
                 {isBooking ? 'Memproses...' : isCustomerAccount ? 'Lanjutkan Pesanan' : 'Khusus Customer'}
               </button>
+              <p className="text-xs text-center text-text-muted mt-4">Jadwal diperbarui otomatis. Slot baru dipesan setelah Anda melanjutkan pesanan.</p>
             </div>
           </div>
         </div>

@@ -330,6 +330,7 @@ export const createBooking = async (data: CreateBookingRequest, token: string): 
           end_time: data.end_time,
           total_price: 150000,
           status: 'PENDING_PAYMENT',
+          expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         });
@@ -602,6 +603,7 @@ export const fetchCustomerBookings = async (token: string, page: number = 1, lim
               end_time: '16:00',
               total_price: 300000,
               status: 'PENDING_PAYMENT',
+              expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             },
@@ -959,6 +961,30 @@ export async function fetchOwnerGlobalBookings(token: string, params: GlobalBook
   const data = await response.json();
   return data;
 }
+
+export async function createOwnerOfflineBooking(token: string, payload: import('../types/booking').OwnerCreateOfflineBookingRequest): Promise<import('../types/booking').Booking> {
+  const isMock = import.meta.env.VITE_USE_MOCK_VENUE === 'true';
+  if (isMock) {
+    return new Promise((resolve) => setTimeout(() => resolve({} as any), 500));
+  }
+  
+  const response = await apiFetch(`${API_BASE_URL}/owner/bookings/offline`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || 'Failed to create offline booking');
+  }
+  
+  const data = await response.json();
+  return data;
+}
 export const fetchBookingById = async (id: string, token: string): Promise<Booking> => {
   if (import.meta.env.VITE_USE_MOCK_VENUE === 'true') {
     return new Promise((resolve) => setTimeout(() => resolve({
@@ -972,6 +998,7 @@ export const fetchBookingById = async (id: string, token: string): Promise<Booki
       end_time: '16:00',
       total_price: 300000,
       status: 'PENDING_PAYMENT',
+      expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     } as unknown as Booking), 500));

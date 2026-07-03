@@ -11,6 +11,7 @@ import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
 import { ConfirmModal } from '../components/ui/ConfirmModal';
 import { formatRupiah, formatDate } from '../lib/utils';
+import { formatPaymentDeadline, getRemainingPaymentMs, formatRemainingPaymentTime } from '../lib/paymentExpiry';
 
 export const CustomerBookingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +26,8 @@ export const CustomerBookingDetailPage: React.FC = () => {
   const [modalState, setModalState] = useState<{ type: 'cancel' | 'pay' | 'refund' | null, isOpen: boolean, error?: string }>({ type: null, isOpen: false });
   const [refundRequest, setRefundRequest] = useState<RefundRequest | null>(null);
   const [refundReason, setRefundReason] = useState('');
+  
+  const [_now, setNow] = useState<Date>(new Date());
 
   const loadBooking = useCallback(async () => {
     if (!token || !id) return;
@@ -55,6 +58,27 @@ export const CustomerBookingDetailPage: React.FC = () => {
     }
   }, [token, loadBooking]);
 
+  useEffect(() => {
+    if (booking?.status === 'PENDING_PAYMENT' && booking?.expires_at) {
+      setNow(new Date());
+      const interval = setInterval(() => {
+        setNow(new Date());
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [booking?.status, booking?.expires_at]);
+
+  const remainingMs = booking?.expires_at ? getRemainingPaymentMs(booking.expires_at) : null;
+  const isPaymentExpired = booking?.status === 'PENDING_PAYMENT' && remainingMs !== null && remainingMs <= 0;
+
+  const prevExpiredRef = React.useRef(isPaymentExpired);
+  useEffect(() => {
+    if (isPaymentExpired && !prevExpiredRef.current) {
+      loadBooking();
+    }
+    prevExpiredRef.current = isPaymentExpired;
+  }, [isPaymentExpired, loadBooking]);
+
   if (isLoading) return <PageShell><LoadingState message="Memuat detail pesanan..." /></PageShell>;
 
   const handleCancel = async () => {
@@ -76,6 +100,12 @@ export const CustomerBookingDetailPage: React.FC = () => {
 
   const handleConfirmPay = async () => {
     if (!token || !id) return;
+    if (isPaymentExpired) {
+      toast.error('Batas pembayaran telah lewat');
+      await loadBooking();
+      setModalState({ type: null, isOpen: false });
+      return;
+    }
     if (!paymentReference.trim()) {
       setModalState(prev => ({ ...prev, error: 'Referensi pembayaran (Nama Pengirim / Bank) harus diisi' }));
       return;
@@ -207,14 +237,64 @@ export const CustomerBookingDetailPage: React.FC = () => {
               {/* Actions & Policy */}
               {booking.status === 'PENDING_PAYMENT' && (
                 <div className="mt-8">
-                  <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl mb-6">
-                    <p className="text-sm text-blue-800 mb-2 font-bold flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4" /> Info Pembayaran
-                    </p>
-                    <p className="text-sm text-blue-700">
-                      Silakan lakukan pembayaran manual dan kirim referensi pembayaran agar owner dapat melakukan verifikasi.
-                    </p>
-                  </div>
+                  {booking.expires_at ? (
+                    isPaymentExpired ? (
+                      <div className="p-4 bg-red-50 border border-red-100 rounded-2xl mb-6">
+                        <p className="text-sm text-red-800 mb-2 font-bold flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" /> Batas Pembayaran Lewat
+                        </p>
+                        <p className="text-sm text-red-700">
+                          Pesanan ini sudah melewati batas pembayaran. Slot dapat dipilih customer lain.
+                        </p>
+                      </div>
+                    ) : remainingMs !== null && remainingMs <= 5 * 60 * 1000 ? (
+                      <div className="p-4 bg-orange-50 border border-orange-100 rounded-2xl mb-6">
+                        <p className="text-sm text-orange-800 mb-2 font-bold flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" /> Waktu Pembayaran Hampir Habis
+                        </p>
+                        <p className="text-sm text-orange-800 mb-4 font-medium">
+                          Selesaikan pembayaran sebelum {formatPaymentDeadline(booking.expires_at)}
+                        </p>
+                        <div className="mb-4">
+                          <p className="text-xs text-orange-700 mb-1">Sisa waktu pembayaran</p>
+                          <p className="text-2xl font-extrabold text-orange-800 font-mono tracking-wider">
+                            {formatRemainingPaymentTime(remainingMs)}
+                          </p>
+                        </div>
+                        <p className="text-sm text-orange-700">
+                          Segera kirim referensi pembayaran agar slot Anda tidak otomatis dibatalkan.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl mb-6">
+                        <p className="text-sm text-blue-800 mb-2 font-bold flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" /> Menunggu Pembayaran
+                        </p>
+                        <p className="text-sm text-blue-800 mb-4 font-medium">
+                          Selesaikan pembayaran sebelum {formatPaymentDeadline(booking.expires_at)}
+                        </p>
+                        <div className="mb-4">
+                          <p className="text-xs text-blue-700 mb-1">Sisa waktu pembayaran</p>
+                          <p className="text-2xl font-extrabold text-blue-800 font-mono tracking-wider">
+                            {formatRemainingPaymentTime(remainingMs!)}
+                          </p>
+                        </div>
+                        <p className="text-sm text-blue-700">
+                          Silakan lakukan pembayaran manual dan kirim referensi pembayaran agar owner dapat melakukan verifikasi.
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl mb-6">
+                      <p className="text-sm text-blue-800 mb-2 font-bold flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" /> Info Pembayaran
+                      </p>
+                      <p className="text-sm text-blue-700">
+                        Selesaikan pembayaran dalam batas waktu yang ditentukan.<br/>
+                        Silakan lakukan pembayaran manual dan kirim referensi pembayaran agar owner dapat melakukan verifikasi.
+                      </p>
+                    </div>
+                  )}
                   
                   <div className="mb-6">
                     <label className="block text-[13px] font-extrabold text-text-main mb-2">Referensi Pembayaran</label>
@@ -223,24 +303,25 @@ export const CustomerBookingDetailPage: React.FC = () => {
                       placeholder="Contoh: Transfer BCA a.n Budi" 
                       value={paymentReference}
                       onChange={(e) => setPaymentReference(e.target.value)}
-                      className="w-full px-4 py-3 bg-surface border border-border-main rounded-xl text-[15px] font-medium text-text-main focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                      disabled={isPaymentExpired}
+                      className="w-full px-4 py-3 bg-surface border border-border-main rounded-xl text-[15px] font-medium text-text-main focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-50"
                     />
                   </div>
                   
                   <div className="flex flex-col sm:flex-row gap-3">
                     <button 
                       onClick={() => setModalState({ type: 'pay', isOpen: true })}
-                      disabled={actionLoading !== null}
+                      disabled={actionLoading !== null || isPaymentExpired}
                       className="flex-1 bg-primary text-white py-3 rounded-xl font-bold text-[15px] hover:bg-primary/90 transition-colors disabled:opacity-50"
                     >
                       Kirim Bukti Pembayaran
                     </button>
                     <button 
-                      onClick={() => setModalState({ type: 'cancel', isOpen: true })}
+                      onClick={() => isPaymentExpired ? navigate('/bookings') : setModalState({ type: 'cancel', isOpen: true })}
                       disabled={actionLoading !== null}
                       className="flex-1 bg-red-50 text-red-600 py-3 rounded-xl font-bold text-[15px] hover:bg-red-100 transition-colors disabled:opacity-50"
                     >
-                      Batalkan Pesanan
+                      {isPaymentExpired ? 'Kembali' : 'Batalkan Pesanan'}
                     </button>
                   </div>
 

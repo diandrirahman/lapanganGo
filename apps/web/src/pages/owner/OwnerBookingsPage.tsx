@@ -6,12 +6,13 @@ import { useSearchParams } from 'react-router-dom';
 import { fetchOwnerGlobalBookings, fetchOwnerVenues, verifyPayment, markBookingPaid, completeBooking, cancelPaidBookingWithRefund } from '../../lib/api';
 import type { OwnerBooking } from '../../types/booking';
 import type { Venue } from '../../types/venue';
-import { Search, Calendar, Clock, CheckCircle, XCircle, AlertCircle, Building2 } from 'lucide-react';
+import { Search, Calendar, Clock, CheckCircle, XCircle, AlertCircle, Building2, Plus } from 'lucide-react';
 import { ConfirmModal } from '../../components/ui/ConfirmModal';
 import { LoadingState } from '../../components/feedback/LoadingState';
 import { ErrorState } from '../../components/feedback/ErrorState';
 import { formatRupiah, formatDate } from '../../lib/utils';
 import { Pagination } from '../../components/ui/Pagination';
+import { OwnerOfflineBookingModal } from '../../components/owner/OwnerOfflineBookingModal';
 
 const getJakartaNowParts = () => {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -97,6 +98,7 @@ export const OwnerBookingsPage: React.FC = () => {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [modalState, setModalState] = useState<{ type: 'verify' | 'reject' | 'mark_paid' | 'complete' | 'cancel_refund' | null, bookingId: string | null, isOpen: boolean, error?: string }>({ type: null, bookingId: null, isOpen: false });
   const [refundReason, setRefundReason] = useState('');
+  const [isOfflineModalOpen, setIsOfflineModalOpen] = useState(false);
 
 
   useEffect(() => {
@@ -259,8 +261,19 @@ export const OwnerBookingsPage: React.FC = () => {
   return (
     <PageShell>
       <div className="pt-24 pb-40 max-w-5xl mx-auto px-6">
-        <h1 className="text-3xl font-extrabold text-text-main mb-2">Semua Pesanan</h1>
-        <p className="text-text-muted mb-8">Kelola dan pantau seluruh pesanan dari semua venue Anda secara terpusat.</p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
+          <div>
+            <h1 className="text-3xl font-extrabold text-text-main mb-2">Semua Pesanan</h1>
+            <p className="text-text-muted">Kelola dan pantau seluruh pesanan dari semua venue Anda secara terpusat.</p>
+          </div>
+          <button
+            onClick={() => setIsOfflineModalOpen(true)}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-colors shadow-sm whitespace-nowrap"
+          >
+            <Plus className="w-5 h-5" />
+            Tambah Booking Offline
+          </button>
+        </div>
 
         {/* Quick Tabs */}
         <div className="flex overflow-x-auto gap-2 pb-2 mb-6 scrollbar-hide">
@@ -566,6 +579,17 @@ export const OwnerBookingsPage: React.FC = () => {
         onConfirm={handleAction}
         onCancel={() => setModalState({ type: null, bookingId: null, isOpen: false })}
         isLoading={actionLoading !== null}
+      />
+
+      <OwnerOfflineBookingModal
+        isOpen={isOfflineModalOpen}
+        onClose={() => setIsOfflineModalOpen(false)}
+        onSuccess={() => {
+          toast.success('Booking offline berhasil ditambahkan!');
+          loadData();
+        }}
+        venues={venues}
+        token={token || ''}
       />
 
       {modalState.error && (

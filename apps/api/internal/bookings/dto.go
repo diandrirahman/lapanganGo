@@ -126,3 +126,17 @@ type OwnerMetricsResponse struct {
 	RevenueAllTime        float64 `json:"revenue_all_time"`
 	OccupancyRate         float64 `json:"occupancy_rate"`
 }
+
+type OwnerCreateOfflineBookingRequest struct {
+	VenueID       string  `json:"venue_id" binding:"required,uuid"`
+	CourtID       string  `json:"court_id" binding:"required,uuid"`
+	BookingDate   string  `json:"booking_date" binding:"required,datetime=2006-01-02"`
+	StartTime     string  `json:"start_time" binding:"required,datetime=15:04"`
+	EndTime       string  `json:"end_time" binding:"required,datetime=15:04"`
+	CustomerName  string  `json:"customer_name" binding:"required,min=2,max=120"`
+	CustomerPhone string  `json:"customer_phone" binding:"omitempty,max=30"`
+	CustomerEmail string  `json:"customer_email" binding:"omitempty,email,max=255"`
+	TotalPrice    float64 `json:"total_price" binding:"required,gt=0"`
+	Status        string  `json:"status" binding:"required,oneof=PAID COMPLETED"`
+	Note          string  `json:"note" binding:"omitempty,max=500"`
+}

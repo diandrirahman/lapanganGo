@@ -43,6 +43,7 @@ export interface Booking {
   total_price: number;
   status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
+  expires_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -63,6 +64,21 @@ export interface OwnerBooking {
   total_price: number;
   status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
+  expires_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface OwnerCreateOfflineBookingRequest {
+  venue_id: string;
+  court_id: string;
+  booking_date: string;
+  start_time: string;
+  end_time: string;
+  customer_name: string;
+  customer_phone?: string;
+  customer_email?: string;
+  total_price: number;
+  status: 'PAID' | 'COMPLETED';
+  note?: string;
 }

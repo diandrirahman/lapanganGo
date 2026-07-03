@@ -36,6 +36,7 @@ var (
 
 type BookingRepository interface {
 	LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error)
+	LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID, venueID, ownerProfileID string) (CourtValidationInfo, error)
 	FindOperatingHours(ctx context.Context, tx pgx.Tx, courtID string, dayOfWeek int) (OperatingHour, error)
 	ListByCustomerID(ctx context.Context, customerID string, limit, offset int) ([]CustomerBooking, int, error)
 	FindByIDAndCustomerID(ctx context.Context, id, customerID string) (Booking, error)
@@ -48,6 +49,7 @@ type BookingRepository interface {
 	CheckBlockedSlots(ctx context.Context, tx pgx.Tx, courtID string, startTz, endTz time.Time) (bool, error)
 	CheckExistingBookings(ctx context.Context, tx pgx.Tx, courtID, date, startTime, endTime string) (bool, error)
 	InsertBooking(ctx context.Context, tx pgx.Tx, params CreateBookingParams) (Booking, error)
+	InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, params CreateOfflineBookingParams) (Booking, error)
 	CancelPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error)
 	ConfirmPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error)
 	GetOwnerMetrics(ctx context.Context, ownerProfileID string, startDate string, endDate string) (OwnerMetrics, error)
@@ -657,3 +659,132 @@ func (s *Service) StartExpiryWorker(ctx context.Context, interval time.Duration)
 		}
 	}
 }
+
+func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID string, req OwnerCreateOfflineBookingRequest) (BookingResponse, error) {
+	// 1. Verify owner profile
+	ownerProfile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrOwnerProfileNotFound
+		}
+		return BookingResponse{}, err
+	}
+
+	// 2. Verify venue ownership
+	_, err = s.repository.FindVenueByIDAndOwnerProfileID(ctx, req.VenueID, ownerProfile.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BookingResponse{}, ErrForbidden
+		}
+		return BookingResponse{}, err
+	}
+
+	// 3. Time validation
+	reqDate, err := time.Parse("2006-01-02", req.BookingDate)
+	if err != nil {
+		return BookingResponse{}, err
+	}
+	startParsed, err := time.Parse("15:04", req.StartTime)
+	if err != nil {
+		return BookingResponse{}, err
+	}
+	endParsed, err := time.Parse("15:04", req.EndTime)
+	if err != nil {
+		return BookingResponse{}, err
+	}
+
+	if !startParsed.Before(endParsed) {
+		return BookingResponse{}, ErrInvalidTimeRange
+	}
+
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+	startTz := time.Date(reqDate.Year(), reqDate.Month(), reqDate.Day(), startParsed.Hour(), startParsed.Minute(), 0, 0, loc)
+	endTz := time.Date(reqDate.Year(), reqDate.Month(), reqDate.Day(), endParsed.Hour(), endParsed.Minute(), 0, 0, loc)
+
+	var created Booking
+	err = s.repository.ExecuteBookingTx(ctx, func(tx pgx.Tx) error {
+		info, err := s.repository.LockOwnerCourtValidationInfo(ctx, tx, req.CourtID, req.VenueID, ownerProfile.ID)
+		if err != nil {
+			return err
+		}
+		if info.CourtStatus != "ACTIVE" {
+			return ErrCourtInactive
+		}
+		if info.VenueStatus != "ACTIVE" {
+			return ErrVenueInactive
+		}
+
+		dayOfWeek := int(reqDate.Weekday()) // Sunday = 0
+		opHour, err := s.repository.FindOperatingHours(ctx, tx, req.CourtID, dayOfWeek)
+		if err != nil {
+			return err
+		}
+		if opHour.IsClosed {
+			return ErrOutsideOpHours
+		}
+		
+		// Check operating hours
+		if opHour.OpenTime != nil && opHour.CloseTime != nil {
+			reqStartMin := startParsed.Hour()*60 + startParsed.Minute()
+			reqEndMin := endParsed.Hour()*60 + endParsed.Minute()
+			
+			openMin := opHour.OpenTime.Hour()*60 + opHour.OpenTime.Minute()
+			closeMin := opHour.CloseTime.Hour()*60 + opHour.CloseTime.Minute()
+			
+			if reqStartMin < openMin || reqEndMin > closeMin {
+				return ErrOutsideOpHours
+			}
+		}
+
+		isBlocked, err := s.repository.CheckBlockedSlots(ctx, tx, req.CourtID, startTz, endTz)
+		if err != nil {
+			return err
+		}
+		if isBlocked {
+			return ErrOverlapBlockedSlot
+		}
+
+		isOverlap, err := s.repository.CheckExistingBookings(ctx, tx, req.CourtID, req.BookingDate, req.StartTime, req.EndTime)
+		if err != nil {
+			return err
+		}
+		if isOverlap {
+			return ErrOverlapBooking
+		}
+
+		params := CreateOfflineBookingParams{
+			VenueID:       req.VenueID,
+			CourtID:       req.CourtID,
+			Date:          req.BookingDate,
+			StartTime:     req.StartTime,
+			EndTime:       req.EndTime,
+			TotalPrice:    req.TotalPrice,
+			Status:        req.Status,
+			OwnerUserID:   ownerUserID,
+			CustomerName:  req.CustomerName,
+		}
+		if req.CustomerPhone != "" {
+			params.CustomerPhone = &req.CustomerPhone
+		}
+		if req.CustomerEmail != "" {
+			params.CustomerEmail = &req.CustomerEmail
+		}
+		if req.Note != "" {
+			params.Note = &req.Note
+		}
+
+		b, err := s.repository.InsertOfflineBookingTx(ctx, tx, params)
+		if err != nil {
+			return err
+		}
+		created = b
+		return nil
+	})
+
+	if err != nil {
+		return BookingResponse{}, err
+	}
+
+	return toBookingResponse(created), nil
+}
+
