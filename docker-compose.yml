@@ -40,6 +40,8 @@ services:
       - DATABASE_URL=postgres://lapangango_user:lapangango_password@postgres:5432/lapangango_db?sslmode=disable
       - REDIS_URL=redis://redis:6379/0
       - JWT_SECRET=supersecretkey
+      - BOOKING_PAYMENT_TTL_MINUTES=10
+      - BOOKING_EXPIRY_SWEEP_INTERVAL_SECONDS=10
     ports:
       - "8080:8080"
     depends_on:

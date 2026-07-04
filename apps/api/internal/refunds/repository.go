@@ -26,7 +26,7 @@ type Repository interface {
 	GetLatestRefundRequestByBookingID(ctx context.Context, bookingID string) (*RefundRequestResponse, error)
 	GetRefundRequestByID(ctx context.Context, id string) (RefundRequestResponse, error)
 	ListOwnerRefundRequests(ctx context.Context, ownerID string, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error)
-	
+
 	// Transactional methods
 	BeginTx(ctx context.Context) (pgx.Tx, error)
 	LockRefundRequest(ctx context.Context, tx pgx.Tx, id string) (RefundRequestResponse, error)
@@ -139,7 +139,7 @@ func (r *repository) GetRefundRequestByID(ctx context.Context, id string) (Refun
 
 func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error) {
 	offset := (page - 1) * limit
-	
+
 	countQuery := `
 		SELECT COUNT(*)
 		FROM booking_refund_requests br
@@ -171,7 +171,7 @@ func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string
 		ORDER BY br.requested_at DESC
 		LIMIT $4 OFFSET $5
 	`
-	
+
 	rows, err := r.db.Query(ctx, query, ownerID, status, venueID, limit, offset)
 	if err != nil {
 		return nil, 0, err
@@ -194,7 +194,7 @@ func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string
 		}
 		items = append(items, item)
 	}
-	
+
 	return items, total, nil
 }
 

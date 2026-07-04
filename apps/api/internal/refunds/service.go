@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
+
+	"lapangango-api/internal/notifications"
 )
 
 var (
@@ -31,11 +34,12 @@ type Service interface {
 }
 
 type service struct {
-	repo Repository
+	repo         Repository
+	notifService notifications.Service
 }
 
-func NewService(repo Repository) Service {
-	return &service{repo: repo}
+func NewService(repo Repository, notifService notifications.Service) Service {
+	return &service{repo: repo, notifService: notifService}
 }
 
 func canRequestRefund(now time.Time, bookingDate time.Time, startTime time.Time, loc *time.Location) bool {
@@ -92,7 +96,39 @@ func (s *service) RequestBookingRefund(ctx context.Context, customerID, bookingI
 		Status:     "PENDING",
 	}
 
-	return s.repo.CreateRefundRequest(ctx, req)
+	createdReq, err := s.repo.CreateRefundRequest(ctx, req)
+	if err != nil {
+		return RefundRequestResponse{}, err
+	}
+
+	if s.notifService != nil {
+		entityType := notifications.EntityRefund
+		entityID := createdReq.ID
+		// To Customer
+		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     createdReq.CustomerID,
+			Type:       notifications.TypeRefundRequested,
+			Title:      "Pengajuan Refund Diterima",
+			Message:    "Pengajuan refund Anda telah kami terima dan menunggu verifikasi pemilik.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		}); err != nil {
+			log.Printf("Failed to create refund notification for customer: %v", err)
+		}
+		// To Owner
+		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     b.OwnerID,
+			Type:       notifications.TypeRefundRequested,
+			Title:      "Pengajuan Refund Baru",
+			Message:    "Customer mengajukan refund untuk pesanan yang dibatalkan.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		}); err != nil {
+			log.Printf("Failed to create refund notification for owner: %v", err)
+		}
+	}
+
+	return createdReq, nil
 }
 
 func (s *service) GetRefundRequestByBooking(ctx context.Context, customerID, bookingID string) (*RefundRequestResponse, error) {
@@ -217,6 +253,21 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, 
 	req.ReviewedAt = &now
 	req.ReviewedByUserID = &ownerID
 
+	if s.notifService != nil {
+		entityType := notifications.EntityRefund
+		entityID := req.ID
+		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     req.CustomerID,
+			Type:       notifications.TypeRefundApproved,
+			Title:      "Refund Disetujui",
+			Message:    "Pengajuan refund Anda telah disetujui. Dana akan segera diproses.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		}); err != nil {
+			log.Printf("Failed to create refund approved notification: %v", err)
+		}
+	}
+
 	return req, nil
 }
 
@@ -255,6 +306,21 @@ func (s *service) RejectRefundRequest(ctx context.Context, ownerID, requestID, o
 	now := timeNow()
 	req.ReviewedAt = &now
 	req.ReviewedByUserID = &ownerID
+
+	if s.notifService != nil {
+		entityType := notifications.EntityRefund
+		entityID := req.ID
+		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     req.CustomerID,
+			Type:       notifications.TypeRefundRejected,
+			Title:      "Refund Ditolak",
+			Message:    "Pengajuan refund Anda ditolak oleh pemilik.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		}); err != nil {
+			log.Printf("Failed to create refund rejected notification: %v", err)
+		}
+	}
 
 	return req, nil
 }

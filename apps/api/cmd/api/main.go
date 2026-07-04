@@ -20,6 +20,7 @@ import (
 	"lapangango-api/internal/finance"
 	"lapangango-api/internal/mabar"
 	"lapangango-api/internal/middleware"
+	"lapangango-api/internal/notifications"
 	"lapangango-api/internal/owners"
 	"lapangango-api/internal/refunds"
 	"lapangango-api/internal/schedules"
@@ -119,14 +120,24 @@ func main() {
 	financeHandler := finance.NewHandler(financeService)
 	financeHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
+	notificationsRepository := notifications.NewRepository(dbPool)
+	notificationsService := notifications.NewService(notificationsRepository)
+	notificationsHandler := notifications.NewHandler(notificationsService)
+	// Notifications routes apply to all authenticated users
+	notificationsGroup := r.Group("/notifications")
+	notificationsGroup.Use(authMiddleware)
+	notificationsHandler.RegisterRoutes(notificationsGroup)
+
 	bookingsRepository := bookings.NewRepository(dbPool)
-	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes)
+	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService)
 	bookingsHandler := bookings.NewHandler(bookingsService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
 	go bookingsService.StartExpiryWorker(workerCtx, time.Duration(cfg.BookingExpirySweepIntervalSeconds)*time.Second)
+	go bookingsService.StartAutoCompleteWorker(workerCtx, time.Duration(cfg.BookingAutoCompleteIntervalSeconds)*time.Second)
 
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
@@ -139,7 +150,7 @@ func main() {
 	mabarHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 
 	refundsRepository := refunds.NewRepository(dbPool)
-	refundsService := refunds.NewService(refundsRepository)
+	refundsService := refunds.NewService(refundsRepository, notificationsService)
 	refundsHandler := refunds.NewHandler(refundsService)
 	refundsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"), middleware.RequireRole("OWNER"))
 

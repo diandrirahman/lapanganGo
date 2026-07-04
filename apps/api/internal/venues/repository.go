@@ -942,5 +942,3 @@ func (r *Repository) DeleteVenuePhoto(ctx context.Context, id string) error {
 	}
 	return nil
 }
-
-

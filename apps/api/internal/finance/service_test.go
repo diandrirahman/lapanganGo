@@ -43,4 +43,3 @@ func TestGetOwnerFinanceSummary(t *testing.T) {
 		t.Errorf("expected 1000, got %f", res.TotalIncome)
 	}
 }
-

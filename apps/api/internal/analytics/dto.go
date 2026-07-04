@@ -25,7 +25,7 @@ type RevenueVenueItem struct {
 }
 
 type RevenueResponse struct {
-	Trend         []RevenueTrendItem `json:"trend"`
+	Trend          []RevenueTrendItem `json:"trend"`
 	VenueBreakdown []RevenueVenueItem `json:"venue_breakdown"`
 }
 

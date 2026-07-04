@@ -433,20 +433,20 @@ func toVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) Ve
 
 func toPublicVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) PublicVenueResponse {
 	return PublicVenueResponse{
-		ID:          venue.ID,
-		Name:        venue.Name,
-		Description: venue.Description,
-		Address:     venue.Address,
-		District:    venue.District,
-		City:        venue.City,
-		Province:    venue.Province,
-		PostalCode:  venue.PostalCode,
-		Latitude:    venue.Latitude,
-		Longitude:   venue.Longitude,
+		ID:           venue.ID,
+		Name:         venue.Name,
+		Description:  venue.Description,
+		Address:      venue.Address,
+		District:     venue.District,
+		City:         venue.City,
+		Province:     venue.Province,
+		PostalCode:   venue.PostalCode,
+		Latitude:     venue.Latitude,
+		Longitude:    venue.Longitude,
 		PrimaryPhoto: getPrimaryPhotoURL(photos),
-		Facilities:  toFacilityResponses(facilities),
-		CreatedAt:   venue.CreatedAt,
-		UpdatedAt:   venue.UpdatedAt,
+		Facilities:   toFacilityResponses(facilities),
+		CreatedAt:    venue.CreatedAt,
+		UpdatedAt:    venue.UpdatedAt,
 	}
 }
 

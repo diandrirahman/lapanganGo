@@ -9,28 +9,29 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"lapangango-api/internal/notifications"
 )
 
 var (
-	ErrPastDate                 = errors.New("booking date cannot be in the past")
-	ErrInvalidTimeRange         = errors.New("start time must be before end time")
-	ErrCourtInactive            = errors.New("court is not active")
-	ErrVenueInactive            = errors.New("venue is not active")
-	ErrOutsideOpHours           = errors.New("booking time is outside court operating hours")
-	ErrOverlapBlockedSlot       = errors.New("court is blocked/maintenance during the requested time")
-	ErrOverlapBooking           = errors.New("court is already booked for the requested time")
-	ErrBookingNotFound          = errors.New("booking not found")
-	ErrBookingAlreadyCancelled  = errors.New("booking already cancelled")
-	ErrBookingCannotBeCancelled = errors.New("booking cannot be cancelled in current status")
-	ErrBookingAlreadyConfirmed  = errors.New("booking already confirmed")
-	ErrBookingCannotBeConfirmed = errors.New("booking cannot be confirmed in current status")
-	ErrOwnerProfileNotFound     = errors.New("owner profile not found")
-	ErrVenueNotFound            = errors.New("venue not found")
-	ErrForbidden                = errors.New("forbidden: you do not own this booking's venue")
-	ErrBookingCannotBeMarkedPaid = errors.New("Booking tidak dapat ditandai lunas pada status ini")
-	ErrBookingCannotBeCompleted  = errors.New("Gagal menyelesaikan booking. Pastikan jadwal main telah terlewati dan status sudah Lunas.")
-	ErrBookingCannotBeRefunded   = errors.New("booking cannot be cancelled/refunded in current status")
-	ErrBookingRefundAlreadyExists = errors.New("refund already recorded for this booking")
+	ErrPastDate                    = errors.New("booking date cannot be in the past")
+	ErrInvalidTimeRange            = errors.New("start time must be before end time")
+	ErrCourtInactive               = errors.New("court is not active")
+	ErrVenueInactive               = errors.New("venue is not active")
+	ErrOutsideOpHours              = errors.New("booking time is outside court operating hours")
+	ErrOverlapBlockedSlot          = errors.New("court is blocked/maintenance during the requested time")
+	ErrOverlapBooking              = errors.New("court is already booked for the requested time")
+	ErrBookingNotFound             = errors.New("booking not found")
+	ErrBookingAlreadyCancelled     = errors.New("booking already cancelled")
+	ErrBookingCannotBeCancelled    = errors.New("booking cannot be cancelled in current status")
+	ErrBookingAlreadyConfirmed     = errors.New("booking already confirmed")
+	ErrBookingCannotBeConfirmed    = errors.New("booking cannot be confirmed in current status")
+	ErrOwnerProfileNotFound        = errors.New("owner profile not found")
+	ErrVenueNotFound               = errors.New("venue not found")
+	ErrForbidden                   = errors.New("forbidden: you do not own this booking's venue")
+	ErrBookingCannotBeMarkedPaid   = errors.New("Booking tidak dapat ditandai lunas pada status ini")
+	ErrBookingCannotBeCompleted    = errors.New("Gagal menyelesaikan booking. Pastikan jadwal main telah terlewati dan status sudah Lunas.")
+	ErrBookingCannotBeRefunded     = errors.New("booking cannot be cancelled/refunded in current status")
+	ErrBookingRefundAlreadyExists  = errors.New("refund already recorded for this booking")
 	ErrBookingIncomeLedgerNotFound = errors.New("booking income ledger not found; backfill ledger before refund")
 )
 
@@ -57,18 +58,27 @@ type BookingRepository interface {
 	VerifyPayment(ctx context.Context, ownerUserID string, bookingID string, isApproved bool) (Booking, error)
 	MarkBookingPaid(ctx context.Context, ownerUserID string, bookingID string) (Booking, error)
 	CompleteBooking(ctx context.Context, bookingID string) (Booking, error)
+	GetOwnerUserIDByCourtID(ctx context.Context, courtID string) (string, error)
+	GetOwnerUserIDByBookingID(ctx context.Context, bookingID string) (string, error)
 	GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error)
 	CancelExpiredPendingBookings(ctx context.Context) (int64, error)
 	CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error)
+	AutoCompleteFinishedBookings(ctx context.Context) ([]Booking, error)
+	GetBookingsExpiringSoon(ctx context.Context, cutoff time.Time) ([]Booking, error)
 }
 
 type Service struct {
-	repository BookingRepository
-	ttlMinutes int
+	repository   BookingRepository
+	ttlMinutes   int
+	notifService notifications.Service
 }
 
-func NewService(repository BookingRepository, ttlMinutes int) *Service {
-	return &Service{repository: repository, ttlMinutes: ttlMinutes}
+func NewService(repository BookingRepository, ttlMinutes int, notifService notifications.Service) *Service {
+	return &Service{
+		repository:   repository,
+		ttlMinutes:   ttlMinutes,
+		notifService: notifService,
+	}
 }
 
 func (s *Service) CreateBooking(ctx context.Context, customerID string, req CreateBookingRequest) (BookingResponse, error) {
@@ -188,6 +198,31 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 		return BookingResponse{}, err
 	}
 
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		entityID := created.ID
+
+		_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     customerID,
+			Type:       notifications.TypeBookingCreated,
+			Title:      "Pesanan Berhasil Dibuat",
+			Message:    "Silakan unggah bukti pembayaran sebelum batas waktu.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		})
+
+		if ownerUserID, err := s.repository.GetOwnerUserIDByCourtID(ctx, req.CourtID); err == nil && ownerUserID != "" {
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     ownerUserID,
+				Type:       notifications.TypeBookingCreated,
+				Title:      "Pesanan Baru Diterima",
+				Message:    "Ada pesanan baru yang menunggu pembayaran.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		}
+	}
+
 	return toBookingResponse(created), nil
 }
 
@@ -199,6 +234,32 @@ func (s *Service) SubmitPaymentProof(ctx context.Context, customerID, bookingID,
 		}
 		return BookingResponse{}, err
 	}
+
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		entityID := b.ID
+
+		_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     customerID,
+			Type:       notifications.TypePaymentProofSubmitted,
+			Title:      "Bukti Pembayaran Terkirim",
+			Message:    "Bukti pembayaran Anda telah dikirim dan menunggu verifikasi pemilik.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		})
+
+		if ownerUserID, err := s.repository.GetOwnerUserIDByBookingID(ctx, bookingID); err == nil && ownerUserID != "" {
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     ownerUserID,
+				Type:       notifications.TypePaymentProofSubmitted,
+				Title:      "Bukti Pembayaran Baru",
+				Message:    "Customer telah mengunggah bukti pembayaran untuk diverifikasi.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		}
+	}
+
 	return toBookingResponse(b), nil
 }
 
@@ -231,6 +292,31 @@ func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID stri
 		}
 		return BookingResponse{}, err
 	}
+
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		entityID := b.ID
+		if isApproved {
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     b.CustomerID,
+				Type:       notifications.TypePaymentApproved,
+				Title:      "Pembayaran Diterima",
+				Message:    "Pembayaran pesanan Anda telah diverifikasi dan pesanan Anda kini aktif.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		} else {
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     b.CustomerID,
+				Type:       notifications.TypePaymentRejected,
+				Title:      "Pembayaran Ditolak",
+				Message:    "Pembayaran pesanan Anda ditolak. Silakan periksa kembali atau hubungi pemilik.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		}
+	}
+
 	return toBookingResponse(b), nil
 }
 
@@ -328,6 +414,21 @@ func (s *Service) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID, 
 		return BookingResponse{}, err
 	}
 
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		entityID := b.ID
+		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+			UserID:     b.CustomerID,
+			Type:       notifications.TypeRefundApproved,
+			Title:      "Booking Dibatalkan & Refund Diproses",
+			Message:    "Booking Anda telah dibatalkan oleh owner dan refund telah dicatat.",
+			EntityType: &entityType,
+			EntityID:   &entityID,
+		}); err != nil {
+			log.Printf("Failed to create owner cancel refund notification: %v", err)
+		}
+	}
+
 	return toBookingResponse(b), nil
 }
 
@@ -416,7 +517,7 @@ func (s *Service) ListOwnerBookings(ctx context.Context, ownerUserID string, req
 	}
 
 	query := normalizeOwnerBookingsQuery(req)
-	
+
 	// Apply search trim and length logic
 	if query.Q != "" {
 		trimmedQ := strings.TrimSpace(query.Q)
@@ -627,20 +728,46 @@ func (s *Service) GetOwnerMetrics(ctx context.Context, ownerUserID string, query
 	}
 
 	return OwnerMetricsResponse{
-		TotalVenues:          metrics.TotalVenues,
-		UpcomingBookings:     metrics.UpcomingBookings,
-		PendingVerifications: metrics.PendingVerifications,
+		TotalVenues:           metrics.TotalVenues,
+		UpcomingBookings:      metrics.UpcomingBookings,
+		PendingVerifications:  metrics.PendingVerifications,
 		RevenueCurrent:        metrics.RevenueCurrent,
 		BookingRevenueCurrent: metrics.BookingRevenueCurrent,
 		RefundCurrent:         metrics.RefundCurrent,
 		NetRevenueCurrent:     metrics.NetRevenueCurrent,
 		RevenueAllTime:        metrics.RevenueAllTime,
-		OccupancyRate:        metrics.OccupancyRate,
+		OccupancyRate:         metrics.OccupancyRate,
 	}, nil
 }
 
 func (s *Service) SweepExpiredBookings(ctx context.Context) (int64, error) {
 	return s.repository.CancelExpiredPendingBookings(ctx)
+}
+
+func (s *Service) SweepPaymentExpiringSoonNotifications(ctx context.Context) (int64, error) {
+	// cutoff is next 5 minutes
+	cutoff := time.Now().In(time.UTC).Add(5 * time.Minute)
+	bookings, err := s.repository.GetBookingsExpiringSoon(ctx, cutoff)
+	if err != nil {
+		return 0, err
+	}
+
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		for _, b := range bookings {
+			entityID := b.ID
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     b.CustomerID,
+				Type:       notifications.TypePaymentExpiringSoon,
+				Title:      "Pembayaran hampir habis",
+				Message:    "Selesaikan pembayaran sebelum batas waktu agar pesanan tidak dibatalkan.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		}
+	}
+
+	return int64(len(bookings)), nil
 }
 
 func (s *Service) StartExpiryWorker(ctx context.Context, interval time.Duration) {
@@ -652,9 +779,56 @@ func (s *Service) StartExpiryWorker(ctx context.Context, interval time.Duration)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, err := s.SweepExpiredBookings(ctx)
+			// Sweep notifications for expiring soon
+			_, err := s.SweepPaymentExpiringSoonNotifications(ctx)
+			if err != nil {
+				log.Printf("Error sweeping expiring soon notifications: %v", err)
+			}
+			// Cancel expired bookings
+			_, err = s.SweepExpiredBookings(ctx)
 			if err != nil {
 				log.Printf("Error sweeping expired bookings: %v", err)
+			}
+		}
+	}
+}
+
+func (s *Service) SweepCompletedBookings(ctx context.Context) (int64, error) {
+	bookings, err := s.repository.AutoCompleteFinishedBookings(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	if s.notifService != nil {
+		entityType := notifications.EntityBooking
+		for _, b := range bookings {
+			entityID := b.ID
+			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+				UserID:     b.CustomerID,
+				Type:       notifications.TypeBookingCompleted,
+				Title:      "Booking Selesai",
+				Message:    "Jadwal booking Anda telah selesai. Terima kasih telah menggunakan LapanganGo.",
+				EntityType: &entityType,
+				EntityID:   &entityID,
+			})
+		}
+	}
+
+	return int64(len(bookings)), nil
+}
+
+func (s *Service) StartAutoCompleteWorker(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, err := s.SweepCompletedBookings(ctx)
+			if err != nil {
+				log.Printf("Error sweeping completed bookings: %v", err)
 			}
 		}
 	}
@@ -722,15 +896,15 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 		if opHour.IsClosed {
 			return ErrOutsideOpHours
 		}
-		
+
 		// Check operating hours
 		if opHour.OpenTime != nil && opHour.CloseTime != nil {
 			reqStartMin := startParsed.Hour()*60 + startParsed.Minute()
 			reqEndMin := endParsed.Hour()*60 + endParsed.Minute()
-			
+
 			openMin := opHour.OpenTime.Hour()*60 + opHour.OpenTime.Minute()
 			closeMin := opHour.CloseTime.Hour()*60 + opHour.CloseTime.Minute()
-			
+
 			if reqStartMin < openMin || reqEndMin > closeMin {
 				return ErrOutsideOpHours
 			}
@@ -753,15 +927,15 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 		}
 
 		params := CreateOfflineBookingParams{
-			VenueID:       req.VenueID,
-			CourtID:       req.CourtID,
-			Date:          req.BookingDate,
-			StartTime:     req.StartTime,
-			EndTime:       req.EndTime,
-			TotalPrice:    req.TotalPrice,
-			Status:        req.Status,
-			OwnerUserID:   ownerUserID,
-			CustomerName:  req.CustomerName,
+			VenueID:      req.VenueID,
+			CourtID:      req.CourtID,
+			Date:         req.BookingDate,
+			StartTime:    req.StartTime,
+			EndTime:      req.EndTime,
+			TotalPrice:   req.TotalPrice,
+			Status:       req.Status,
+			OwnerUserID:  ownerUserID,
+			CustomerName: req.CustomerName,
 		}
 		if req.CustomerPhone != "" {
 			params.CustomerPhone = &req.CustomerPhone
@@ -787,4 +961,3 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 
 	return toBookingResponse(created), nil
 }
-

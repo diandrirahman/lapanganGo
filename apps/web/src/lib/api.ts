@@ -4,6 +4,7 @@ import type { OwnerProfile, OwnerMetrics } from '../types/owner';
 import type { PaginatedResponse } from '../types/pagination';
 import type { OpenMatch } from '../types/mabar';
 import type { FinanceSummaryResult } from '../types/finance';
+import type { NotificationListResponse } from '../types/notification';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
@@ -1279,5 +1280,39 @@ export async function rejectRefundRequest(id: string, ownerNote: string, token: 
     throw new Error(errorData.message || 'Gagal menolak refund');
   }
 
-  return response.json();
+	return response.json();
 }
+
+// --- Notifications ---
+
+export const fetchNotifications = async (token: string, page: number = 1, limit: number = 10): Promise<NotificationListResponse> => {
+  const res = await apiFetch(`${API_BASE_URL}/notifications?page=${page}&limit=${limit}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('Failed to fetch notifications');
+  return res.json();
+};
+
+export const fetchUnreadNotificationCount = async (token: string): Promise<{ count: number }> => {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/unread-count`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('Failed to fetch unread count');
+  return res.json();
+};
+
+export const markNotificationRead = async (token: string, id: string): Promise<void> => {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/${id}/read`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('Failed to mark notification as read');
+};
+
+export const markAllNotificationsRead = async (token: string): Promise<void> => {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/read-all`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('Failed to mark all notifications as read');
+};

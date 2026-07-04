@@ -9,15 +9,16 @@ import (
 )
 
 type Config struct {
-	AppPort                           string
-	DatabaseURL                       string
-	JWTSecret                         string
-	JWTExpiresInHours                 int
-	BookingPaymentTTLMinutes          int
-	BookingExpirySweepIntervalSeconds int
-	RedisURL                          string
-	GeneralRateLimitPerMinute         int
-	AuthRateLimitPerMinute            int
+	AppPort                            string
+	DatabaseURL                        string
+	JWTSecret                          string
+	JWTExpiresInHours                  int
+	BookingPaymentTTLMinutes           int
+	BookingExpirySweepIntervalSeconds  int
+	BookingAutoCompleteIntervalSeconds int
+	RedisURL                           string
+	GeneralRateLimitPerMinute          int
+	AuthRateLimitPerMinute             int
 }
 
 func Load() Config {
@@ -68,6 +69,15 @@ func Load() Config {
 		bookingExpirySweepIntervalSeconds = parsedValue
 	}
 
+	bookingAutoCompleteIntervalSeconds := 300
+	if value := os.Getenv("BOOKING_AUTO_COMPLETE_INTERVAL_SECONDS"); value != "" {
+		parsedValue, err := strconv.Atoi(value)
+		if err != nil || parsedValue <= 0 {
+			log.Fatal("BOOKING_AUTO_COMPLETE_INTERVAL_SECONDS must be a positive number")
+		}
+		bookingAutoCompleteIntervalSeconds = parsedValue
+	}
+
 	redisURL := os.Getenv("REDIS_URL")
 
 	generalRateLimitPerMinute := 100
@@ -85,14 +95,15 @@ func Load() Config {
 	}
 
 	return Config{
-		AppPort:                           appPort,
-		DatabaseURL:                       databaseURL,
-		JWTSecret:                         jwtSecret,
-		JWTExpiresInHours:                 jwtExpiresInHours,
-		BookingPaymentTTLMinutes:          bookingPaymentTTLMinutes,
-		BookingExpirySweepIntervalSeconds: bookingExpirySweepIntervalSeconds,
-		RedisURL:                          redisURL,
-		GeneralRateLimitPerMinute:         generalRateLimitPerMinute,
-		AuthRateLimitPerMinute:            authRateLimitPerMinute,
+		AppPort:                            appPort,
+		DatabaseURL:                        databaseURL,
+		JWTSecret:                          jwtSecret,
+		JWTExpiresInHours:                  jwtExpiresInHours,
+		BookingPaymentTTLMinutes:           bookingPaymentTTLMinutes,
+		BookingExpirySweepIntervalSeconds:  bookingExpirySweepIntervalSeconds,
+		BookingAutoCompleteIntervalSeconds: bookingAutoCompleteIntervalSeconds,
+		RedisURL:                           redisURL,
+		GeneralRateLimitPerMinute:          generalRateLimitPerMinute,
+		AuthRateLimitPerMinute:             authRateLimitPerMinute,
 	}
 }

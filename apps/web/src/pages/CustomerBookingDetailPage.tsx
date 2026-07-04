@@ -17,7 +17,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { token } = useAuth();
-  
+
   const [booking, setBooking] = useState<Booking | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +26,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
   const [modalState, setModalState] = useState<{ type: 'cancel' | 'pay' | 'refund' | null, isOpen: boolean, error?: string }>({ type: null, isOpen: false });
   const [refundRequest, setRefundRequest] = useState<RefundRequest | null>(null);
   const [refundReason, setRefundReason] = useState('');
-  
+
   const [_now, setNow] = useState<Date>(new Date());
 
   const loadBooking = useCallback(async () => {
@@ -158,7 +158,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
     return now < oneHourBefore;
   };
 
-	const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string) => {
     switch (status) {
       case 'PENDING_PAYMENT':
         return <span className="px-4 py-1.5 bg-yellow-100 text-yellow-800 text-sm font-bold rounded-full flex items-center gap-1.5 w-fit"><AlertCircle className="w-4 h-4" /> Menunggu Pembayaran</span>;
@@ -180,7 +180,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
   return (
     <PageShell>
       <div className="pt-24 pb-40 max-w-3xl mx-auto px-6">
-        <button 
+        <button
           onClick={() => navigate('/bookings')}
           className="flex items-center gap-2 text-text-muted hover:text-primary transition-colors font-bold mb-8"
         >
@@ -290,33 +290,33 @@ export const CustomerBookingDetailPage: React.FC = () => {
                         <AlertCircle className="w-4 h-4" /> Info Pembayaran
                       </p>
                       <p className="text-sm text-blue-700">
-                        Selesaikan pembayaran dalam batas waktu yang ditentukan.<br/>
+                        Selesaikan pembayaran dalam batas waktu yang ditentukan.<br />
                         Silakan lakukan pembayaran manual dan kirim referensi pembayaran agar owner dapat melakukan verifikasi.
                       </p>
                     </div>
                   )}
-                  
+
                   <div className="mb-6">
                     <label className="block text-[13px] font-extrabold text-text-main mb-2">Referensi Pembayaran</label>
-                    <input 
-                      type="text" 
-                      placeholder="Contoh: Transfer BCA a.n Budi" 
+                    <input
+                      type="text"
+                      placeholder="Contoh: Transfer BCA a.n Budi"
                       value={paymentReference}
                       onChange={(e) => setPaymentReference(e.target.value)}
                       disabled={isPaymentExpired}
                       className="w-full px-4 py-3 bg-surface border border-border-main rounded-xl text-[15px] font-medium text-text-main focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-50"
                     />
                   </div>
-                  
+
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <button 
+                    <button
                       onClick={() => setModalState({ type: 'pay', isOpen: true })}
                       disabled={actionLoading !== null || isPaymentExpired}
                       className="flex-1 bg-primary text-white py-3 rounded-xl font-bold text-[15px] hover:bg-primary/90 transition-colors disabled:opacity-50"
                     >
                       Kirim Bukti Pembayaran
                     </button>
-                    <button 
+                    <button
                       onClick={() => isPaymentExpired ? navigate('/bookings') : setModalState({ type: 'cancel', isOpen: true })}
                       disabled={actionLoading !== null}
                       className="flex-1 bg-red-50 text-red-600 py-3 rounded-xl font-bold text-[15px] hover:bg-red-100 transition-colors disabled:opacity-50"
@@ -357,7 +357,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
                       Pembayaran sudah diverifikasi. Booking Anda sudah lunas dan siap digunakan sesuai jadwal.
                     </p>
                   </div>
-                  
+
                   {refundRequest ? (
                     <div className="p-4 bg-orange-50 border border-orange-200 rounded-2xl">
                       <p className="text-sm text-orange-800 mb-2 font-bold flex items-center gap-2">
@@ -387,7 +387,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
                       <p className="text-xs text-text-muted mb-4">
                         Anda dapat mengajukan pembatalan & refund hingga maksimal 1 jam sebelum jadwal mulai. Persetujuan dan jumlah dana yang dikembalikan bergantung pada kebijakan masing-masing venue.
                       </p>
-                      <button 
+                      <button
                         onClick={() => setModalState({ type: 'refund', isOpen: true })}
                         className="w-full bg-white border-2 border-border-main text-text-main py-2.5 rounded-xl font-bold text-[14px] hover:border-text-main transition-colors"
                       >
@@ -517,7 +517,7 @@ export const CustomerBookingDetailPage: React.FC = () => {
           </div>
         </div>
       )}
-      
+
       {modalState.error && (
         <ConfirmModal
           isOpen={!!modalState.error}

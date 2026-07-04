@@ -887,9 +887,9 @@ func (r *Repository) GetBookingOwnerProfileID(ctx context.Context, bookingID str
 }
 
 type OwnerMetrics struct {
-	TotalVenues          int
-	UpcomingBookings     int
-	PendingVerifications int
+	TotalVenues           int
+	UpcomingBookings      int
+	PendingVerifications  int
 	RevenueCurrent        float64
 	BookingRevenueCurrent float64
 	RefundCurrent         float64
@@ -966,7 +966,7 @@ func (r *Repository) GetOwnerMetrics(ctx context.Context, ownerProfileID string,
 
 	var args []interface{}
 	args = append(args, ownerProfileID)
-	
+
 	condition := ` WHERE op.id = $1`
 	if startDate != "" && endDate != "" {
 		condition += ` AND t.transaction_date >= $2 AND t.transaction_date <= $3`
@@ -1137,4 +1137,89 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 	}
 
 	return bookings, total, nil
+}
+
+func (r *Repository) AutoCompleteFinishedBookings(ctx context.Context) ([]Booking, error) {
+	sqlQuery := `
+		UPDATE bookings
+		SET status = 'COMPLETED',
+			updated_at = NOW()
+		WHERE status = 'PAID'
+		  AND (
+			booking_date < (NOW() AT TIME ZONE 'Asia/Jakarta')::DATE
+			OR (
+				booking_date = (NOW() AT TIME ZONE 'Asia/Jakarta')::DATE
+				AND end_time <= (NOW() AT TIME ZONE 'Asia/Jakarta')::TIME
+			)
+		  )
+		RETURNING id, customer_id
+	`
+	rows, err := r.db.Query(ctx, sqlQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var completed []Booking
+	for rows.Next() {
+		var b Booking
+		if err := rows.Scan(&b.ID, &b.CustomerID); err != nil {
+			return nil, err
+		}
+		completed = append(completed, b)
+	}
+	return completed, rows.Err()
+}
+
+func (r *Repository) GetBookingsExpiringSoon(ctx context.Context, cutoff time.Time) ([]Booking, error) {
+	query := `
+		SELECT id, customer_id, expires_at
+		FROM bookings
+		WHERE status = 'PENDING_PAYMENT' 
+		  AND expires_at IS NOT NULL
+		  AND expires_at > NOW() 
+		  AND expires_at <= $1
+	`
+	rows, err := r.db.Query(ctx, query, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bookings []Booking
+	for rows.Next() {
+		var b Booking
+		if err := rows.Scan(&b.ID, &b.CustomerID, &b.ExpiresAt); err != nil {
+			return nil, err
+		}
+		bookings = append(bookings, b)
+	}
+	return bookings, rows.Err()
+}
+
+func (r *Repository) GetOwnerUserIDByCourtID(ctx context.Context, courtID string) (string, error) {
+	var userID string
+	query := `
+		SELECT op.user_id 
+		FROM courts c
+		JOIN venues v ON c.venue_id = v.id
+		JOIN owner_profiles op ON v.owner_profile_id = op.id
+		WHERE c.id = $1
+	`
+	err := r.db.QueryRow(ctx, query, courtID).Scan(&userID)
+	return userID, err
+}
+
+func (r *Repository) GetOwnerUserIDByBookingID(ctx context.Context, bookingID string) (string, error) {
+	var userID string
+	query := `
+		SELECT op.user_id 
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		JOIN owner_profiles op ON v.owner_profile_id = op.id
+		WHERE b.id = $1
+	`
+	err := r.db.QueryRow(ctx, query, bookingID).Scan(&userID)
+	return userID, err
 }

@@ -41,21 +41,21 @@ type UpdateTransactionRequest struct {
 }
 
 type FinanceTransaction struct {
-	ID              string     `json:"id"`
-	OwnerID         string     `json:"owner_id"`
-	VenueID         *string    `json:"venue_id"`
-	BookingID       *string    `json:"booking_id"`
-	CreatedByUserID *string    `json:"created_by_user_id"`
-	Type            string     `json:"type"`
-	Source          string     `json:"source"`
-	Category        string     `json:"category"`
-	Amount          float64    `json:"amount"`
-	TransactionDate string     `json:"transaction_date"`
-	PaymentMethod   *string    `json:"payment_method"`
-	Description     *string    `json:"description"`
-	AttachmentURL   *string    `json:"attachment_url"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              string    `json:"id"`
+	OwnerID         string    `json:"owner_id"`
+	VenueID         *string   `json:"venue_id"`
+	BookingID       *string   `json:"booking_id"`
+	CreatedByUserID *string   `json:"created_by_user_id"`
+	Type            string    `json:"type"`
+	Source          string    `json:"source"`
+	Category        string    `json:"category"`
+	Amount          float64   `json:"amount"`
+	TransactionDate string    `json:"transaction_date"`
+	PaymentMethod   *string   `json:"payment_method"`
+	Description     *string   `json:"description"`
+	AttachmentURL   *string   `json:"attachment_url"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type TransactionListResponse struct {
@@ -66,19 +66,19 @@ type TransactionListResponse struct {
 }
 
 type FinanceSummaryResult struct {
-	TotalIncome             float64 `json:"total_income"`
-	TotalExpense            float64 `json:"total_expense"`
-	NetProfit               float64 `json:"net_profit"`
-	RealizedBookingRevenue  float64 `json:"realized_booking_revenue"`
-	ManualIncome            float64 `json:"manual_income"`
-	ManualExpense           float64 `json:"manual_expense"`
-	RefundExpense           float64 `json:"refund_expense"`
-	TransactionCount        int     `json:"transaction_count"`
+	TotalIncome            float64 `json:"total_income"`
+	TotalExpense           float64 `json:"total_expense"`
+	NetProfit              float64 `json:"net_profit"`
+	RealizedBookingRevenue float64 `json:"realized_booking_revenue"`
+	ManualIncome           float64 `json:"manual_income"`
+	ManualExpense          float64 `json:"manual_expense"`
+	RefundExpense          float64 `json:"refund_expense"`
+	TransactionCount       int     `json:"transaction_count"`
 
-	VenueBreakdown      []VenueRevenueItem      `json:"venue_breakdown"`
-	StatusBreakdown     []StatusRevenueItem     `json:"status_breakdown"`
-	DailyCashflow       []DailyCashflowItem     `json:"daily_cashflow"`
-	ExpenseByCategory   []ExpenseCategoryItem   `json:"expense_by_category"`
+	VenueBreakdown    []VenueRevenueItem    `json:"venue_breakdown"`
+	StatusBreakdown   []StatusRevenueItem   `json:"status_breakdown"`
+	DailyCashflow     []DailyCashflowItem   `json:"daily_cashflow"`
+	ExpenseByCategory []ExpenseCategoryItem `json:"expense_by_category"`
 }
 
 type VenueRevenueItem struct {

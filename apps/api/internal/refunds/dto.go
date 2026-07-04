@@ -17,19 +17,19 @@ type RejectRefundRequestRequest struct {
 }
 
 type RefundRequestResponse struct {
-	ID                 string     `json:"id"`
-	BookingID          string     `json:"booking_id"`
-	CustomerID         string     `json:"customer_id"`
-	OwnerID            string     `json:"owner_id"`
-	VenueID            *string    `json:"venue_id,omitempty"`
-	Reason             string     `json:"reason"`
-	Status             string     `json:"status"`
-	OwnerNote          *string    `json:"owner_note,omitempty"`
-	RequestedAt        time.Time  `json:"requested_at"`
-	ReviewedAt         *time.Time `json:"reviewed_at,omitempty"`
-	ReviewedByUserID   *string    `json:"reviewed_by_user_id,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID               string     `json:"id"`
+	BookingID        string     `json:"booking_id"`
+	CustomerID       string     `json:"customer_id"`
+	OwnerID          string     `json:"owner_id"`
+	VenueID          *string    `json:"venue_id,omitempty"`
+	Reason           string     `json:"reason"`
+	Status           string     `json:"status"`
+	OwnerNote        *string    `json:"owner_note,omitempty"`
+	RequestedAt      time.Time  `json:"requested_at"`
+	ReviewedAt       *time.Time `json:"reviewed_at,omitempty"`
+	ReviewedByUserID *string    `json:"reviewed_by_user_id,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type OwnerRefundRequestListItem struct {

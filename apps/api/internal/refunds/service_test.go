@@ -10,25 +10,25 @@ import (
 )
 
 type mockRepo struct {
-	booking        refunds.BookingForRefund
-	bookingErr     error
-	activeReq      *refunds.RefundRequestResponse
-	activeReqErr   error
-	latestReq      *refunds.RefundRequestResponse
-	latestReqErr   error
-	createReq      refunds.RefundRequestResponse
-	createReqErr   error
-	reqByID        refunds.RefundRequestResponse
-	reqByIDErr     error
-	tx             pgx.Tx
-	txErr          error
-	hasIncome      bool
-	hasIncomeErr   error
-	hasRefund      bool
-	hasRefundErr   error
+	booking         refunds.BookingForRefund
+	bookingErr      error
+	activeReq       *refunds.RefundRequestResponse
+	activeReqErr    error
+	latestReq       *refunds.RefundRequestResponse
+	latestReqErr    error
+	createReq       refunds.RefundRequestResponse
+	createReqErr    error
+	reqByID         refunds.RefundRequestResponse
+	reqByIDErr      error
+	tx              pgx.Tx
+	txErr           error
+	hasIncome       bool
+	hasIncomeErr    error
+	hasRefund       bool
+	hasRefundErr    error
 	updateStatusErr error
 	insertLedgerErr error
-	updateReqErr   error
+	updateReqErr    error
 }
 
 func (m *mockRepo) FindBookingForRefundRequest(ctx context.Context, bookingID string) (refunds.BookingForRefund, error) {
@@ -106,7 +106,7 @@ func TestRequestBookingRefund(t *testing.T) {
 			activeReq: nil,
 			createReq: refunds.RefundRequestResponse{ID: "r1"},
 		}
-		service := refunds.NewService(repo)
+		service := refunds.NewService(repo, nil)
 
 		req, err := service.RequestBookingRefund(context.Background(), "c1", "b1", validReason)
 		if err != nil {
@@ -126,14 +126,14 @@ func TestRequestBookingRefund(t *testing.T) {
 				StartTime:  now.Add(30 * time.Minute), // < 1 hour in future, cutoff exceeded
 			},
 		}
-		service := refunds.NewService(repo)
+		service := refunds.NewService(repo, nil)
 
 		_, err := service.RequestBookingRefund(context.Background(), "c1", "b1", validReason)
 		if err != refunds.ErrBookingRefundCutoffExceeded {
 			t.Errorf("expected ErrBookingRefundCutoffExceeded, got %v", err)
 		}
 	})
-	
+
 	t.Run("not allowed status", func(t *testing.T) {
 		repo := &mockRepo{
 			booking: refunds.BookingForRefund{
@@ -143,7 +143,7 @@ func TestRequestBookingRefund(t *testing.T) {
 				StartTime:  now.Add(2 * time.Hour),
 			},
 		}
-		service := refunds.NewService(repo)
+		service := refunds.NewService(repo, nil)
 
 		_, err := service.RequestBookingRefund(context.Background(), "c1", "b1", validReason)
 		if err != refunds.ErrRefundRequestNotAllowed {
@@ -166,7 +166,7 @@ func TestApproveRefundRequest(t *testing.T) {
 			hasIncome: true,
 			hasRefund: false,
 		}
-		service := refunds.NewService(repo)
+		service := refunds.NewService(repo, nil)
 
 		_, err := service.ApproveRefundRequest(context.Background(), "o1", "r1", "ok")
 		if err != nil {
@@ -182,7 +182,7 @@ func TestApproveRefundRequest(t *testing.T) {
 				Status:  "APPROVED",
 			},
 		}
-		service := refunds.NewService(repo)
+		service := refunds.NewService(repo, nil)
 
 		_, err := service.ApproveRefundRequest(context.Background(), "o1", "r1", "ok")
 		if err != refunds.ErrRefundRequestAlreadyReviewed {

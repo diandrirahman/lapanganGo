@@ -50,14 +50,14 @@ type FacilityResponse struct {
 }
 
 type PublicVenueResponse struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description *string            `json:"description,omitempty"`
-	Address     string             `json:"address"`
-	District    *string            `json:"district,omitempty"`
-	City        string             `json:"city"`
-	Province    *string            `json:"province,omitempty"`
-	PostalCode  *string            `json:"postal_code,omitempty"`
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Description  *string            `json:"description,omitempty"`
+	Address      string             `json:"address"`
+	District     *string            `json:"district,omitempty"`
+	City         string             `json:"city"`
+	Province     *string            `json:"province,omitempty"`
+	PostalCode   *string            `json:"postal_code,omitempty"`
 	Latitude     *float64           `json:"latitude,omitempty"`
 	Longitude    *float64           `json:"longitude,omitempty"`
 	PrimaryPhoto *string            `json:"primary_photo,omitempty"`
@@ -95,15 +95,15 @@ type PublicVenueDetailResponse struct {
 }
 
 type VenueResponse struct {
-	ID             string             `json:"id"`
-	OwnerProfileID string             `json:"owner_profile_id"`
-	Name           string             `json:"name"`
-	Description    *string            `json:"description,omitempty"`
-	Address        string             `json:"address"`
-	District       *string            `json:"district,omitempty"`
-	City           string             `json:"city"`
-	Province       *string            `json:"province,omitempty"`
-	PostalCode     *string            `json:"postal_code,omitempty"`
+	ID             string               `json:"id"`
+	OwnerProfileID string               `json:"owner_profile_id"`
+	Name           string               `json:"name"`
+	Description    *string              `json:"description,omitempty"`
+	Address        string               `json:"address"`
+	District       *string              `json:"district,omitempty"`
+	City           string               `json:"city"`
+	Province       *string              `json:"province,omitempty"`
+	PostalCode     *string              `json:"postal_code,omitempty"`
 	Latitude       *float64             `json:"latitude,omitempty"`
 	Longitude      *float64             `json:"longitude,omitempty"`
 	Status         string               `json:"status"`

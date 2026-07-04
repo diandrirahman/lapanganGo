@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart3, CalendarDays, LayoutDashboard, LogOut, MapPin, Menu, Search, Trophy, X, Undo2 } from 'lucide-react';
+import { NotificationDropdown } from './NotificationDropdown';
 
 export const Navbar: React.FC = () => {
   const { user, isAuthenticated, logout } = useAuth();
@@ -95,6 +96,7 @@ export const Navbar: React.FC = () => {
                   <div className="text-[11px] font-medium text-text-muted">{user.role}</div>
                 </div>
               </div>
+              <NotificationDropdown />
               <button 
                 onClick={handleLogout}
                 className="hidden md:flex w-10 h-10 rounded-full items-center justify-center text-text-muted hover:bg-red-50 hover:text-red-500 transition-colors"
