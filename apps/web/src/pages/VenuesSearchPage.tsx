@@ -33,6 +33,7 @@ export const VenuesSearchPage: React.FC = () => {
   const minPrice = searchParams.get('minPrice') || '';
   const maxPrice = searchParams.get('maxPrice') || '';
   const sportId = searchParams.get('sportId') || '';
+  const playDate = searchParams.get('playDate') || '';
   const facilityIdsStr = searchParams.getAll('facilityId').join(',');
   const facilityIds = useMemo(() => facilityIdsStr ? facilityIdsStr.split(',') : [], [facilityIdsStr]);
 
@@ -57,6 +58,7 @@ export const VenuesSearchPage: React.FC = () => {
   const setMinPrice = (p: string) => updateParams({ minPrice: p, page: '1' });
   const setMaxPrice = (p: string) => updateParams({ maxPrice: p, page: '1' });
   const setSportId = (s: string) => updateParams({ sportId: s, page: '1' });
+  const setPlayDate = (d: string) => updateParams({ playDate: d, page: '1' });
   const setFacilityIds = (updater: (prev: string[]) => string[]) => {
     const next = updater(facilityIds);
     updateParams({ facilityId: next, page: '1' });
@@ -75,6 +77,7 @@ export const VenuesSearchPage: React.FC = () => {
   const debouncedMinPrice = useDebounce(minPrice, 500);
   const debouncedMaxPrice = useDebounce(maxPrice, 500);
   const debouncedSportId = useDebounce(sportId, 500);
+  const debouncedPlayDate = useDebounce(playDate, 500);
 
   const loadVenues = useCallback(async () => {
     try {
@@ -87,6 +90,7 @@ export const VenuesSearchPage: React.FC = () => {
         facility_ids: facilityIds.length > 0 ? facilityIds : undefined,
         min_price: debouncedMinPrice ? Number(debouncedMinPrice) : undefined,
         max_price: debouncedMaxPrice ? Number(debouncedMaxPrice) : undefined,
+        play_date: debouncedPlayDate || undefined,
       });
       setVenues(data.data || []);
       setTotalPages(data.total_pages || 1);
@@ -95,7 +99,7 @@ export const VenuesSearchPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedQ, debouncedCity, debouncedMinPrice, debouncedMaxPrice, debouncedSportId, facilityIds, page]);
+  }, [debouncedQ, debouncedCity, debouncedMinPrice, debouncedMaxPrice, debouncedSportId, debouncedPlayDate, facilityIds, page]);
 
 
 
@@ -148,6 +152,17 @@ export const VenuesSearchPage: React.FC = () => {
                   </button>
                 )}
               </div>
+            </div>
+
+            {/* Date Filter */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-bold text-text-main">Tanggal Main</label>
+              <input
+                type="date"
+                className="w-full px-4 py-3 rounded-xl border border-border-main focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all text-sm font-medium bg-bg-main"
+                value={playDate}
+                onChange={(e) => setPlayDate(e.target.value)}
+              />
             </div>
 
             {/* City Filter */}
@@ -257,7 +272,7 @@ export const VenuesSearchPage: React.FC = () => {
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {venues.map((venue) => (
-                <VenueCard key={venue.id} venue={venue} />
+                <VenueCard key={venue.id} venue={venue} playDate={playDate} />
               ))}
             </div>
             <Pagination

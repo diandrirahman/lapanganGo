@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { PageShell } from '../components/layout/PageShell';
 import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
@@ -8,13 +8,14 @@ import { fetchVenueById } from '../lib/api';
 import type { VenueDetail } from '../types/venue';
 import { CourtCard } from '../components/CourtCard';
 import { SafeVenueImage } from '../components/ui/SafeVenueImage';
-import { MapPin, Info } from 'lucide-react';
+import { MapPin, Info, Ticket } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'react-hot-toast';
 
 export const VenueDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   
   const [venue, setVenue] = useState<VenueDetail | null>(null);
@@ -29,7 +30,8 @@ export const VenueDetailPage: React.FC = () => {
         setIsLoading(true);
         setError(null);
         
-        const venueData = await fetchVenueById(id);
+        const playDate = searchParams.get('play_date') || undefined;
+        const venueData = await fetchVenueById(id, playDate);
         
         setVenue(venueData);
       } catch (err: any) {
@@ -40,7 +42,7 @@ export const VenueDetailPage: React.FC = () => {
     };
 
     loadData();
-  }, [id]);
+  }, [id, searchParams]);
 
   if (isLoading) {
     return (
@@ -111,21 +113,92 @@ export const VenueDetailPage: React.FC = () => {
             <div className="bg-surface rounded-3xl p-6 md:p-8 shadow-sm border border-border-main">
               <h3 className="text-[20px] font-extrabold text-text-main mb-4">Galeri Foto</h3>
               <div className="grid grid-cols-2 gap-3">
-                {venue.photos.map(photo => {
+                {venue.photos.map((photo, index) => {
+                  const imageUrl = typeof photo === 'string' ? photo : (photo as any).image_url;
+                  const photoId = typeof photo === 'string' ? `photo-${index}` : (photo as any).id;
+                  const altText = typeof photo === 'string' ? 'Foto Venue' : (photo as any).alt_text || 'Foto Venue';
+                  
                   const GalleryImage = () => {
                     return (
-                      <div key={photo.id} className="rounded-xl overflow-hidden aspect-square bg-gray-100 flex items-center justify-center group">
+                      <div key={photoId} className="rounded-xl overflow-hidden aspect-square bg-gray-100 flex items-center justify-center group">
                         <SafeVenueImage 
-                          src={photo.image_url}
+                          src={imageUrl}
                           venueId={venue.id}
-                          alt={photo.alt_text || 'Foto Venue'}
+                          alt={altText}
                           className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                           fallbackIcon="image"
                         />
                       </div>
                     );
                   };
-                  return <GalleryImage key={photo.id} />;
+                  return <GalleryImage key={photoId} />;
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Promos */}
+          {venue.promos && venue.promos.length > 0 && (
+            <div className="bg-surface rounded-3xl p-6 md:p-8 shadow-sm border border-emerald-200">
+              <h3 className="text-[20px] font-extrabold text-text-main mb-4 flex items-center gap-2">
+                <Ticket className="w-5 h-5 text-emerald-500" />
+                Promo Tersedia
+              </h3>
+              <div className="flex flex-col gap-4">
+                {venue.promos.map(promo => {
+                  const startsAt = new Date(promo.starts_at);
+                  const endsAt = new Date(promo.ends_at);
+                  const playDateParam = searchParams.get('play_date');
+                  
+                  let isFuture = false;
+                  if (playDateParam) {
+                    const [y, m, d] = playDateParam.split('-').map(Number);
+                    const pdDate = new Date(y, m - 1, d);
+                    const startDate = new Date(startsAt.getFullYear(), startsAt.getMonth(), startsAt.getDate());
+                    isFuture = startDate > pdDate;
+                  } else {
+                    isFuture = startsAt > new Date();
+                  }
+                  
+                  return (
+                    <div key={promo.id} className="bg-emerald-50/50 rounded-2xl p-4 border border-emerald-100 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-3 opacity-10">
+                        <svg className="w-16 h-16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
+                      </div>
+                      
+                      <div className="relative z-10">
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-extrabold text-emerald-800 text-lg">
+                            {promo.code}
+                          </h4>
+                          <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                            {isFuture ? 'Akan Datang' : 'Aktif'}
+                          </span>
+                        </div>
+                        
+                        <div className="text-emerald-900 font-bold mb-3">
+                          Diskon {promo.discount_type === 'PERCENTAGE' ? `${promo.discount_value}%` : `Rp ${promo.discount_value.toLocaleString('id-ID')}`}
+                        </div>
+                        
+                        <div className="text-sm font-medium text-emerald-700 mb-4">
+                          {isFuture ? `Berlaku mulai ${startsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}` : `Berlaku hingga ${endsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}`}
+                        </div>
+                        
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => {
+                              navigator.clipboard.writeText(promo.code);
+                              toast.success('Kode promo berhasil disalin!');
+                            }}
+                            className="text-[13px] font-bold text-emerald-600 bg-white border border-emerald-200 px-4 py-2 rounded-xl hover:bg-emerald-50 transition-colors flex items-center gap-1.5"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                            Salin Kode
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
                 })}
               </div>
             </div>
@@ -152,7 +225,9 @@ export const VenueDetailPage: React.FC = () => {
                       toast.error('Gunakan akun customer untuk membuat booking.');
                       return;
                     }
-                    navigate(`/venues/${venue.id}/courts/${courtId}/availability`, { 
+                    const playDateParam = searchParams.get('play_date');
+                    const queryStr = playDateParam ? `?play_date=${playDateParam}` : '';
+                    navigate(`/venues/${venue.id}/courts/${courtId}/availability${queryStr}`, { 
                       state: { 
                         venue: { name: venue.name, address: venue.address }, 
                         court: { name: court.name, price_per_hour: court.price_per_hour } 

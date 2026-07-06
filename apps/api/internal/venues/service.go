@@ -121,6 +121,11 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 		return nil, 0, err
 	}
 
+	promosMap, err := s.repository.FindActivePromosByVenueIDs(ctx, venueIDs, req.PlayDate)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	responses := make([]PublicVenueResponse, 0, len(venues))
 	for _, venue := range venues {
 		facilities := facilitiesMap[venue.ID]
@@ -131,13 +136,21 @@ func (s *Service) GetPublicVenues(ctx context.Context, req ListPublicVenuesQuery
 		if photos == nil {
 			photos = []VenuePhoto{}
 		}
-		responses = append(responses, toPublicVenueResponse(venue, facilities, photos))
+		promos := promosMap[venue.ID]
+		if promos == nil {
+			promos = []PromoSummary{}
+		}
+		// limit to 2 promos for list view
+		if len(promos) > 2 {
+			promos = promos[:2]
+		}
+		responses = append(responses, toPublicVenueResponse(venue, facilities, photos, promos))
 	}
 
 	return responses, total, nil
 }
 
-func (s *Service) GetPublicVenue(ctx context.Context, venueID string) (PublicVenueDetailResponse, error) {
+func (s *Service) GetPublicVenue(ctx context.Context, venueID string, playDate string) (PublicVenueDetailResponse, error) {
 	venue, err := s.repository.FindPublicVenueByID(ctx, venueID)
 	if IsNotFound(err) {
 		return PublicVenueDetailResponse{}, ErrVenueNotFound
@@ -161,8 +174,17 @@ func (s *Service) GetPublicVenue(ctx context.Context, venueID string) (PublicVen
 		return PublicVenueDetailResponse{}, err
 	}
 
+	promosMap, err := s.repository.FindActivePromosByVenueIDs(ctx, []string{venue.ID}, playDate)
+	if err != nil {
+		return PublicVenueDetailResponse{}, err
+	}
+	promos := promosMap[venue.ID]
+	if promos == nil {
+		promos = []PromoSummary{}
+	}
+
 	return PublicVenueDetailResponse{
-		PublicVenueResponse: toPublicVenueResponse(venue, facilities, photos),
+		PublicVenueResponse: toPublicVenueResponse(venue, facilities, photos, promos),
 		Photos:              toVenuePhotoResponses(photos),
 		Courts:              toPublicCourtResponses(courts),
 	}, nil
@@ -431,7 +453,7 @@ func toVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) Ve
 	}
 }
 
-func toPublicVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto) PublicVenueResponse {
+func toPublicVenueResponse(venue Venue, facilities []Facility, photos []VenuePhoto, promos []PromoSummary) PublicVenueResponse {
 	return PublicVenueResponse{
 		ID:           venue.ID,
 		Name:         venue.Name,
@@ -443,11 +465,37 @@ func toPublicVenueResponse(venue Venue, facilities []Facility, photos []VenuePho
 		PostalCode:   venue.PostalCode,
 		Latitude:     venue.Latitude,
 		Longitude:    venue.Longitude,
-		PrimaryPhoto: getPrimaryPhotoURL(photos),
+		Photos:       getAllPhotoURLs(photos),
 		Facilities:   toFacilityResponses(facilities),
+		HasPromo:     len(promos) > 0,
+		Promos:       toPublicPromoSummaryResponses(promos),
 		CreatedAt:    venue.CreatedAt,
 		UpdatedAt:    venue.UpdatedAt,
 	}
+}
+
+func getAllPhotoURLs(photos []VenuePhoto) []string {
+	var urls []string
+	for _, p := range photos {
+		urls = append(urls, p.ImageURL)
+	}
+	return urls
+}
+
+func toPublicPromoSummaryResponses(promos []PromoSummary) []PublicPromoSummaryResponse {
+	var res []PublicPromoSummaryResponse
+	for _, p := range promos {
+		res = append(res, PublicPromoSummaryResponse{
+			ID:            p.ID,
+			Code:          p.Code,
+			Name:          p.Name,
+			DiscountType:  p.DiscountType,
+			DiscountValue: p.DiscountValue,
+			StartsAt:      p.StartsAt.Format("2006-01-02"),
+			EndsAt:        p.EndsAt.Format("2006-01-02"),
+		})
+	}
+	return res
 }
 
 func toVenuePhotoResponses(photos []VenuePhoto) []VenuePhotoResponse {

@@ -3,6 +3,7 @@ package bookings
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,8 @@ type CourtValidationInfo struct {
 	PricePerHour float64
 	CourtStatus  string
 	VenueStatus  string
+	VenueID      string
+	OwnerUserID  string
 }
 
 type OperatingHour struct {
@@ -26,28 +29,35 @@ type OperatingHour struct {
 }
 
 type CreateBookingParams struct {
-	CustomerID string
-	CourtID    string
-	Date       string
-	StartTime  string
-	EndTime    string
-	TotalPrice float64
-	ExpiresAt  *time.Time
+	CustomerID     string
+	CourtID        string
+	Date           string
+	StartTime      string
+	EndTime        string
+	OriginalPrice  *float64
+	DiscountAmount float64
+	FinalPrice     *float64
+	PromoID        *string
+	PromoCode      *string
+	TotalPrice     float64
+	ExpiresAt      *time.Time
 }
 
 type CreateOfflineBookingParams struct {
-	VenueID       string
-	CourtID       string
-	Date          string
-	StartTime     string
-	EndTime       string
-	TotalPrice    float64
-	Status        string
-	OwnerUserID   string
-	CustomerName  string
-	CustomerPhone *string
-	CustomerEmail *string
-	Note          *string
+	VenueID             string
+	CourtID             string
+	Date                string
+	StartTime           string
+	EndTime             string
+	SystemPrice         float64
+	FinalPrice          float64
+	Status              string
+	OwnerUserID         string
+	CustomerName        string
+	CustomerPhone       *string
+	CustomerEmail       *string
+	Note                *string
+	PriceOverrideReason *string
 }
 
 type Booking struct {
@@ -57,6 +67,11 @@ type Booking struct {
 	Date             time.Time
 	StartTime        time.Time
 	EndTime          time.Time
+	OriginalPrice    *float64
+	DiscountAmount   float64
+	FinalPrice       *float64
+	PromoID          *string
+	PromoCode        *string
 	TotalPrice       float64
 	Status           string
 	PaymentReference *string
@@ -98,7 +113,11 @@ type OwnerBooking struct {
 	Date             time.Time
 	StartTime        time.Time
 	EndTime          time.Time
+	OriginalPrice    *float64
+	DiscountAmount   float64
 	TotalPrice       float64
+	PromoID          *string
+	PromoCode        *string
 	Status           string
 	PaymentReference *string
 	ExpiresAt        *time.Time
@@ -114,14 +133,15 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 
 func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error) {
 	query := `
-		SELECT c.price_per_hour, c.status, v.status
+		SELECT c.price_per_hour, c.status, v.status, v.id, op.user_id
 		FROM courts c
 		JOIN venues v ON v.id = c.venue_id
+		JOIN owner_profiles op ON op.id = v.owner_profile_id
 		WHERE c.id = $1
 		FOR UPDATE
 	`
 	var info CourtValidationInfo
-	err := tx.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus)
+	err := tx.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.VenueID, &info.OwnerUserID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return info, ErrCourtNotFound
@@ -133,14 +153,15 @@ func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, cou
 
 func (r *Repository) LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID, venueID, ownerProfileID string) (CourtValidationInfo, error) {
 	query := `
-		SELECT c.price_per_hour, c.status, v.status
+		SELECT c.price_per_hour, c.status, v.status, op.user_id
 		FROM courts c
 		JOIN venues v ON v.id = c.venue_id
+		JOIN owner_profiles op ON op.id = v.owner_profile_id
 		WHERE c.id = $1 AND v.id = $2 AND v.owner_profile_id = $3
 		FOR UPDATE
 	`
 	var info CourtValidationInfo
-	err := tx.QueryRow(ctx, query, courtID, venueID, ownerProfileID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus)
+	err := tx.QueryRow(ctx, query, courtID, venueID, ownerProfileID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.OwnerUserID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return info, ErrCourtNotFound
@@ -181,7 +202,7 @@ func (r *Repository) ListByCustomerID(ctx context.Context, customerID string, li
 	}
 
 	query := `
-		SELECT b.id::text, b.customer_id::text, b.court_id::text, b.booking_date, b.start_time, b.end_time, b.total_price, b.status, b.payment_reference, b.expires_at, b.created_at, b.updated_at,
+		SELECT b.id::text, b.customer_id::text, b.court_id::text, b.booking_date, b.start_time, b.end_time, b.original_price, b.discount_amount, b.final_price, b.promo_id::text, b.promo_code, b.total_price, b.status, b.payment_reference, b.expires_at, b.created_at, b.updated_at,
 		       v.id::text, v.name, v.address, v.city, c.name, s.name
 		FROM bookings b
 		JOIN courts c ON c.id = b.court_id
@@ -200,7 +221,7 @@ func (r *Repository) ListByCustomerID(ctx context.Context, customerID string, li
 	var bookings []CustomerBooking
 	for rows.Next() {
 		var b CustomerBooking
-		if err := rows.Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt, &b.VenueID, &b.VenueName, &b.VenueAddress, &b.VenueCity, &b.CourtName, &b.CourtSportName); err != nil {
+		if err := rows.Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.OriginalPrice, &b.DiscountAmount, &b.FinalPrice, &b.PromoID, &b.PromoCode, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt, &b.VenueID, &b.VenueName, &b.VenueAddress, &b.VenueCity, &b.CourtName, &b.CourtSportName); err != nil {
 			return nil, 0, err
 		}
 		bookings = append(bookings, b)
@@ -210,7 +231,7 @@ func (r *Repository) ListByCustomerID(ctx context.Context, customerID string, li
 
 func (r *Repository) FindCustomerBookingByID(ctx context.Context, id, customerID string) (CustomerBooking, error) {
 	query := `
-		SELECT b.id::text, b.customer_id::text, b.court_id::text, b.booking_date, b.start_time, b.end_time, b.total_price, b.status, b.payment_reference, b.expires_at, b.created_at, b.updated_at,
+		SELECT b.id::text, b.customer_id::text, b.court_id::text, b.booking_date, b.start_time, b.end_time, b.original_price, b.discount_amount, b.final_price, b.promo_id::text, b.promo_code, b.total_price, b.status, b.payment_reference, b.expires_at, b.created_at, b.updated_at,
 		       v.id::text, v.name, v.address, v.city, c.name, s.name
 		FROM bookings b
 		JOIN courts c ON c.id = b.court_id
@@ -219,7 +240,7 @@ func (r *Repository) FindCustomerBookingByID(ctx context.Context, id, customerID
 		WHERE b.id = $1 AND b.customer_id = $2
 	`
 	var b CustomerBooking
-	err := r.db.QueryRow(ctx, query, id, customerID).Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt, &b.VenueID, &b.VenueName, &b.VenueAddress, &b.VenueCity, &b.CourtName, &b.CourtSportName)
+	err := r.db.QueryRow(ctx, query, id, customerID).Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.OriginalPrice, &b.DiscountAmount, &b.FinalPrice, &b.PromoID, &b.PromoCode, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt, &b.VenueID, &b.VenueName, &b.VenueAddress, &b.VenueCity, &b.CourtName, &b.CourtSportName)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -231,12 +252,12 @@ func (r *Repository) FindCustomerBookingByID(ctx context.Context, id, customerID
 
 func (r *Repository) FindByIDAndCustomerID(ctx context.Context, id, customerID string) (Booking, error) {
 	query := `
-		SELECT id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		SELECT id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 		FROM bookings
 		WHERE id = $1 AND customer_id = $2
 	`
 	var b Booking
-	err := r.db.QueryRow(ctx, query, id, customerID).Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt)
+	err := r.db.QueryRow(ctx, query, id, customerID).Scan(&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime, &b.OriginalPrice, &b.DiscountAmount, &b.FinalPrice, &b.PromoID, &b.PromoCode, &b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -414,12 +435,11 @@ func (r *Repository) CheckExistingBookings(ctx context.Context, tx pgx.Tx, court
 
 func (r *Repository) InsertBooking(ctx context.Context, tx pgx.Tx, params CreateBookingParams) (Booking, error) {
 	query := `
-		INSERT INTO bookings (customer_id, court_id, booking_date, start_time, end_time, total_price, status, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', $7)
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		INSERT INTO bookings (customer_id, court_id, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id, promo_code, total_price, status, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING_PAYMENT', $12)
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := tx.QueryRow(
+	return scanBooking(tx.QueryRow(
 		ctx,
 		query,
 		params.CustomerID,
@@ -427,50 +447,43 @@ func (r *Repository) InsertBooking(ctx context.Context, tx pgx.Tx, params Create
 		params.Date,
 		params.StartTime,
 		params.EndTime,
+		params.OriginalPrice,
+		params.DiscountAmount,
+		params.FinalPrice,
+		params.PromoID,
+		params.PromoCode,
 		params.TotalPrice,
 		params.ExpiresAt,
-	).Scan(
-		&b.ID,
-		&b.CustomerID,
-		&b.CourtID,
-		&b.Date,
-		&b.StartTime,
-		&b.EndTime,
-		&b.TotalPrice,
-		&b.Status,
-		&b.PaymentReference,
-		&b.ExpiresAt,
-		&b.CreatedAt,
-		&b.UpdatedAt,
-	)
-	return b, err
+	))
 }
 
 func (r *Repository) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, params CreateOfflineBookingParams) (Booking, error) {
-	// 1. Insert booking
+	// 1. Calculate discount
+	discountAmount := 0.0
+	if params.FinalPrice < params.SystemPrice {
+		discountAmount = params.SystemPrice - params.FinalPrice
+	}
+
+	// 2. Insert booking
 	queryBooking := `
-		INSERT INTO bookings (customer_id, court_id, booking_date, start_time, end_time, total_price, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		INSERT INTO bookings (customer_id, court_id, booking_date, start_time, end_time, original_price, discount_amount, final_price, total_price, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := tx.QueryRow(
+	b, err := scanBooking(tx.QueryRow(
 		ctx, queryBooking,
-		params.OwnerUserID, params.CourtID, params.Date, params.StartTime, params.EndTime, params.TotalPrice, params.Status,
-	).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+		params.OwnerUserID, params.CourtID, params.Date, params.StartTime, params.EndTime, params.SystemPrice, discountAmount, params.FinalPrice, params.FinalPrice, params.Status,
+	))
 	if err != nil {
 		return b, err
 	}
 
 	// 2. Insert offline_booking_customers
 	queryOBC := `
-		INSERT INTO offline_booking_customers (booking_id, name, phone, email, notes)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO offline_booking_customers (booking_id, name, phone, email, notes, system_price, final_price, price_override_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
-	_, err = tx.Exec(ctx, queryOBC, b.ID, params.CustomerName, params.CustomerPhone, params.CustomerEmail, params.Note)
+	_, err = tx.Exec(ctx, queryOBC, b.ID, params.CustomerName, params.CustomerPhone, params.CustomerEmail, params.Note, params.SystemPrice, params.FinalPrice, params.PriceOverrideReason)
 	if err != nil {
 		return b, err
 	}
@@ -480,8 +493,11 @@ func (r *Repository) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, para
 		INSERT INTO owner_finance_transactions (owner_id, venue_id, booking_id, created_by_user_id, type, source, category, amount, transaction_date, description)
 		VALUES ($1, $2, $3, $4, 'INCOME', 'BOOKING', 'BOOKING_PAYMENT', $5, CURRENT_DATE, $6)
 	`
-	desc := "Offline booking payment for booking " + b.ID
-	_, err = tx.Exec(ctx, queryLedger, params.OwnerUserID, params.VenueID, b.ID, params.OwnerUserID, params.TotalPrice, desc)
+	desc := "Offline booking payment"
+	if params.PriceOverrideReason != nil && *params.PriceOverrideReason != "" {
+		desc = desc + ". Price adjusted from Rp" + fmt.Sprintf("%.2f", params.SystemPrice) + " to Rp" + fmt.Sprintf("%.2f", params.FinalPrice) + ": " + *params.PriceOverrideReason
+	}
+	_, err = tx.Exec(ctx, queryLedger, params.OwnerUserID, params.VenueID, b.ID, params.OwnerUserID, params.FinalPrice, desc)
 	if err != nil {
 		return b, err
 	}
@@ -494,23 +510,9 @@ func (r *Repository) CancelPendingByIDAndCustomerID(ctx context.Context, booking
 		UPDATE bookings
 		SET status = 'CANCELLED', updated_at = now()
 		WHERE id = $1 AND customer_id = $2 AND status = 'PENDING_PAYMENT'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := r.db.QueryRow(ctx, query, bookingID, customerID).Scan(
-		&b.ID,
-		&b.CustomerID,
-		&b.CourtID,
-		&b.Date,
-		&b.StartTime,
-		&b.EndTime,
-		&b.TotalPrice,
-		&b.Status,
-		&b.PaymentReference,
-		&b.ExpiresAt,
-		&b.CreatedAt,
-		&b.UpdatedAt,
-	)
+	b, err := scanBooking(r.db.QueryRow(ctx, query, bookingID, customerID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -528,23 +530,9 @@ func (r *Repository) ConfirmPendingByIDAndCustomerID(ctx context.Context, bookin
 		WHERE id = $1
 		  AND customer_id = $2
 		  AND status = 'PENDING_PAYMENT'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := r.db.QueryRow(ctx, query, bookingID, customerID).Scan(
-		&b.ID,
-		&b.CustomerID,
-		&b.CourtID,
-		&b.Date,
-		&b.StartTime,
-		&b.EndTime,
-		&b.TotalPrice,
-		&b.Status,
-		&b.PaymentReference,
-		&b.ExpiresAt,
-		&b.CreatedAt,
-		&b.UpdatedAt,
-	)
+	b, err := scanBooking(r.db.QueryRow(ctx, query, bookingID, customerID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -561,13 +549,9 @@ func (r *Repository) UpdatePaymentReference(ctx context.Context, bookingID, cust
 		    status = 'WAITING_VERIFICATION',
 		    updated_at = now()
 		WHERE id = $1 AND customer_id = $2 AND status = 'PENDING_PAYMENT'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := r.db.QueryRow(ctx, query, bookingID, customerID, reference).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+	b, err := scanBooking(r.db.QueryRow(ctx, query, bookingID, customerID, reference))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -596,13 +580,9 @@ func (r *Repository) VerifyPayment(ctx context.Context, ownerUserID string, book
 		SET status = $2,
 		    updated_at = now()
 		WHERE id = $1 AND status = 'WAITING_VERIFICATION'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err = tx.QueryRow(ctx, query, bookingID, newStatus).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+	b, err := scanBooking(tx.QueryRow(ctx, query, bookingID, newStatus))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -658,13 +638,9 @@ func (r *Repository) MarkBookingPaid(ctx context.Context, ownerUserID string, bo
 		SET status = 'PAID',
 		    updated_at = now()
 		WHERE id = $1 AND status = 'CONFIRMED'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err = tx.QueryRow(ctx, query, bookingID).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+	b, err := scanBooking(tx.QueryRow(ctx, query, bookingID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
@@ -718,13 +694,9 @@ func (r *Repository) CompleteBooking(ctx context.Context, bookingID string) (Boo
 		      AND end_time <= (NOW() AT TIME ZONE 'Asia/Jakarta')::TIME
 		    )
 		  )
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	var b Booking
-	err := r.db.QueryRow(ctx, query, bookingID).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+	b, err := scanBooking(r.db.QueryRow(ctx, query, bookingID))
 	if err != nil {
 		return b, err
 	}
@@ -832,12 +804,9 @@ func (r *Repository) CancelPaidBookingWithRefund(ctx context.Context, ownerUserI
 		    updated_at = now()
 		WHERE id = $1
 		  AND status = 'PAID'
-		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, total_price, status, payment_reference, expires_at, created_at, updated_at
+		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	err = tx.QueryRow(ctx, updateQuery, bookingID).Scan(
-		&b.ID, &b.CustomerID, &b.CourtID, &b.Date, &b.StartTime, &b.EndTime,
-		&b.TotalPrice, &b.Status, &b.PaymentReference, &b.ExpiresAt, &b.CreatedAt, &b.UpdatedAt,
-	)
+	b, err = scanBooking(tx.QueryRow(ctx, updateQuery, bookingID))
 	if err != nil {
 		return b, err
 	}
@@ -1068,7 +1037,11 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 			b.booking_date,
 			b.start_time,
 			b.end_time,
+			b.original_price,
+			b.discount_amount,
 			b.total_price,
+			b.promo_id::text,
+			b.promo_code,
 			b.status,
 			b.payment_reference,
 			b.expires_at,
@@ -1120,7 +1093,11 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 			&booking.Date,
 			&booking.StartTime,
 			&booking.EndTime,
+			&booking.OriginalPrice,
+			&booking.DiscountAmount,
 			&booking.TotalPrice,
+			&booking.PromoID,
+			&booking.PromoCode,
 			&booking.Status,
 			&booking.PaymentReference,
 			&booking.ExpiresAt,
@@ -1222,4 +1199,28 @@ func (r *Repository) GetOwnerUserIDByBookingID(ctx context.Context, bookingID st
 	`
 	err := r.db.QueryRow(ctx, query, bookingID).Scan(&userID)
 	return userID, err
+}
+
+func scanBooking(row pgx.Row) (Booking, error) {
+	var b Booking
+	err := row.Scan(
+		&b.ID,
+		&b.CustomerID,
+		&b.CourtID,
+		&b.Date,
+		&b.StartTime,
+		&b.EndTime,
+		&b.OriginalPrice,
+		&b.DiscountAmount,
+		&b.FinalPrice,
+		&b.PromoID,
+		&b.PromoCode,
+		&b.TotalPrice,
+		&b.Status,
+		&b.PaymentReference,
+		&b.ExpiresAt,
+		&b.CreatedAt,
+		&b.UpdatedAt,
+	)
+	return b, err
 }

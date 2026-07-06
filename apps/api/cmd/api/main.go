@@ -22,6 +22,7 @@ import (
 	"lapangango-api/internal/middleware"
 	"lapangango-api/internal/notifications"
 	"lapangango-api/internal/owners"
+	"lapangango-api/internal/promos"
 	"lapangango-api/internal/refunds"
 	"lapangango-api/internal/schedules"
 	"lapangango-api/internal/venues"
@@ -128,8 +129,14 @@ func main() {
 	notificationsGroup.Use(authMiddleware)
 	notificationsHandler.RegisterRoutes(notificationsGroup)
 
+	promosRepository := promos.NewRepository(dbPool)
+	promosService := promos.NewService(promosRepository)
+	promosHandler := promos.NewHandler(promosService)
+	promosHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	promosHandler.RegisterCustomerRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
+
 	bookingsRepository := bookings.NewRepository(dbPool)
-	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService)
+	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService, promosRepository)
 	bookingsHandler := bookings.NewHandler(bookingsService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))

@@ -3,6 +3,7 @@ package venues
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
@@ -63,7 +64,17 @@ func (h *Handler) GetPublicVenue(c *gin.Context) {
 		return
 	}
 
-	venue, err := h.service.GetPublicVenue(c.Request.Context(), venueID)
+	playDate := c.Query("play_date")
+	if playDate != "" {
+		if _, err := time.Parse("2006-01-02", playDate); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Invalid play_date format. Use YYYY-MM-DD",
+			})
+			return
+		}
+	}
+
+	venue, err := h.service.GetPublicVenue(c.Request.Context(), venueID, playDate)
 	if err != nil {
 		respondVenueError(c, err, "Failed to get public venue")
 		return

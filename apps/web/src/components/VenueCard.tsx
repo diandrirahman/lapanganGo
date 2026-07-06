@@ -6,24 +6,42 @@ import { SafeVenueImage } from './ui/SafeVenueImage';
 
 interface Props {
   venue: Venue;
+  playDate?: string;
 }
 
-export const VenueCard: React.FC<Props> = ({ venue }) => {
+export const VenueCard: React.FC<Props> = ({ venue, playDate }) => {
   // Show max 3 facilities
   const displayedFacilities = venue.facilities.slice(0, 3);
   const extraFacilities = venue.facilities.length - 3;
 
+  let primaryPhotoUrl = venue.primary_photo;
+  if (!primaryPhotoUrl && venue.photos && venue.photos.length > 0) {
+    const firstPhoto = venue.photos[0];
+    primaryPhotoUrl = typeof firstPhoto === 'string' ? firstPhoto : (firstPhoto as any).image_url;
+  }
+
   return (
-    <Link to={`/venues/${venue.id}`} className="animate-fade-up bg-white rounded-2xl p-4 flex flex-col group cursor-pointer border border-border-main shadow-sm hover:shadow-lg md:hover:-translate-y-1 hover:border-primary/30 transition-all duration-300">
+    <Link to={`/venues/${venue.id}${playDate ? `?play_date=${playDate}` : ''}`} className="animate-fade-up bg-white rounded-2xl p-4 flex flex-col group cursor-pointer border border-border-main shadow-sm hover:shadow-lg md:hover:-translate-y-1 hover:border-primary/30 transition-all duration-300">
       {/* Image Wrapper */}
       <div className="relative h-48 rounded-xl overflow-hidden mb-4 bg-gray-100 flex items-center justify-center">
         <SafeVenueImage 
-          src={venue.primary_photo}
+          src={primaryPhotoUrl}
           venueId={venue.id}
           alt={venue.name}
           className="w-full h-full group-hover:scale-105 transition-transform duration-500"
           fallbackIcon="image"
         />
+        {venue.has_promo && (
+          <div className="absolute top-3 right-3 z-10">
+            <span className="inline-flex items-center rounded-full bg-emerald-50/95 backdrop-blur-sm px-2.5 py-1 text-[11px] font-bold text-emerald-700 shadow-sm border border-emerald-100 uppercase tracking-wide">
+              {playDate && venue.promos && venue.promos.length > 0 
+                ? (venue.promos[0].discount_type === 'PERCENTAGE' 
+                    ? `Diskon ${venue.promos[0].discount_value}%` 
+                    : `Hemat Rp ${venue.promos[0].discount_value.toLocaleString('id-ID')}`) 
+                : 'Ada Promo'}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Content */}

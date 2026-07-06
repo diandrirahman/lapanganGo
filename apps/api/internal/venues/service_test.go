@@ -98,9 +98,12 @@ func TestNormalizeListPublicVenuesQuery(t *testing.T) {
 		t.Errorf("expected Q to be trimmed to 'GBK', got '%s'", reqWithQ.Q)
 	}
 
-	reqWithShortQ := ListPublicVenuesQuery{Q: " a "}
+	reqWithShortQ := ListPublicVenuesQuery{Q: " a ", PlayDate: "2026-07-07"}
 	reqWithShortQ, _ = normalizeListPublicVenuesQuery(reqWithShortQ)
 	if reqWithShortQ.Q != "" {
 		t.Errorf("expected short Q to be emptied, got '%s'", reqWithShortQ.Q)
+	}
+	if reqWithShortQ.PlayDate != "2026-07-07" {
+		t.Errorf("expected PlayDate to be preserved, got '%s'", reqWithShortQ.PlayDate)
 	}
 }

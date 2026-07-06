@@ -26,7 +26,9 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
-  const [totalPrice, setTotalPrice] = useState<number | ''>('');
+  const [systemPrice, setSystemPrice] = useState<number>(0);
+  const [finalPrice, setFinalPrice] = useState<number | ''>('');
+  const [priceOverrideReason, setPriceOverrideReason] = useState('');
   const [status, setStatus] = useState<'PAID' | 'COMPLETED'>('PAID');
   const [note, setNote] = useState('');
 
@@ -44,7 +46,9 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
       setCustomerName('');
       setCustomerPhone('');
       setCustomerEmail('');
-      setTotalPrice('');
+      setSystemPrice(0);
+      setFinalPrice('');
+      setPriceOverrideReason('');
       setStatus('PAID');
       setNote('');
       setError(null);
@@ -144,9 +148,13 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
     const selectedCourt = courts.find(c => c.id === courtId);
     const price = selectedCourt?.price_per_hour ?? 0;
     if (selectedSlots.length > 0) {
-      setTotalPrice(selectedSlots.length * price);
+      const calculated = selectedSlots.length * price;
+      setSystemPrice(calculated);
+      setFinalPrice(calculated);
+      setPriceOverrideReason('');
     } else {
-      setTotalPrice('');
+      setSystemPrice(0);
+      setFinalPrice('');
     }
   }, [selectedSlots, courtId, courts]);
 
@@ -155,8 +163,17 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const selectedRange = getSelectedSlotRange(selectedSlots);
-    if (!venueId || !courtId || !bookingDate || !selectedRange || !customerName || totalPrice === '') {
+    if (!venueId || !courtId || !bookingDate || !selectedRange || !customerName || finalPrice === '') {
       setError('Harap isi semua field wajib dan pilih jadwal.');
+      return;
+    }
+
+    if (finalPrice !== systemPrice && !priceOverrideReason.trim()) {
+      setError('Alasan perubahan harga wajib diisi jika Harga Final berbeda dengan Harga Sistem.');
+      return;
+    }
+    if (finalPrice !== systemPrice && priceOverrideReason.trim().length > 500) {
+      setError('Alasan perubahan harga maksimal 500 karakter.');
       return;
     }
 
@@ -183,9 +200,10 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
         customer_name: customerName,
         customer_phone: customerPhone || undefined,
         customer_email: customerEmail || undefined,
-        total_price: Number(totalPrice),
+        total_price: Number(finalPrice),
         status,
         note: note || undefined,
+        price_override_reason: finalPrice !== systemPrice ? priceOverrideReason : undefined,
       });
       onSuccess();
       onClose();
@@ -355,12 +373,24 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">Total Harga (Rp) *</label>
+                <label className="text-sm font-medium text-gray-700">Harga Sistem (Rp) *</label>
                 <input
                   type="number"
-                  value={totalPrice}
+                  value={systemPrice}
                   readOnly
                   className="w-full rounded-lg border-gray-300 border p-2.5 text-sm bg-gray-50 text-gray-700"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Harga Final (Rp) *</label>
+                <input
+                  type="number"
+                  value={finalPrice}
+                  onChange={e => setFinalPrice(e.target.value ? Number(e.target.value) : '')}
+                  required
+                  min="1"
+                  className="w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:ring-emerald-500 focus:border-emerald-500"
                 />
               </div>
 
@@ -388,6 +418,26 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
                 className="w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:ring-emerald-500 focus:border-emerald-500 resize-none"
               />
             </div>
+
+            {finalPrice !== systemPrice && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700 text-red-600">Alasan Perubahan Harga *</label>
+                <textarea
+                  value={priceOverrideReason}
+                  onChange={e => setPriceOverrideReason(e.target.value)}
+                  placeholder="Misal: Promo walk-in, harga member, dsb."
+                  required
+                  rows={2}
+                  className="w-full rounded-lg border-red-300 border p-2.5 text-sm focus:ring-red-500 focus:border-red-500 resize-none"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-red-500">Harga final berbeda dari harga sistem. Isi alasan agar pencatatan keuangan tetap jelas.</p>
+                  <span className={`text-xs font-medium ${priceOverrideReason.trim().length > 500 ? 'text-red-600' : 'text-gray-500'}`}>
+                    {priceOverrideReason.trim().length}/500
+                  </span>
+                </div>
+              </div>
+            )}
           </form>
         </div>
 
@@ -403,7 +453,7 @@ export const OwnerOfflineBookingModal: React.FC<Props> = ({ isOpen, onClose, onS
           <button
             type="submit"
             form="offlineBookingForm"
-            disabled={loading || !venueId || !courtId || !bookingDate || selectedSlots.length === 0 || !customerName || totalPrice === ''}
+            disabled={loading || !venueId || !courtId || !bookingDate || selectedSlots.length === 0 || !customerName || finalPrice === ''}
             className="px-5 py-2.5 text-sm font-medium text-white bg-emerald-600 border border-transparent rounded-lg hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {loading ? (

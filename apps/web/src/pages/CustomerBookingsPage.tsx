@@ -93,9 +93,14 @@ export const CustomerBookingsPage: React.FC = () => {
                 <div key={booking.id} className="bg-white rounded-3xl p-6 md:p-8 border border-border-main shadow-sm hover:shadow-md transition-shadow">
                   <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-6 pb-6 border-b border-border-main">
                     <div>
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
                         {getStatusBadge(booking.status)}
                         <span className="text-xs text-text-muted font-medium">ID: {booking.id.substring(0, 8).toUpperCase()}</span>
+                        {booking.promo_code && (
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full border border-emerald-200">
+                            Promo {booking.promo_code}
+                          </span>
+                        )}
                       </div>
                       <h2 className="text-xl font-extrabold text-text-main mb-1">{venueLabel}</h2>
                       {venueAddress && <p className="text-sm text-text-muted mb-3">{venueAddress}</p>}

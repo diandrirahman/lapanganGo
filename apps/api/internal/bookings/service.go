@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"lapangango-api/internal/notifications"
+	"lapangango-api/internal/promos"
 )
 
 var (
@@ -33,6 +34,15 @@ var (
 	ErrBookingCannotBeRefunded     = errors.New("booking cannot be cancelled/refunded in current status")
 	ErrBookingRefundAlreadyExists  = errors.New("refund already recorded for this booking")
 	ErrBookingIncomeLedgerNotFound = errors.New("booking income ledger not found; backfill ledger before refund")
+	ErrPromoNotActive              = errors.New("promo is not active")
+	ErrPromoExpired                = errors.New("promo has expired")
+	ErrPromoNotStarted             = errors.New("promo has not started yet")
+	ErrPromoVenueMismatch          = errors.New("promo is not valid for this venue")
+	ErrPromoNotFound               = errors.New("promo not found")
+	ErrInvalidPromoPrice           = errors.New("final price after promo cannot be less than or equal to 0")
+	ErrInvalidPrice                = errors.New("final price must be greater than zero")
+	ErrPriceOverrideReasonRequired = errors.New("price override reason is required when final price differs from system price")
+	ErrPriceOverrideReasonTooLong  = errors.New("price override reason must be at most 500 characters")
 )
 
 type BookingRepository interface {
@@ -71,13 +81,15 @@ type Service struct {
 	repository   BookingRepository
 	ttlMinutes   int
 	notifService notifications.Service
+	promosRepo   promos.Repository
 }
 
-func NewService(repository BookingRepository, ttlMinutes int, notifService notifications.Service) *Service {
+func NewService(repository BookingRepository, ttlMinutes int, notifService notifications.Service, promosRepo promos.Repository) *Service {
 	return &Service{
 		repository:   repository,
 		ttlMinutes:   ttlMinutes,
 		notifService: notifService,
+		promosRepo:   promosRepo,
 	}
 }
 
@@ -154,7 +166,46 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 
 		// 4. Calculate total price
 		durationHours := endParsed.Sub(startParsed).Hours()
-		totalPrice := math.Round(durationHours*info.PricePerHour*100) / 100
+		originalPrice := math.Round(durationHours*info.PricePerHour*100) / 100
+
+		finalPrice := originalPrice
+		discountAmount := 0.0
+
+		op := originalPrice
+		fp := finalPrice
+		originalPricePtr := &op
+		finalPricePtr := &fp
+
+		var promoID *string
+		var promoCode *string
+
+		if req.PromoCode != nil {
+			code := strings.ToUpper(strings.TrimSpace(*req.PromoCode))
+			promo, err := s.promosRepo.FindActivePromoByCode(ctx, info.OwnerUserID, code)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrPromoNotFound
+				}
+				return err
+			}
+
+			if err := promos.ValidatePromoRules(promo, info.VenueID, originalPrice, reqDate); err != nil {
+				// Translate promo errors to booking errors or use them directly
+				return err
+			}
+
+			discountAmount = promos.CalculateDiscount(promo, originalPrice)
+			finalPrice = originalPrice - discountAmount
+			if finalPrice <= 0 {
+				return ErrInvalidPromoPrice
+			}
+
+			fp = finalPrice
+			finalPricePtr = &fp
+
+			promoID = &promo.ID
+			promoCode = &promo.Code
+		}
 
 		// Check blocked slots
 		isBlocked, err := s.repository.CheckBlockedSlots(ctx, tx, req.CourtID, startTz, endTz)
@@ -178,13 +229,18 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 
 		// Insert
 		params := CreateBookingParams{
-			CustomerID: customerID,
-			CourtID:    req.CourtID,
-			Date:       req.BookingDate,
-			StartTime:  req.StartTime,
-			EndTime:    req.EndTime,
-			TotalPrice: totalPrice,
-			ExpiresAt:  &expiresAt,
+			CustomerID:     customerID,
+			CourtID:        req.CourtID,
+			Date:           req.BookingDate,
+			StartTime:      req.StartTime,
+			EndTime:        req.EndTime,
+			OriginalPrice:  originalPricePtr,
+			DiscountAmount: discountAmount,
+			FinalPrice:     finalPricePtr,
+			PromoID:        promoID,
+			PromoCode:      promoCode,
+			TotalPrice:     finalPrice,
+			ExpiresAt:      &expiresAt,
 		}
 		b, err := s.repository.InsertBooking(ctx, tx, params)
 		if err != nil {
@@ -669,6 +725,11 @@ func toBookingResponse(b Booking) BookingResponse {
 		Date:             b.Date.Format("2006-01-02"),
 		StartTime:        b.StartTime.Format("15:04"),
 		EndTime:          b.EndTime.Format("15:04"),
+		OriginalPrice:    b.OriginalPrice,
+		DiscountAmount:   b.DiscountAmount,
+		FinalPrice:       b.FinalPrice,
+		PromoID:          b.PromoID,
+		PromoCode:        b.PromoCode,
 		TotalPrice:       b.TotalPrice,
 		Status:           b.Status,
 		PaymentReference: b.PaymentReference,
@@ -705,7 +766,11 @@ func toOwnerBookingResponse(b OwnerBooking) OwnerBookingResponse {
 		Date:             b.Date.Format("2006-01-02"),
 		StartTime:        b.StartTime.Format("15:04"),
 		EndTime:          b.EndTime.Format("15:04"),
+		OriginalPrice:    b.OriginalPrice,
+		DiscountAmount:   b.DiscountAmount,
 		TotalPrice:       b.TotalPrice,
+		PromoID:          b.PromoID,
+		PromoCode:        b.PromoCode,
 		Status:           b.Status,
 		PaymentReference: b.PaymentReference,
 		ExpiresAt:        b.ExpiresAt,
@@ -926,16 +991,37 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 			return ErrOverlapBooking
 		}
 
+		durationHours := endTz.Sub(startTz).Hours()
+		systemPrice := math.Round(durationHours*info.PricePerHour*100) / 100
+		finalPrice := math.Round(req.TotalPrice*100) / 100
+
+		if finalPrice <= 0 {
+			return ErrInvalidPrice
+		}
+
+		isOverride := finalPrice != systemPrice
+		reason := strings.TrimSpace(req.PriceOverrideReason)
+		if isOverride && reason == "" {
+			return ErrPriceOverrideReasonRequired
+		}
+		if isOverride && len([]rune(reason)) > 500 {
+			return ErrPriceOverrideReasonTooLong
+		}
+
 		params := CreateOfflineBookingParams{
 			VenueID:      req.VenueID,
 			CourtID:      req.CourtID,
 			Date:         req.BookingDate,
 			StartTime:    req.StartTime,
 			EndTime:      req.EndTime,
-			TotalPrice:   req.TotalPrice,
+			SystemPrice:  systemPrice,
+			FinalPrice:   finalPrice,
 			Status:       req.Status,
 			OwnerUserID:  ownerUserID,
 			CustomerName: req.CustomerName,
+		}
+		if isOverride {
+			params.PriceOverrideReason = &reason
 		}
 		if req.CustomerPhone != "" {
 			params.CustomerPhone = &req.CustomerPhone

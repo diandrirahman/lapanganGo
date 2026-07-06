@@ -6,9 +6,9 @@ import type { OpenMatch } from '../types/mabar';
 import type { FinanceSummaryResult } from '../types/finance';
 import type { NotificationListResponse } from '../types/notification';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
-async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, init);
   if (response.status === 401) {
     if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
@@ -205,7 +205,7 @@ const MOCK_VENUES: Venue[] = [
   }
 ];
 
-export async function fetchVenues(page: number = 1, limit: number = 10, filters?: { q?: string; city?: string; sport_id?: string; facility_ids?: string[]; min_price?: number; max_price?: number }): Promise<PaginatedResponse<Venue>> {
+export async function fetchVenues(page: number = 1, limit: number = 10, filters?: { q?: string; city?: string; sport_id?: string; facility_ids?: string[]; min_price?: number; max_price?: number; play_date?: string }): Promise<PaginatedResponse<Venue>> {
   if (import.meta.env.VITE_USE_MOCK_VENUE === 'true') {
     return new Promise((resolve) => setTimeout(() => resolve({ data: MOCK_VENUES, page: 1, limit: 10, total: MOCK_VENUES.length, total_pages: 1 }), 500));
   }
@@ -220,6 +220,7 @@ export async function fetchVenues(page: number = 1, limit: number = 10, filters?
   if (filters?.sport_id) params.append('sport_id', filters.sport_id);
   if (filters?.min_price) params.append('min_price', filters.min_price.toString());
   if (filters?.max_price) params.append('max_price', filters.max_price.toString());
+  if (filters?.play_date) params.append('play_date', filters.play_date);
   if (filters?.facility_ids && filters.facility_ids.length > 0) {
     filters.facility_ids.forEach(id => params.append('facility_ids', id));
   }
@@ -232,7 +233,7 @@ export async function fetchVenues(page: number = 1, limit: number = 10, filters?
   return data;
 }
 
-export async function fetchVenueById(id: string): Promise<VenueDetail> {
+export async function fetchVenueById(id: string, playDate?: string): Promise<VenueDetail> {
   if (import.meta.env.VITE_USE_MOCK_VENUE === 'true') {
     return new Promise((resolve, reject) => {
       setTimeout(() => {
@@ -270,7 +271,12 @@ export async function fetchVenueById(id: string): Promise<VenueDetail> {
     });
   }
 
-  const response = await apiFetch(`${API_BASE_URL}/venues/${id}`);
+  let url = `${API_BASE_URL}/venues/${id}`;
+  if (playDate) {
+    url += `?play_date=${encodeURIComponent(playDate)}`;
+  }
+
+  const response = await apiFetch(url);
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.message || 'Failed to fetch venue details');
@@ -315,6 +321,38 @@ export async function fetchCourtAvailability(courtId: string, date: string): Pro
 
   return response.json();
 }
+
+export const validatePromo = async (data: {
+  venue_id: string;
+  court_id: string;
+  booking_date: string;
+  start_time: string;
+  end_time: string;
+  promo_code: string;
+}, token: string): Promise<{
+  promo_id: string;
+  promo_code: string;
+  promo_name: string;
+  original_price: number;
+  discount_amount: number;
+  final_price: number;
+}> => {
+  const response = await apiFetch(`${API_BASE_URL}/promos/validate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || 'Gagal memvalidasi promo');
+  }
+
+  return response.json();
+};
 
 export const createBooking = async (data: CreateBookingRequest, token: string): Promise<Booking> => {
   const isMock = import.meta.env.VITE_USE_MOCK_VENUE === 'true';

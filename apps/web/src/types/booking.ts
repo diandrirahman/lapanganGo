@@ -29,6 +29,7 @@ export interface CreateBookingRequest {
   booking_date: string;
   start_time: string;
   end_time: string;
+  promo_code?: string;
 }
 
 export interface Booking {
@@ -40,6 +41,11 @@ export interface Booking {
   booking_date: string;
   start_time: string;
   end_time: string;
+  original_price?: number;
+  discount_amount?: number;
+  final_price?: number;
+  promo_id?: string;
+  promo_code?: string;
   total_price: number;
   status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
@@ -61,6 +67,10 @@ export interface OwnerBooking {
   booking_date: string;
   start_time: string;
   end_time: string;
+  original_price?: number;
+  discount_amount?: number;
+  promo_id?: string;
+  promo_code?: string;
   total_price: number;
   status: 'PENDING_PAYMENT' | 'PAID' | 'CONFIRMED' | 'CANCELLED' | 'WAITING_VERIFICATION' | 'COMPLETED';
   payment_reference?: string;
@@ -79,6 +89,7 @@ export interface OwnerCreateOfflineBookingRequest {
   customer_phone?: string;
   customer_email?: string;
   total_price: number;
-  status: 'PAID' | 'COMPLETED';
-  note?: string;
+	status: 'PAID' | 'COMPLETED';
+	note?: string;
+	price_override_reason?: string;
 }

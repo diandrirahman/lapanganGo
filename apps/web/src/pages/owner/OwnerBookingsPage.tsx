@@ -421,6 +421,16 @@ export const OwnerBookingsPage: React.FC = () => {
                         </p>
                       </div>
                       <div className="text-left sm:text-right">
+                        {booking.promo_code && booking.original_price && (booking.discount_amount ?? 0) > 0 ? (
+                          <div className="mb-2">
+                            <p className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded inline-block mb-1">
+                              Promo {booking.promo_code} &bull; Diskon {formatRupiah(booking.discount_amount ?? 0)}
+                            </p>
+                            <p className="text-xs text-text-muted line-through">
+                              Harga awal {formatRupiah(booking.original_price)}
+                            </p>
+                          </div>
+                        ) : null}
                         <p className="text-sm font-bold text-text-muted mb-1">Total Pembayaran</p>
                         <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
                       </div>

@@ -4,13 +4,14 @@ import toast from 'react-hot-toast';
 import { PageShell } from '../components/layout/PageShell';
 import { LoadingState } from '../components/feedback/LoadingState';
 import { ErrorState } from '../components/feedback/ErrorState';
-import { fetchCourtAvailability, createBooking, fetchVenueById } from '../lib/api';
+import { fetchCourtAvailability, createBooking, fetchVenueById, validatePromo } from '../lib/api';
 import { formatPaymentDeadline } from '../lib/paymentExpiry';
 import type { AvailabilitySlot } from '../types/booking';
 import type { VenueDetail } from '../types/venue';
 import { Calendar, Clock, MapPin, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { toggleContiguousSlotSelection, getSelectedSlotRange, areSelectedSlotsStillAvailable } from '../lib/slotSelection';
+import { getLocalTodayDateString } from '../lib/utils';
 
 export const CourtAvailabilityPage: React.FC = () => {
   const { venueId, courtId, id } = useParams<{ venueId?: string; courtId?: string; id?: string }>();
@@ -18,8 +19,18 @@ export const CourtAvailabilityPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const today = new Date().toISOString().split('T')[0];
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  const today = getLocalTodayDateString();
+  
+  const getInitialDate = () => {
+    const params = new URLSearchParams(location.search);
+    const pd = params.get('play_date');
+    if (pd && /^\d{4}-\d{2}-\d{2}$/.test(pd) && pd >= today) {
+      return pd;
+    }
+    return today;
+  };
+
+  const [selectedDate, setSelectedDate] = useState<string>(getInitialDate);
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +45,14 @@ export const CourtAvailabilityPage: React.FC = () => {
   const [venueAddress, setVenueAddress] = useState<string>(location.state?.venue?.address || '');
   const [courtName, setCourtName] = useState<string>(location.state?.court?.name || '');
   const [pricePerHour, setPricePerHour] = useState<number | null>(location.state?.court?.price_per_hour || null);
+  
+  const searchParams = new URLSearchParams(location.search);
+  const initialPromo = searchParams.get('promo') || '';
+  
+  const [promoCode, setPromoCode] = useState(initialPromo);
+  const [appliedPromo, setAppliedPromo] = useState<any | null>(null);
+  const [isValidatingPromo, setIsValidatingPromo] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
 
   useEffect(() => {
     // If we don't have venueName from state, but we have venueId, fetch it
@@ -126,6 +145,11 @@ export const CourtAvailabilityPage: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [refreshAvailability, selectedSlots]);
 
+  useEffect(() => {
+    setAppliedPromo(null);
+    setPromoError(null);
+  }, [selectedDate, selectedSlots, activeCourtId]);
+
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(e.target.value);
   };
@@ -141,6 +165,51 @@ export const CourtAvailabilityPage: React.FC = () => {
       }
       return result.selection;
     });
+  };
+
+  const getPromoErrorMessage = (message: string): string => {
+    const normalized = message.toLowerCase();
+    if (normalized.includes('invalid request payload')) return 'Kode promo tidak valid.';
+    if (normalized.includes('promo not found')) return 'Kode promo tidak ditemukan.';
+    if (normalized.includes('not active')) return 'Promo sedang tidak aktif.';
+    if (normalized.includes('not started')) return 'Promo belum berlaku untuk tanggal booking ini.';
+    if (normalized.includes('expired')) return 'Promo sudah berakhir untuk tanggal booking ini.';
+    if (normalized.includes('not valid for this venue') || normalized.includes('venue mismatch')) return 'Promo tidak berlaku untuk venue ini.';
+    return 'Promo tidak dapat digunakan.';
+  };
+
+  const handleApplyPromo = async () => {
+    if (!promoCode.trim() || !token) return;
+
+    if (promoCode.trim().length < 3) {
+      setPromoError('Kode promo minimal 3 karakter.');
+      return;
+    }
+
+    const selectedRange = getSelectedSlotRange(selectedSlots);
+    if (!selectedRange || !activeCourtId) return;
+
+    setIsValidatingPromo(true);
+    setPromoError(null);
+    try {
+      const res = await validatePromo({
+        venue_id: location.state?.venue?.id || venueId || '',
+        court_id: activeCourtId,
+        booking_date: selectedDate,
+        start_time: selectedRange.startTime,
+        end_time: selectedRange.endTime,
+        promo_code: promoCode.trim()
+      }, token);
+      setAppliedPromo(res);
+      toast.success(`Promo ${res.promo_code} berhasil diterapkan!`);
+    } catch (err: any) {
+      setAppliedPromo(null);
+      const msg = getPromoErrorMessage(err.message || '');
+      setPromoError(msg);
+      toast.error(msg);
+    } finally {
+      setIsValidatingPromo(false);
+    }
   };
 
   const handleCreateBooking = async () => {
@@ -177,12 +246,18 @@ export const CourtAvailabilityPage: React.FC = () => {
         return;
       }
 
-      const booking = await createBooking({
+      const payload: any = {
         court_id: activeCourtId,
         booking_date: selectedDate,
         start_time: selectedRange.startTime,
         end_time: selectedRange.endTime
-      }, token);
+      };
+      
+      if (appliedPromo) {
+        payload.promo_code = appliedPromo.promo_code;
+      }
+
+      const booking = await createBooking(payload, token);
 
       if (booking.expires_at) {
         toast.success(`Pesanan dibuat. Selesaikan pembayaran sebelum ${formatPaymentDeadline(booking.expires_at)}.`);
@@ -367,6 +442,50 @@ export const CourtAvailabilityPage: React.FC = () => {
                     </p>
                   </div>
                 </div>
+                <div className="pt-4 border-t border-border-main">
+                  <p className="text-sm font-bold text-text-muted mb-2">Kode Promo (Opsional)</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Masukkan kode promo"
+                      className={`flex-1 rounded-xl border px-4 py-2.5 outline-none uppercase transition-colors ${
+                        promoError 
+                          ? 'border-red-500 focus:border-red-500 focus:ring-1 focus:ring-red-500' 
+                          : appliedPromo
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-700 font-bold focus:border-emerald-500'
+                          : 'border-border-main focus:border-primary focus:ring-1 focus:ring-primary'
+                      }`}
+                      value={promoCode}
+                      onChange={(e) => {
+                        setPromoCode(e.target.value.toUpperCase());
+                        if (appliedPromo || promoError) {
+                          setAppliedPromo(null);
+                          setPromoError(null);
+                        }
+                      }}
+                      disabled={isValidatingPromo}
+                    />
+                    <button
+                      disabled={!promoCode.trim() || isValidatingPromo || selectedSlotCount === 0 || appliedPromo !== null}
+                      onClick={handleApplyPromo}
+                      className={`px-4 rounded-xl font-bold transition-all ${
+                        !promoCode.trim() || selectedSlotCount === 0 || appliedPromo !== null
+                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                          : 'bg-primary text-white hover:bg-primary/90'
+                      }`}
+                    >
+                      {isValidatingPromo ? 'Cek...' : appliedPromo ? 'Aktif' : 'Terapkan'}
+                    </button>
+                  </div>
+                  {promoError && (
+                    <p className="text-sm text-red-500 mt-2">{promoError}</p>
+                  )}
+                  {appliedPromo && (
+                    <p className="text-sm text-emerald-600 font-medium mt-2">
+                      Berhasil! Diskon Rp {appliedPromo.discount_amount.toLocaleString('id-ID')}
+                    </p>
+                  )}
+                </div>
 
                 <div className="pt-4 border-t border-border-main flex justify-between items-center">
                   <div>
@@ -374,9 +493,22 @@ export const CourtAvailabilityPage: React.FC = () => {
                     <p className="text-xs text-text-muted mt-0.5">{selectedSlotCount} Jam</p>
                   </div>
                   {totalPrice !== null && selectedSlotCount > 0 ? (
-                    <p className="text-lg font-extrabold text-primary">
-                      Rp {totalPrice.toLocaleString('id-ID')}
-                    </p>
+                    <div className="text-right">
+                      {appliedPromo ? (
+                        <>
+                          <p className="text-sm text-text-muted line-through">
+                            Rp {totalPrice.toLocaleString('id-ID')}
+                          </p>
+                          <p className="text-lg font-extrabold text-primary">
+                            Rp {appliedPromo.final_price.toLocaleString('id-ID')}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-lg font-extrabold text-primary">
+                          Rp {totalPrice.toLocaleString('id-ID')}
+                        </p>
+                      )}
+                    </div>
                   ) : (
                     <p className="text-sm font-bold text-text-main text-right italic">
                       Dihitung setelah<br/>konfirmasi

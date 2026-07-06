@@ -229,9 +229,28 @@ export const CustomerBookingDetailPage: React.FC = () => {
               </div>
 
               {/* Price */}
-              <div className="p-4 border border-border-main rounded-2xl flex justify-between items-center">
-                <p className="font-bold text-text-main">Total Tagihan</p>
-                <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
+              <div className="p-4 border border-border-main rounded-2xl space-y-3">
+                {booking.promo_code && booking.original_price && (booking.discount_amount ?? 0) > 0 ? (
+                  <>
+                    <div className="flex justify-between items-center text-sm">
+                      <p className="font-bold text-text-muted">Harga Awal</p>
+                      <p className="font-medium text-text-main">{formatRupiah(booking.original_price)}</p>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <p className="font-bold text-emerald-600">Promo {booking.promo_code}</p>
+                      <p className="font-medium text-emerald-600">-{formatRupiah(booking.discount_amount ?? 0)}</p>
+                    </div>
+                    <div className="pt-3 border-t border-border-main flex justify-between items-center">
+                      <p className="font-bold text-text-main">Total Tagihan</p>
+                      <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex justify-between items-center">
+                    <p className="font-bold text-text-main">Total Tagihan</p>
+                    <p className="text-2xl font-extrabold text-primary">{formatRupiah(booking.total_price)}</p>
+                  </div>
+                )}
               </div>
 
               {/* Actions & Policy */}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, CalendarDays, LayoutDashboard, LogOut, MapPin, Menu, Search, Trophy, X, Undo2 } from 'lucide-react';
+import { BarChart3, CalendarDays, LayoutDashboard, LogOut, MapPin, Menu, Search, Trophy, X, Undo2, Tag } from 'lucide-react';
 import { NotificationDropdown } from './NotificationDropdown';
 
 export const Navbar: React.FC = () => {
@@ -46,6 +46,10 @@ export const Navbar: React.FC = () => {
           <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/venues" className={linkClass(location.pathname.startsWith('/owner/venues'))}>
             {mobile && <MapPin className={iconClass} />}
             Venue
+          </Link>
+          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/promos" className={linkClass(location.pathname.startsWith('/owner/promos'))}>
+            {mobile && <Tag className={iconClass} />}
+            Promo
           </Link>
         </>
       ) : (

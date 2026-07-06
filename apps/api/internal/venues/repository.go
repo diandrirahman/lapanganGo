@@ -55,6 +55,16 @@ type Facility struct {
 	Icon *string
 }
 
+type PromoSummary struct {
+	ID            string
+	Code          string
+	Name          string
+	DiscountType  string
+	DiscountValue float64
+	StartsAt      time.Time
+	EndsAt        time.Time
+}
+
 type Sport struct {
 	ID   string
 	Name string
@@ -715,6 +725,87 @@ func (r *Repository) FindFacilitiesByVenueIDs(ctx context.Context, venueIDs []st
 	}
 
 	return facilitiesMap, rows.Err()
+}
+
+func (r *Repository) FindActivePromosByVenueIDs(ctx context.Context, venueIDs []string, playDate string) (map[string][]PromoSummary, error) {
+	if len(venueIDs) == 0 {
+		return make(map[string][]PromoSummary), nil
+	}
+
+	var query string
+	var args []interface{}
+
+	if playDate != "" {
+		query = `
+			SELECT
+				v.id::text,
+				op.id::text,
+				op.code,
+				op.name,
+				op.discount_type,
+				op.discount_value,
+				op.starts_at,
+				op.ends_at
+			FROM venues v
+			JOIN owner_profiles owner ON owner.id = v.owner_profile_id
+			JOIN owner_promos op ON op.owner_id = owner.user_id
+			WHERE v.id = ANY($1::uuid[])
+				AND op.status = 'ACTIVE'
+				AND DATE(op.starts_at AT TIME ZONE 'Asia/Jakarta') <= $2::date
+				AND DATE(op.ends_at AT TIME ZONE 'Asia/Jakarta') >= $2::date
+				AND (op.venue_id IS NULL OR op.venue_id = v.id)
+			ORDER BY v.id, op.created_at ASC
+		`
+		args = []interface{}{venueIDs, playDate}
+	} else {
+		query = `
+			SELECT
+				v.id::text,
+				op.id::text,
+				op.code,
+				op.name,
+				op.discount_type,
+				op.discount_value,
+				op.starts_at,
+				op.ends_at
+			FROM venues v
+			JOIN owner_profiles owner ON owner.id = v.owner_profile_id
+			JOIN owner_promos op ON op.owner_id = owner.user_id
+			WHERE v.id = ANY($1::uuid[])
+				AND op.status = 'ACTIVE'
+				AND DATE(op.ends_at AT TIME ZONE 'Asia/Jakarta') >= DATE(now() AT TIME ZONE 'Asia/Jakarta')
+				AND (op.venue_id IS NULL OR op.venue_id = v.id)
+			ORDER BY v.id, op.created_at ASC
+		`
+		args = []interface{}{venueIDs}
+	}
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	promosMap := make(map[string][]PromoSummary)
+	for rows.Next() {
+		var venueID string
+		var p PromoSummary
+		if err := rows.Scan(
+			&venueID,
+			&p.ID,
+			&p.Code,
+			&p.Name,
+			&p.DiscountType,
+			&p.DiscountValue,
+			&p.StartsAt,
+			&p.EndsAt,
+		); err != nil {
+			return nil, err
+		}
+		promosMap[venueID] = append(promosMap[venueID], p)
+	}
+
+	return promosMap, rows.Err()
 }
 
 func replaceVenueFacilities(ctx context.Context, tx pgx.Tx, venueID string, facilityIDs []string) error {

@@ -24,6 +24,7 @@ import { OwnerVenueBookingsPage } from './pages/owner/OwnerVenueBookingsPage';
 import { OwnerBookingsPage } from './pages/owner/OwnerBookingsPage';
 import { OwnerRefundsPage } from './pages/owner/OwnerRefundsPage';
 import { OwnerFinancePage } from './pages/owner/OwnerFinancePage';
+import { OwnerPromosPage } from './pages/owner/OwnerPromosPage';
 
 function App() {
   return (
@@ -76,6 +77,7 @@ function App() {
             <Route path="/owner/venues/:id/edit" element={<EditVenuePage />} />
             <Route path="/owner/venues/:id/courts" element={<OwnerCourtsPage />} />
             <Route path="/owner/venues/:id/bookings" element={<OwnerVenueBookingsPage />} />
+            <Route path="/owner/promos" element={<OwnerPromosPage />} />
           </Route>
 
           {/* Catch-All / 404 */}

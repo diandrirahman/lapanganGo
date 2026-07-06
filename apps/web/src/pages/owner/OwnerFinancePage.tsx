@@ -5,7 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { fetchOwnerFinanceSummary, fetchOwnerVenues, fetchTransactions, createTransaction } from '../../lib/api';
 import { LoadingState } from '../../components/feedback/LoadingState';
 import { ErrorState } from '../../components/feedback/ErrorState';
-import { formatRupiah } from '../../lib/utils';
+import { formatRupiah, getLocalTodayDateString } from '../../lib/utils';
 import { Wallet, TrendingUp, TrendingDown, Activity, Receipt, LayoutDashboard, ListPlus, X, AlertCircle, Undo2 } from 'lucide-react';
 import type { FinanceSummaryResult, TransactionListResponse } from '../../types/finance';
 import type { Venue } from '../../types/venue';
@@ -34,7 +34,7 @@ export const OwnerFinancePage: React.FC = () => {
     categorySelect: 'SEWA_ALAT',
     customCategory: '',
     amount: '',
-    transaction_date: new Date().toISOString().split('T')[0],
+    transaction_date: getLocalTodayDateString(),
     description: '',
     venue_id: '',
   });
@@ -119,7 +119,7 @@ export const OwnerFinancePage: React.FC = () => {
         categorySelect: 'SEWA_ALAT',
         customCategory: '',
         amount: '',
-        transaction_date: new Date().toISOString().split('T')[0],
+        transaction_date: getLocalTodayDateString(),
         description: '',
         venue_id: '',
       });

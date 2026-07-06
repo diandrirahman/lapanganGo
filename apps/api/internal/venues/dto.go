@@ -41,6 +41,7 @@ type ListPublicVenuesQuery struct {
 	FacilityIDs []string `form:"facility_ids" binding:"omitempty,dive,uuid"`
 	MinPrice    float64  `form:"min_price" binding:"omitempty,min=0"`
 	MaxPrice    float64  `form:"max_price" binding:"omitempty,min=0"`
+	PlayDate    string   `form:"play_date" binding:"omitempty,datetime=2006-01-02"`
 }
 
 type FacilityResponse struct {
@@ -60,10 +61,22 @@ type PublicVenueResponse struct {
 	PostalCode   *string            `json:"postal_code,omitempty"`
 	Latitude     *float64           `json:"latitude,omitempty"`
 	Longitude    *float64           `json:"longitude,omitempty"`
-	PrimaryPhoto *string            `json:"primary_photo,omitempty"`
+	Photos       []string           `json:"photos,omitempty"`
 	Facilities   []FacilityResponse `json:"facilities"`
+	HasPromo     bool                         `json:"has_promo"`
+	Promos       []PublicPromoSummaryResponse `json:"promos,omitempty"`
 	CreatedAt    time.Time          `json:"created_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
+}
+
+type PublicPromoSummaryResponse struct {
+	ID            string  `json:"id"`
+	Code          string  `json:"code"`
+	Name          string  `json:"name"`
+	DiscountType  string  `json:"discount_type"`
+	DiscountValue float64 `json:"discount_value"`
+	StartsAt      string  `json:"starts_at"`
+	EndsAt        string  `json:"ends_at"`
 }
 
 type PublicSportResponse struct {

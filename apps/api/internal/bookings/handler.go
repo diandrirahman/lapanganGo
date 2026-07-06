@@ -341,7 +341,15 @@ func (h *Handler) CompleteBooking(c *gin.Context) {
 
 func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	switch {
-	case errors.Is(err, ErrPastDate), errors.Is(err, ErrInvalidTimeRange):
+	case errors.Is(err, ErrPastDate),
+		errors.Is(err, ErrInvalidTimeRange),
+		errors.Is(err, ErrInvalidPrice),
+		errors.Is(err, ErrPriceOverrideReasonRequired),
+		errors.Is(err, ErrPriceOverrideReasonTooLong),
+		errors.Is(err, ErrPromoNotActive),
+		errors.Is(err, ErrPromoExpired),
+		errors.Is(err, ErrPromoNotStarted),
+		errors.Is(err, ErrPromoVenueMismatch):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrCourtInactive), errors.Is(err, ErrVenueInactive), errors.Is(err, ErrOutsideOpHours):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
@@ -365,6 +373,8 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Owner profile is required before viewing bookings"})
 	case errors.Is(err, ErrVenueNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "Venue not found"})
+	case errors.Is(err, ErrPromoNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"message": "Promo not found"})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Internal server error"})
 	}

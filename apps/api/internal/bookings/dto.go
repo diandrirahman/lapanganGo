@@ -3,10 +3,11 @@ package bookings
 import "time"
 
 type CreateBookingRequest struct {
-	CourtID     string `json:"court_id" binding:"required,uuid"`
-	BookingDate string `json:"booking_date" binding:"required,datetime=2006-01-02"`
-	StartTime   string `json:"start_time" binding:"required,datetime=15:04"`
-	EndTime     string `json:"end_time" binding:"required,datetime=15:04"`
+	CourtID     string  `json:"court_id" binding:"required,uuid"`
+	BookingDate string  `json:"booking_date" binding:"required,datetime=2006-01-02"`
+	StartTime   string  `json:"start_time" binding:"required,datetime=15:04"`
+	EndTime     string  `json:"end_time" binding:"required,datetime=15:04"`
+	PromoCode   *string `json:"promo_code" binding:"omitempty,min=3,max=50"`
 }
 
 type SubmitPaymentProofRequest struct {
@@ -30,6 +31,11 @@ type BookingResponse struct {
 	Date             string              `json:"booking_date"`
 	StartTime        string              `json:"start_time"`
 	EndTime          string              `json:"end_time"`
+	OriginalPrice    *float64            `json:"original_price,omitempty"`
+	DiscountAmount   float64             `json:"discount_amount,omitempty"`
+	FinalPrice       *float64            `json:"final_price,omitempty"`
+	PromoID          *string             `json:"promo_id,omitempty"`
+	PromoCode        *string             `json:"promo_code,omitempty"`
 	TotalPrice       float64             `json:"total_price"`
 	Status           string              `json:"status"`
 	PaymentReference *string             `json:"payment_reference,omitempty"`
@@ -82,7 +88,11 @@ type OwnerBookingResponse struct {
 	Date             string                 `json:"booking_date"`
 	StartTime        string                 `json:"start_time"`
 	EndTime          string                 `json:"end_time"`
+	OriginalPrice    *float64               `json:"original_price,omitempty"`
+	DiscountAmount   float64                `json:"discount_amount,omitempty"`
 	TotalPrice       float64                `json:"total_price"`
+	PromoID          *string                `json:"promo_id,omitempty"`
+	PromoCode        *string                `json:"promo_code,omitempty"`
 	Status           string                 `json:"status"`
 	PaymentReference *string                `json:"payment_reference,omitempty"`
 	ExpiresAt        *time.Time             `json:"expires_at,omitempty"`
@@ -128,15 +138,16 @@ type OwnerMetricsResponse struct {
 }
 
 type OwnerCreateOfflineBookingRequest struct {
-	VenueID       string  `json:"venue_id" binding:"required,uuid"`
-	CourtID       string  `json:"court_id" binding:"required,uuid"`
-	BookingDate   string  `json:"booking_date" binding:"required,datetime=2006-01-02"`
-	StartTime     string  `json:"start_time" binding:"required,datetime=15:04"`
-	EndTime       string  `json:"end_time" binding:"required,datetime=15:04"`
-	CustomerName  string  `json:"customer_name" binding:"required,min=2,max=120"`
-	CustomerPhone string  `json:"customer_phone" binding:"omitempty,max=30"`
-	CustomerEmail string  `json:"customer_email" binding:"omitempty,email,max=255"`
-	TotalPrice    float64 `json:"total_price" binding:"required,gt=0"`
-	Status        string  `json:"status" binding:"required,oneof=PAID COMPLETED"`
-	Note          string  `json:"note" binding:"omitempty,max=500"`
+	VenueID             string  `json:"venue_id" binding:"required,uuid"`
+	CourtID             string  `json:"court_id" binding:"required,uuid"`
+	BookingDate         string  `json:"booking_date" binding:"required,datetime=2006-01-02"`
+	StartTime           string  `json:"start_time" binding:"required,datetime=15:04"`
+	EndTime             string  `json:"end_time" binding:"required,datetime=15:04"`
+	CustomerName        string  `json:"customer_name" binding:"required,min=2,max=120"`
+	CustomerPhone       string  `json:"customer_phone" binding:"omitempty,max=30"`
+	CustomerEmail       string  `json:"customer_email" binding:"omitempty,email,max=255"`
+	TotalPrice          float64 `json:"total_price" binding:"required,gt=0"`
+	Status              string  `json:"status" binding:"required,oneof=PAID COMPLETED"`
+	PriceOverrideReason string  `json:"price_override_reason" binding:"omitempty,max=500"`
+	Note                string  `json:"note" binding:"omitempty,max=500"`
 }

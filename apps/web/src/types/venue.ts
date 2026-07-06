@@ -39,6 +39,16 @@ export interface VenuePhoto {
   created_at: string;
 }
 
+export interface PublicPromoSummaryResponse {
+  id: string;
+  code: string;
+  name: string;
+  discount_type: string;
+  discount_value: number;
+  starts_at: string;
+  ends_at: string;
+}
+
 export interface Venue {
   id: string;
   owner_profile_id?: string;
@@ -54,7 +64,10 @@ export interface Venue {
   status?: string;
   primary_photo?: string;
   photos?: VenuePhoto[];
+  public_photos?: string[];
   facilities: Facility[];
+  has_promo?: boolean;
+  promos?: PublicPromoSummaryResponse[];
   created_at: string;
   updated_at: string;
 }
