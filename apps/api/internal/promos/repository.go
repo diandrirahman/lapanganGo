@@ -26,19 +26,23 @@ type CourtValidationInfo struct {
 }
 
 type Promo struct {
-	ID            string
-	OwnerID       string
-	VenueID       *string
-	Code          string
-	Name          string
-	Description   *string
-	DiscountType  string
-	DiscountValue float64
-	StartsAt      time.Time
-	EndsAt        time.Time
-	Status        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                    string
+	OwnerID               string
+	VenueID               *string
+	Code                  string
+	Name                  string
+	Description           *string
+	DiscountType          string
+	DiscountValue         float64
+	StartsAt              time.Time
+	EndsAt                time.Time
+	Status                string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	UsageCount            int
+	TotalDiscountAmount   float64
+	TotalFinalRevenue     float64
+	BookingReferenceCount int
 }
 
 type UpdatePromoParams struct {
@@ -72,6 +76,10 @@ func (r *repository) CreatePromo(ctx context.Context, p Promo) (Promo, error) {
 		&created.ID, &created.OwnerID, &created.VenueID, &created.Code, &created.Name, &created.Description,
 		&created.DiscountType, &created.DiscountValue, &created.StartsAt, &created.EndsAt, &created.Status, &created.CreatedAt, &created.UpdatedAt,
 	)
+	created.UsageCount = 0
+	created.TotalDiscountAmount = 0
+	created.TotalFinalRevenue = 0
+	created.BookingReferenceCount = 0
 	if err != nil {
 		return Promo{}, err
 	}
@@ -80,10 +88,17 @@ func (r *repository) CreatePromo(ctx context.Context, p Promo) (Promo, error) {
 
 func (r *repository) ListOwnerPromos(ctx context.Context, ownerID string) ([]Promo, error) {
 	query := `
-		SELECT id, owner_id, venue_id, code, name, description, discount_type, discount_value, starts_at, ends_at, status, created_at, updated_at
-		FROM owner_promos
-		WHERE owner_id = $1
-		ORDER BY created_at DESC
+		SELECT 
+			p.id, p.owner_id, p.venue_id, p.code, p.name, p.description, p.discount_type, p.discount_value, p.starts_at, p.ends_at, p.status, p.created_at, p.updated_at,
+			COUNT(b.id) FILTER (WHERE b.status <> 'CANCELLED') AS usage_count,
+			COALESCE(SUM(b.discount_amount) FILTER (WHERE b.status <> 'CANCELLED'), 0) AS total_discount_amount,
+			COALESCE(SUM(b.total_price) FILTER (WHERE b.status IN ('PAID', 'COMPLETED', 'CONFIRMED')), 0) AS total_final_revenue,
+			COUNT(b.id) AS booking_reference_count
+		FROM owner_promos p
+		LEFT JOIN bookings b ON b.promo_id = p.id
+		WHERE p.owner_id = $1
+		GROUP BY p.id
+		ORDER BY p.created_at DESC
 	`
 	rows, err := r.db.Query(ctx, query, ownerID)
 	if err != nil {
@@ -94,7 +109,7 @@ func (r *repository) ListOwnerPromos(ctx context.Context, ownerID string) ([]Pro
 	promos := make([]Promo, 0)
 	for rows.Next() {
 		var p Promo
-		if err := rows.Scan(&p.ID, &p.OwnerID, &p.VenueID, &p.Code, &p.Name, &p.Description, &p.DiscountType, &p.DiscountValue, &p.StartsAt, &p.EndsAt, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.OwnerID, &p.VenueID, &p.Code, &p.Name, &p.Description, &p.DiscountType, &p.DiscountValue, &p.StartsAt, &p.EndsAt, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.UsageCount, &p.TotalDiscountAmount, &p.TotalFinalRevenue, &p.BookingReferenceCount); err != nil {
 			return nil, err
 		}
 		promos = append(promos, p)
@@ -104,14 +119,22 @@ func (r *repository) ListOwnerPromos(ctx context.Context, ownerID string) ([]Pro
 
 func (r *repository) GetPromoByIDAndOwner(ctx context.Context, id, ownerID string) (Promo, error) {
 	query := `
-		SELECT id, owner_id, venue_id, code, name, description, discount_type, discount_value, starts_at, ends_at, status, created_at, updated_at
-		FROM owner_promos
-		WHERE id = $1 AND owner_id = $2
+		SELECT 
+			p.id, p.owner_id, p.venue_id, p.code, p.name, p.description, p.discount_type, p.discount_value, p.starts_at, p.ends_at, p.status, p.created_at, p.updated_at,
+			COUNT(b.id) FILTER (WHERE b.status <> 'CANCELLED') AS usage_count,
+			COALESCE(SUM(b.discount_amount) FILTER (WHERE b.status <> 'CANCELLED'), 0) AS total_discount_amount,
+			COALESCE(SUM(b.total_price) FILTER (WHERE b.status IN ('PAID', 'COMPLETED', 'CONFIRMED')), 0) AS total_final_revenue,
+			COUNT(b.id) AS booking_reference_count
+		FROM owner_promos p
+		LEFT JOIN bookings b ON b.promo_id = p.id
+		WHERE p.id = $1 AND p.owner_id = $2
+		GROUP BY p.id
 	`
 	var p Promo
 	err := r.db.QueryRow(ctx, query, id, ownerID).Scan(
 		&p.ID, &p.OwnerID, &p.VenueID, &p.Code, &p.Name, &p.Description,
 		&p.DiscountType, &p.DiscountValue, &p.StartsAt, &p.EndsAt, &p.Status, &p.CreatedAt, &p.UpdatedAt,
+		&p.UsageCount, &p.TotalDiscountAmount, &p.TotalFinalRevenue, &p.BookingReferenceCount,
 	)
 	if err != nil {
 		return Promo{}, err
@@ -141,6 +164,10 @@ func (r *repository) UpdatePromo(ctx context.Context, id, ownerID string, params
 		&p.ID, &p.OwnerID, &p.VenueID, &p.Code, &p.Name, &p.Description,
 		&p.DiscountType, &p.DiscountValue, &p.StartsAt, &p.EndsAt, &p.Status, &p.CreatedAt, &p.UpdatedAt,
 	)
+	p.UsageCount = 0
+	p.TotalDiscountAmount = 0
+	p.TotalFinalRevenue = 0
+	p.BookingReferenceCount = 0
 	if err != nil {
 		return Promo{}, err
 	}
@@ -158,6 +185,10 @@ func (r *repository) FindActivePromoByCode(ctx context.Context, ownerID, code st
 		&p.ID, &p.OwnerID, &p.VenueID, &p.Code, &p.Name, &p.Description,
 		&p.DiscountType, &p.DiscountValue, &p.StartsAt, &p.EndsAt, &p.Status, &p.CreatedAt, &p.UpdatedAt,
 	)
+	p.UsageCount = 0
+	p.TotalDiscountAmount = 0
+	p.TotalFinalRevenue = 0
+	p.BookingReferenceCount = 0
 	if err != nil {
 		return Promo{}, err
 	}

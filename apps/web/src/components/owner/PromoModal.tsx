@@ -170,7 +170,7 @@ export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProp
                     className="w-full bg-white border border-border-main rounded-xl px-4 py-3 text-text-main placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary disabled:opacity-50 uppercase"
                     placeholder="Contoh: MERDEKA20"
                     value={formData.code}
-                    onChange={e => setFormData(prev => ({ ...prev, code: e.target.value.toUpperCase() }))}
+                    onChange={e => setFormData(prev => ({ ...prev, code: e.target.value.toUpperCase().replace(/\s/g, '') }))}
                   />
                   {!promo && (
                     <p className="text-xs text-text-muted">Gunakan huruf dan angka tanpa spasi.</p>
@@ -261,7 +261,7 @@ export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProp
                       type="number"
                       required
                       min={1}
-                      max={formData.discount_type === 'PERCENTAGE' ? 100 : undefined}
+                      max={formData.discount_type === 'PERCENTAGE' ? 99 : undefined}
                       className={`w-full bg-white border border-border-main rounded-xl py-3 text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary ${
                         formData.discount_type === 'FIXED_AMOUNT' ? 'pl-10 pr-4' : 'px-4'
                       }`}

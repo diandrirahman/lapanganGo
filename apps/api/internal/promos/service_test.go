@@ -22,6 +22,18 @@ type mockRepo struct {
 
 	ActivePromo Promo
 	ActiveErr   error
+
+	IsVenueOwned bool
+	VenueErr     error
+
+	CourtInfo CourtValidationInfo
+	CourtErr  error
+
+	DeleteErr    error
+	DeleteCalled bool
+
+	GetCalls    int
+	UpdateCalls int
 }
 
 func (m *mockRepo) CreatePromo(ctx context.Context, p Promo) (Promo, error) {
@@ -33,15 +45,30 @@ func (m *mockRepo) ListOwnerPromos(ctx context.Context, ownerID string) ([]Promo
 }
 
 func (m *mockRepo) GetPromoByIDAndOwner(ctx context.Context, id, ownerID string) (Promo, error) {
+	m.GetCalls++
 	return m.Promo, m.GetErr
 }
 
 func (m *mockRepo) UpdatePromo(ctx context.Context, id, ownerID string, params UpdatePromoParams) (Promo, error) {
+	m.UpdateCalls++
 	return m.UpdatedPromo, m.UpdateErr
 }
 
 func (m *mockRepo) FindActivePromoByCode(ctx context.Context, ownerID, code string) (Promo, error) {
 	return m.ActivePromo, m.ActiveErr
+}
+
+func (m *mockRepo) IsVenueOwnedByOwner(ctx context.Context, ownerUserID, venueID string) (bool, error) {
+	return m.IsVenueOwned, m.VenueErr
+}
+
+func (m *mockRepo) GetCourtValidationInfo(ctx context.Context, courtID string) (CourtValidationInfo, error) {
+	return m.CourtInfo, m.CourtErr
+}
+
+func (m *mockRepo) DeletePromo(ctx context.Context, id, ownerID string) error {
+	m.DeleteCalled = true
+	return m.DeleteErr
 }
 
 func TestCalculateDiscount(t *testing.T) {
@@ -202,5 +229,119 @@ func TestValidatePromoRulesUsesJakartaBookingDate(t *testing.T) {
 	afterEndDate := time.Date(2026, time.July, 14, 0, 0, 0, 0, time.UTC)
 	if err := ValidatePromoRules(promo, "venue-1", 100000, afterEndDate); !errors.Is(err, ErrPromoExpired) {
 		t.Fatalf("expected ErrPromoExpired for booking after Jakarta end date, got %v", err)
+	}
+}
+
+func TestPromoResponseCanDeleteUsesBookingReferenceCount(t *testing.T) {
+	res := toPromoResponse(Promo{
+		UsageCount:            0,
+		BookingReferenceCount: 1,
+	})
+
+	if res.CanDelete {
+		t.Fatal("expected promo with any booking reference to be non-deletable")
+	}
+}
+
+func TestDeletePromoRejectsCancelledBookingReference(t *testing.T) {
+	repo := &mockRepo{
+		Promo: Promo{
+			UsageCount:            0,
+			BookingReferenceCount: 1,
+		},
+	}
+	service := NewService(repo)
+
+	err := service.DeletePromo(context.Background(), "promo-1", "owner-1")
+	if !errors.Is(err, ErrPromoAlreadyUsed) {
+		t.Fatalf("expected ErrPromoAlreadyUsed, got %v", err)
+	}
+	if repo.DeleteCalled {
+		t.Fatal("expected repository delete not to be called")
+	}
+}
+
+func TestDeletePromoAllowsUnusedPromo(t *testing.T) {
+	repo := &mockRepo{
+		Promo: Promo{
+			UsageCount:            0,
+			BookingReferenceCount: 0,
+		},
+	}
+	service := NewService(repo)
+
+	err := service.DeletePromo(context.Background(), "promo-1", "owner-1")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !repo.DeleteCalled {
+		t.Fatal("expected repository delete to be called")
+	}
+}
+
+func TestUpdatePromoReturnsRefetchedUsageSummary(t *testing.T) {
+	now := time.Now()
+	repo := &mockRepo{
+		Promo: Promo{
+			ID:                    "promo-1",
+			Status:                "ACTIVE",
+			UsageCount:            2,
+			BookingReferenceCount: 2,
+			TotalDiscountAmount:   50000,
+			TotalFinalRevenue:     250000,
+		},
+		UpdatedPromo: Promo{ID: "promo-1", Status: "INACTIVE"},
+	}
+	service := NewService(repo)
+
+	res, err := service.UpdatePromo(context.Background(), "promo-1", "owner-1", CreatePromoRequest{
+		Code:          "PROMO10",
+		Name:          "Promo 10",
+		DiscountType:  "PERCENTAGE",
+		DiscountValue: 10,
+		StartsAt:      now.Add(-time.Hour).Format(time.RFC3339),
+		EndsAt:        now.Add(time.Hour).Format(time.RFC3339),
+		Status:        "ACTIVE",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if repo.UpdateCalls != 1 {
+		t.Fatalf("expected one update call, got %d", repo.UpdateCalls)
+	}
+	if repo.GetCalls != 2 {
+		t.Fatalf("expected initial ownership get and refetch, got %d get calls", repo.GetCalls)
+	}
+	if res.UsageCount != 2 || res.TotalDiscountAmount != 50000 || res.TotalFinalRevenue != 250000 || res.CanDelete {
+		t.Fatalf("expected refetched usage summary, got %+v", res)
+	}
+}
+
+func TestTogglePromoStatusReturnsRefetchedUsageSummary(t *testing.T) {
+	repo := &mockRepo{
+		Promo: Promo{
+			ID:                    "promo-1",
+			Status:                "ACTIVE",
+			UsageCount:            3,
+			BookingReferenceCount: 3,
+			TotalDiscountAmount:   75000,
+			TotalFinalRevenue:     300000,
+		},
+		UpdatedPromo: Promo{ID: "promo-1", Status: "INACTIVE"},
+	}
+	service := NewService(repo)
+
+	res, err := service.TogglePromoStatus(context.Background(), "promo-1", "owner-1")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if repo.UpdateCalls != 1 {
+		t.Fatalf("expected one update call, got %d", repo.UpdateCalls)
+	}
+	if repo.GetCalls != 2 {
+		t.Fatalf("expected initial get and refetch, got %d get calls", repo.GetCalls)
+	}
+	if res.UsageCount != 3 || res.TotalDiscountAmount != 75000 || res.TotalFinalRevenue != 300000 || res.CanDelete {
+		t.Fatalf("expected refetched usage summary, got %+v", res)
 	}
 }

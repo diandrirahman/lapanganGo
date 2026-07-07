@@ -27,9 +27,13 @@ type PromoResponse struct {
 	DiscountValue float64   `json:"discount_value"`
 	StartsAt      time.Time `json:"starts_at"`
 	EndsAt        time.Time `json:"ends_at"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Status              string    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	UsageCount          int       `json:"usage_count"`
+	TotalDiscountAmount float64   `json:"total_discount_amount"`
+	TotalFinalRevenue   float64   `json:"total_final_revenue"`
+	CanDelete           bool      `json:"can_delete"`
 }
 
 type ValidatePromoRequest struct {

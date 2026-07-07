@@ -186,21 +186,48 @@ export function OwnerPromosPage() {
                   </p>
                 </div>
               </div>
+
+              {/* Usage Summary */}
+              <div className="pt-3 mt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-text-muted text-xs mb-1">Dipakai</p>
+                  <p className="text-sm font-bold text-text-main">{promo.usage_count} booking</p>
+                </div>
+                <div>
+                  <p className="text-text-muted text-xs mb-1">Total Diskon</p>
+                  <p className="text-sm font-bold text-red-500">{formatRupiah(promo.total_discount_amount)}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-text-muted text-xs mb-1">Revenue Promo</p>
+                  <p className="text-sm font-bold text-emerald-600">{formatRupiah(promo.total_final_revenue)}</p>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={() => openEditModal(promo)}
-                className="flex-1 py-2 bg-primary/10 hover:bg-primary/15 text-primary font-bold rounded-xl transition-colors"
-              >
-                Edit Promo
-              </button>
-              <button
-                onClick={() => handleDeletePromo(promo.id)}
-                className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 font-medium rounded-xl transition-colors"
-              >
-                Hapus
-              </button>
+            <div className="mt-6 flex flex-col gap-2">
+              <div className="flex gap-3">
+                <button
+                  onClick={() => openEditModal(promo)}
+                  className="flex-1 py-2 bg-primary/10 hover:bg-primary/15 text-primary font-bold rounded-xl transition-colors"
+                >
+                  Edit Promo
+                </button>
+                <button
+                  onClick={() => promo.can_delete ? handleDeletePromo(promo.id) : null}
+                  disabled={!promo.can_delete}
+                  className={`px-4 py-2 font-medium rounded-xl transition-colors ${
+                    promo.can_delete
+                      ? 'bg-red-500/10 hover:bg-red-500/20 text-red-500'
+                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  }`}
+                  title={!promo.can_delete ? "Promo sudah pernah dipakai. Nonaktifkan promo untuk menghentikan penggunaan." : ""}
+                >
+                  Hapus
+                </button>
+              </div>
+              {!promo.can_delete && (
+                <p className="text-[10px] text-amber-600 text-center">Promo sudah pernah dipakai. Nonaktifkan promo untuk menghentikan penggunaan.</p>
+              )}
             </div>
           </div>
         ))}

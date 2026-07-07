@@ -12,6 +12,10 @@ export interface Promo {
   status: 'ACTIVE' | 'INACTIVE';
   created_at: string;
   updated_at: string;
+  usage_count: number;
+  total_discount_amount: number;
+  total_final_revenue: number;
+  can_delete: boolean;
 }
 
 export interface CreatePromoRequest {

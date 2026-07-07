@@ -11,17 +11,19 @@ import (
 )
 
 var (
-	ErrPromoNotFound      = errors.New("promo not found")
-	ErrCodeExists         = errors.New("promo code already exists")
-	ErrInvalidDiscount    = errors.New("invalid discount value")
-	ErrInvalidPeriod      = errors.New("end time must be after start time")
-	ErrPromoNotActive     = errors.New("promo is not active")
-	ErrPromoExpired       = errors.New("promo has expired")
-	ErrPromoNotStarted    = errors.New("promo has not started yet")
+	ErrPromoNotFound       = errors.New("promo not found")
+	ErrCodeExists          = errors.New("promo code already exists")
+	ErrInvalidDiscount     = errors.New("invalid discount value")
+	ErrInvalidPeriod       = errors.New("end time must be after start time")
+	ErrPromoNotActive      = errors.New("promo is not active")
+	ErrPromoExpired        = errors.New("promo has expired")
+	ErrPromoNotStarted     = errors.New("promo has not started yet")
 	ErrPromoVenueMismatch  = errors.New("promo is not valid for this venue")
 	ErrPromoVenueForbidden = errors.New("venue does not belong to owner")
 	ErrInvalidPrice        = errors.New("final price cannot be less than or equal to 0")
 	ErrInvalidBookingDate  = errors.New("invalid booking date")
+	ErrPromoAlreadyUsed    = errors.New("promo has already been used and cannot be deleted")
+	ErrInvalidPromoCode    = errors.New("promo code must use letters/numbers without spaces")
 )
 
 var promoBusinessLocation = func() *time.Location {
@@ -48,6 +50,9 @@ func NewService(repo Repository) *Service {
 
 func (s *Service) CreatePromo(ctx context.Context, ownerID string, req CreatePromoRequest) (PromoResponse, error) {
 	code := strings.ToUpper(strings.TrimSpace(req.Code))
+	if strings.ContainsAny(code, " \t\n\r") {
+		return PromoResponse{}, ErrInvalidPromoCode
+	}
 	startsAt, err := time.Parse(time.RFC3339, req.StartsAt)
 	if err != nil {
 		return PromoResponse{}, err
@@ -188,11 +193,14 @@ func (s *Service) UpdatePromo(ctx context.Context, id, ownerID string, req Creat
 		params.Status = nil
 	}
 
-	updated, err := s.repo.UpdatePromo(ctx, id, ownerID, params)
+	_, err = s.repo.UpdatePromo(ctx, id, ownerID, params)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PromoResponse{}, ErrPromoNotFound
+		}
 		return PromoResponse{}, err
 	}
-	return toPromoResponse(updated), nil
+	return s.GetPromo(ctx, id, ownerID)
 }
 
 func (s *Service) TogglePromoStatus(ctx context.Context, id, ownerID string) (PromoResponse, error) {
@@ -209,30 +217,37 @@ func (s *Service) TogglePromoStatus(ctx context.Context, id, ownerID string) (Pr
 		newStatus = "INACTIVE"
 	}
 
-	updated, err := s.repo.UpdatePromo(ctx, id, ownerID, UpdatePromoParams{
+	_, err = s.repo.UpdatePromo(ctx, id, ownerID, UpdatePromoParams{
 		Status: &newStatus,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PromoResponse{}, ErrPromoNotFound
+		}
 		return PromoResponse{}, err
 	}
-	return toPromoResponse(updated), nil
+	return s.GetPromo(ctx, id, ownerID)
 }
 
 func toPromoResponse(p Promo) PromoResponse {
 	return PromoResponse{
-		ID:            p.ID,
-		OwnerID:       p.OwnerID,
-		VenueID:       p.VenueID,
-		Code:          p.Code,
-		Name:          p.Name,
-		Description:   p.Description,
-		DiscountType:  p.DiscountType,
-		DiscountValue: p.DiscountValue,
-		StartsAt:      p.StartsAt,
-		EndsAt:        p.EndsAt,
-		Status:        p.Status,
-		CreatedAt:     p.CreatedAt,
-		UpdatedAt:     p.UpdatedAt,
+		ID:                  p.ID,
+		OwnerID:             p.OwnerID,
+		VenueID:             p.VenueID,
+		Code:                p.Code,
+		Name:                p.Name,
+		Description:         p.Description,
+		DiscountType:        p.DiscountType,
+		DiscountValue:       p.DiscountValue,
+		StartsAt:            p.StartsAt,
+		EndsAt:              p.EndsAt,
+		Status:              p.Status,
+		CreatedAt:           p.CreatedAt,
+		UpdatedAt:           p.UpdatedAt,
+		UsageCount:          p.UsageCount,
+		TotalDiscountAmount: p.TotalDiscountAmount,
+		TotalFinalRevenue:   p.TotalFinalRevenue,
+		CanDelete:           p.BookingReferenceCount == 0,
 	}
 }
 
@@ -365,7 +380,18 @@ func (s *Service) ValidatePromo(ctx context.Context, req ValidatePromoRequest) (
 }
 
 func (s *Service) DeletePromo(ctx context.Context, id, ownerID string) error {
-	err := s.repo.DeletePromo(ctx, id, ownerID)
+	p, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrPromoNotFound
+		}
+		return err
+	}
+	if p.BookingReferenceCount > 0 {
+		return ErrPromoAlreadyUsed
+	}
+
+	err = s.repo.DeletePromo(ctx, id, ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPromoNotFound
 	}

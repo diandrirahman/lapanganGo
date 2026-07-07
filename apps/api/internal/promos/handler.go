@@ -150,10 +150,12 @@ func respondError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"message": "Promo code already exists"})
 	case errors.Is(err, ErrPromoVenueForbidden):
 		c.JSON(http.StatusForbidden, gin.H{"message": "Venue does not belong to owner"})
-	case errors.Is(err, ErrInvalidBookingDate), errors.Is(err, ErrInvalidDiscount), errors.Is(err, ErrInvalidPeriod):
+	case errors.Is(err, ErrInvalidBookingDate), errors.Is(err, ErrInvalidDiscount), errors.Is(err, ErrInvalidPeriod), errors.Is(err, ErrInvalidPromoCode):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrPromoNotActive), errors.Is(err, ErrPromoExpired), errors.Is(err, ErrPromoNotStarted), errors.Is(err, ErrPromoVenueMismatch), errors.Is(err, ErrInvalidPrice):
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrPromoAlreadyUsed):
+		c.JSON(http.StatusConflict, gin.H{"message": "Promo sudah pernah digunakan. Nonaktifkan promo jika tidak ingin dipakai lagi."})
 	default:
 		if err.Error() == "court not found" || err.Error() == "invalid time range" || err.Error() == "court does not belong to the requested venue" {
 			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})

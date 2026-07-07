@@ -21,6 +21,7 @@ export const VenueDetailPage: React.FC = () => {
   const [venue, setVenue] = useState<VenueDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPromoCode, setSelectedPromoCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -145,18 +146,22 @@ export const VenueDetailPage: React.FC = () => {
                 Promo Tersedia
               </h3>
               <div className="flex flex-col gap-4">
-                {venue.promos.map(promo => {
+                {venue.promos.filter(promo => {
+                  if (!searchParams.get('play_date')) return true;
+                  const [y, m, d] = searchParams.get('play_date')!.split('-').map(Number);
+                  const pdDate = new Date(y, m - 1, d);
+                  const startsAt = new Date(promo.starts_at);
+                  const endsAt = new Date(promo.ends_at);
+                  const startDate = new Date(startsAt.getFullYear(), startsAt.getMonth(), startsAt.getDate());
+                  const endDate = new Date(endsAt.getFullYear(), endsAt.getMonth(), endsAt.getDate());
+                  return pdDate >= startDate && pdDate <= endDate;
+                }).map(promo => {
                   const startsAt = new Date(promo.starts_at);
                   const endsAt = new Date(promo.ends_at);
                   const playDateParam = searchParams.get('play_date');
                   
                   let isFuture = false;
-                  if (playDateParam) {
-                    const [y, m, d] = playDateParam.split('-').map(Number);
-                    const pdDate = new Date(y, m - 1, d);
-                    const startDate = new Date(startsAt.getFullYear(), startsAt.getMonth(), startsAt.getDate());
-                    isFuture = startDate > pdDate;
-                  } else {
+                  if (!playDateParam) {
                     isFuture = startsAt > new Date();
                   }
                   
@@ -181,19 +186,23 @@ export const VenueDetailPage: React.FC = () => {
                         </div>
                         
                         <div className="text-sm font-medium text-emerald-700 mb-4">
-                          {isFuture ? `Berlaku mulai ${startsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}` : `Berlaku hingga ${endsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}`}
+                          Berlaku untuk jadwal main {startsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })} - {endsAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </div>
                         
                         <div className="flex gap-2">
                           <button 
                             onClick={() => {
-                              navigator.clipboard.writeText(promo.code);
-                              toast.success('Kode promo berhasil disalin!');
+                              setSelectedPromoCode(promo.code);
+                              toast.success('Promo dipilih! Silakan pilih lapangan di bawah.');
                             }}
-                            className="text-[13px] font-bold text-emerald-600 bg-white border border-emerald-200 px-4 py-2 rounded-xl hover:bg-emerald-50 transition-colors flex items-center gap-1.5"
+                            className={`text-[13px] font-bold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${
+                              selectedPromoCode === promo.code 
+                                ? 'bg-emerald-600 text-white shadow-md' 
+                                : 'text-emerald-600 bg-white border border-emerald-200 hover:bg-emerald-50'
+                            }`}
                           >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                            Salin Kode
+                            <Ticket className="w-4 h-4" />
+                            {selectedPromoCode === promo.code ? 'Promo Terpilih' : 'Gunakan Promo'}
                           </button>
                         </div>
                       </div>
@@ -226,7 +235,10 @@ export const VenueDetailPage: React.FC = () => {
                       return;
                     }
                     const playDateParam = searchParams.get('play_date');
-                    const queryStr = playDateParam ? `?play_date=${playDateParam}` : '';
+                    let queryStr = playDateParam ? `?play_date=${playDateParam}` : '';
+                    if (selectedPromoCode) {
+                      queryStr += queryStr ? `&promo=${selectedPromoCode}` : `?promo=${selectedPromoCode}`;
+                    }
                     navigate(`/venues/${venue.id}/courts/${courtId}/availability${queryStr}`, { 
                       state: { 
                         venue: { name: venue.name, address: venue.address }, 
