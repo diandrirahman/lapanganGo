@@ -18,14 +18,13 @@ Use this prompt when starting a new Antigravity session in this repo:
 
 ```text
 Ikuti AGENTS.md, .agents/agent_workflow.md, dan .agents/definition_of_done.md.
-Ikuti juga .agents/antigravity_staff_roles_v1_3_stabilization_plan.md untuk pekerjaan Staff Roles v1.3/v1.3.1.
 Untuk task non-trivial, buat plan dulu dan jangan implement sebelum disetujui.
 Jaga perubahan agent lain; cek git status sebelum edit.
 ```
 
 ## Mandatory Agent-Skills Protocol
 
-For Staff Roles v1.3/v1.3.1 stabilization, Antigravity must apply the agent-skills lifecycle even if the upstream plugin is unavailable.
+For non-trivial feature, security, QA, and release work, Antigravity must apply the agent-skills lifecycle even if the upstream plugin is unavailable.
 
 Required sequence:
 
@@ -73,13 +72,3 @@ For Antigravity tasks touching auth, owner access, staff roles, finance, refunds
 - Add tests or a manual QA path.
 - Run targeted verification before broad checks.
 - Report any skipped verification plainly.
-
-## Current Priority
-
-The next Antigravity task should use:
-
-- `.agents/antigravity_staff_roles_v1_3_stabilization_plan.md`
-- `staff_roles_v1_3_fix_implementation_plan.md`
-- `staff_roles_v1_3_1_audit_trail_implementation_plan.md`
-
-The goal is to stabilize the existing Staff Roles and Audit Trail work before starting any new feature.
