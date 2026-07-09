@@ -19,7 +19,7 @@ export const HomePage: React.FC = () => {
     );
   }
 
-  if (user?.role === 'OWNER') {
+  if (user?.role === 'OWNER' || user?.role === 'STAFF') {
     return <Navigate to="/owner/dashboard" replace />;
   }
 

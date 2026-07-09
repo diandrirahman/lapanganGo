@@ -134,6 +134,7 @@ func (r *Repository) GetStaffMemberships(ctx context.Context, userID string) ([]
 			p.id::text,
 			p.business_name,
 			m.role::text,
+			m.invitation_status::text,
 			m.permissions::text[]
 		FROM owner_staff_members m
 		JOIN owner_profiles p ON m.owner_profile_id = p.id
@@ -149,7 +150,7 @@ func (r *Repository) GetStaffMemberships(ctx context.Context, userID string) ([]
 	for rows.Next() {
 		var m StaffMembershipResponse
 		var perms []string
-		if err := rows.Scan(&m.ID, &m.OwnerProfileID, &m.OwnerName, &m.Role, &perms); err != nil {
+		if err := rows.Scan(&m.ID, &m.OwnerProfileID, &m.OwnerName, &m.Role, &m.InvitationStatus, &perms); err != nil {
 			return nil, err
 		}
 		if perms == nil {

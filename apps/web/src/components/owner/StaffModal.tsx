@@ -23,7 +23,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
     name: '',
     email: '',
     phone: '',
-    password: '',
     role: 'MANAGER',
     permissions: [],
     venue_ids: [],
@@ -36,7 +35,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
         name: initialData.name,
         email: initialData.email,
         phone: initialData.phone || '',
-        password: '', // Password is not returned and not updated here
         role: initialData.role,
         permissions: initialData.permissions || [],
         venue_ids: initialData.venue_ids || [],
@@ -46,7 +44,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
         name: '',
         email: '',
         phone: '',
-        password: '',
         role: 'MANAGER',
         permissions: [],
         venue_ids: [],
@@ -73,7 +70,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
         const createData: CreateStaffRequest = {
           name: formData.name,
           email: formData.email,
-          password: formData.password,
           phone: formData.phone || undefined,
           role: formData.role,
           permissions: formData.permissions,
@@ -156,18 +152,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
                       onChange={e => setFormData({ ...formData, email: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
                       placeholder="email@contoh.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1.5">Password Sementara *</label>
-                    <input
-                      type="password"
-                      required
-                      minLength={8}
-                      value={formData.password}
-                      onChange={e => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
-                      placeholder="Minimal 8 karakter"
                     />
                   </div>
                 </>

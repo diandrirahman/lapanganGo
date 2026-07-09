@@ -6,7 +6,6 @@ type CreateStaffRequest struct {
 	Name        string   `json:"name" binding:"required,min=2,max=120"`
 	Email       string   `json:"email" binding:"required,email,max=191"`
 	Phone       *string  `json:"phone" binding:"omitempty,min=10,max=15"`
-	Password    string   `json:"password" binding:"required,min=8"` // Note: In v1.3 password is set by owner
 	Role        string   `json:"role" binding:"required,oneof=MANAGER CASHIER OPERATIONS"`
 	Permissions []string `json:"permissions" binding:"required"`
 	VenueIDs    []string `json:"venue_ids" binding:"omitempty"` // empty means no venue-scoped data access
@@ -29,16 +28,35 @@ type UpdateStaffVenuesRequest struct {
 }
 
 type StaffResponse struct {
-	ID             string    `json:"id"`
-	OwnerProfileID string    `json:"owner_profile_id"`
-	UserID         string    `json:"user_id"`
-	Name           string    `json:"name"`
-	Email          string    `json:"email"`
-	Phone          *string   `json:"phone,omitempty"`
-	Role           string    `json:"role"`
-	Permissions    []string  `json:"permissions"`
-	Status         string    `json:"status"`
-	VenueIDs       []string  `json:"venue_ids"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID               string     `json:"id"`
+	OwnerProfileID   string     `json:"owner_profile_id"`
+	UserID           string     `json:"user_id"`
+	Name             string     `json:"name"`
+	Email            string     `json:"email"`
+	Phone            *string    `json:"phone,omitempty"`
+	Role             string     `json:"role"`
+	Permissions      []string   `json:"permissions"`
+	Status           string     `json:"status"`
+	InvitationStatus string     `json:"invitation_status"`
+	VenueIDs         []string   `json:"venue_ids"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	InvitedAt        *time.Time `json:"invited_at,omitempty"`
+	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
+	InviteURL        *string    `json:"invite_url,omitempty"`
+}
+
+type SetupStaffPasswordRequest struct {
+	Token    string `json:"token" binding:"required"`
+	Password string `json:"password" binding:"required,min=8"`
+}
+
+type RegenerateInviteResponse struct {
+	InviteURL string    `json:"invite_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type ResetStaffPasswordResponse struct {
+	ResetURL  string    `json:"reset_url"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

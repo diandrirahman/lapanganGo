@@ -220,7 +220,7 @@ export const CourtAvailabilityPage: React.FC = () => {
       return;
     }
 
-    if (user?.role === 'OWNER') {
+    if (user?.role === 'OWNER' || user?.role === 'STAFF') {
       toast.error('Gunakan akun customer untuk membuat booking.');
       return;
     }

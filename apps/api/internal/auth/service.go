@@ -109,6 +109,19 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResponse, e
 		userResponse.StaffMemberships = staffMemberships
 	}
 
+	if user.Role == "STAFF" {
+		hasActiveStaff := false
+		for _, m := range staffMemberships {
+			if m.InvitationStatus == "ACTIVE" {
+				hasActiveStaff = true
+				break
+			}
+		}
+		if !hasActiveStaff {
+			return LoginResponse{}, ErrInvalidCredential
+		}
+	}
+
 	token, err := s.token.Generate(userResponse)
 	if err != nil {
 		return LoginResponse{}, err

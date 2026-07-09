@@ -8,6 +8,10 @@ export interface StaffMember {
   role: string;
   permissions: string[];
   status: string;
+  invitation_status: string;
+  invited_at?: string;
+  activated_at?: string;
+  invite_url?: string;
   venue_ids: string[];
   created_at: string;
   updated_at: string;
@@ -17,7 +21,6 @@ export interface CreateStaffRequest {
   name: string;
   email: string;
   phone?: string;
-  password?: string;
   role: string;
   permissions: string[];
   venue_ids?: string[];
@@ -55,3 +58,13 @@ export const STAFF_PERMISSIONS = [
   { id: 'PROMOS_WRITE', label: 'Mengelola Promo', category: 'Marketing' },
   { id: 'ANALYTICS_READ', label: 'Melihat Analitik', category: 'Laporan' },
 ];
+
+export interface RegenerateInviteResponse {
+  invite_url: string;
+  expires_at: string;
+}
+
+export interface ResetStaffPasswordResponse {
+  reset_url: string;
+  expires_at: string;
+}

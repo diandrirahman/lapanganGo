@@ -16,7 +16,7 @@ interface PromoModalProps {
 }
 
 export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProps) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [venues, setVenues] = useState<Venue[]>([]);
   const [formData, setFormData] = useState<CreatePromoRequest & { venue_id?: string }>({
@@ -34,7 +34,12 @@ export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProp
     if (!isOpen) return;
 
     if (token) {
-      fetchOwnerVenues(token).then(setVenues).catch(console.error);
+      fetchOwnerVenues(token).then(data => {
+        setVenues(data);
+        if (user?.role === 'STAFF' && data.length > 0 && !promo) {
+          setFormData(prev => ({ ...prev, venue_id: data[0].id }));
+        }
+      }).catch(console.error);
     }
     if (promo) {
       setFormData({
@@ -75,7 +80,7 @@ export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProp
         venue_id: ''
       });
     }
-  }, [promo, isOpen, token]);
+  }, [promo, isOpen, token, user?.role]);
 
   if (!isOpen) return null;
 
@@ -220,7 +225,7 @@ export function PromoModal({ isOpen, onClose, onSuccess, promo }: PromoModalProp
                   onChange={e => setFormData(prev => ({ ...prev, venue_id: e.target.value }))}
                   disabled={!!promo}
                 >
-                  <option value="">Semua Venue (Global)</option>
+                  {user?.role !== 'STAFF' && <option value="">Semua Venue (Global)</option>}
                   {venues.map(v => (
                     <option key={v.id} value={v.id}>{v.name}</option>
                   ))}

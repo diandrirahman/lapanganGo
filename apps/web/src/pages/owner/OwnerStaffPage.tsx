@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { PageShell } from '../../components/layout/PageShell';
 import { useAuth } from '../../contexts/AuthContext';
 import { Search, Shield, Edit2, Power, UserX, UserPlus } from 'lucide-react';
@@ -18,7 +18,7 @@ export const OwnerStaffPage: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [staffRes, venuesRes] = await Promise.all([
         fetch(`${API_BASE_URL}/owner/staff`, {
@@ -43,11 +43,11 @@ export const OwnerStaffPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     fetchData();
-  }, [token]);
+  }, [fetchData]);
 
   const handleCreate = async (data: CreateStaffRequest | UpdateStaffRequest) => {
     try {
@@ -64,6 +64,9 @@ export const OwnerStaffPage: React.FC = () => {
       if (!res.ok) throw new Error(resData.message || 'Gagal menambah staff');
       
       toast.success('Staff berhasil ditambahkan');
+      if (resData.invite_url) {
+        setInviteUrlToShow(resData.invite_url);
+      }
       fetchData();
     } catch (error: any) {
       toast.error(error.message);
@@ -109,6 +112,46 @@ export const OwnerStaffPage: React.FC = () => {
   const openEditModal = (staff: StaffMember) => {
     setEditingStaff(staff);
     setIsModalOpen(true);
+  };
+
+  const [inviteUrlToShow, setInviteUrlToShow] = useState<string | null>(null);
+
+  const handleRegenerateInvite = async (staff: StaffMember) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/owner/staff/${staff.id}/regenerate-invite`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const resData = await res.json();
+      if (!res.ok) throw new Error(resData.message || 'Gagal mengirim ulang invite');
+      
+      setInviteUrlToShow(resData.invite_url);
+      fetchData();
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  const handleResetPassword = async (staff: StaffMember) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/owner/staff/${staff.id}/reset-password`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const resData = await res.json();
+      if (!res.ok) throw new Error(resData.message || 'Gagal mereset password');
+      
+      setInviteUrlToShow(resData.reset_url);
+      fetchData();
+    } catch (error: any) {
+      toast.error(error.message);
+    }
   };
 
   const toggleStatus = async (staff: StaffMember) => {
@@ -241,7 +284,12 @@ export const OwnerStaffPage: React.FC = () => {
                         </div>
                       </td>
                       <td className="py-4 px-6">
-                        {staff.status === 'ACTIVE' ? (
+                        {staff.invitation_status === 'INVITED' ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500"></div>
+                            Menunggu Setup
+                          </div>
+                        ) : staff.status === 'ACTIVE' ? (
                           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-green-50 text-green-700 border border-green-100">
                             <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
                             Aktif
@@ -262,6 +310,28 @@ export const OwnerStaffPage: React.FC = () => {
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
+                          {staff.invitation_status === 'INVITED' && (
+                            <button
+                              onClick={() => handleRegenerateInvite(staff)}
+                              className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                              title="Kirim Ulang Undangan"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            </button>
+                          )}
+                          {staff.invitation_status === 'ACTIVE' && (
+                            <button
+                              onClick={() => handleResetPassword(staff)}
+                              className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                              title="Reset Password"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                              </svg>
+                            </button>
+                          )}
                           <button
                             onClick={() => toggleStatus(staff)}
                             className={`p-2 rounded-lg transition-colors ${
@@ -291,6 +361,40 @@ export const OwnerStaffPage: React.FC = () => {
         initialData={editingStaff}
         venues={venues}
       />
+
+      {inviteUrlToShow && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6">
+            <h3 className="text-xl font-bold mb-4 text-gray-900">Link Setup Password</h3>
+            <p className="text-sm text-gray-500 mb-6">
+              Bagikan link ini ke staff agar mereka bisa mengatur password sendiri. Link ini hanya aktif selama 24 jam.
+            </p>
+            <div className="flex items-center gap-2 mb-6">
+              <input 
+                type="text" 
+                readOnly 
+                value={inviteUrlToShow} 
+                className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono text-gray-700"
+              />
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(inviteUrlToShow);
+                  toast.success('Link disalin!');
+                }}
+                className="px-4 py-3 bg-gray-900 text-white rounded-xl font-bold hover:bg-gray-800 transition-colors"
+              >
+                Salin
+              </button>
+            </div>
+            <button 
+              onClick={() => setInviteUrlToShow(null)}
+              className="w-full px-4 py-3 border border-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-50 transition-colors"
+            >
+              Tutup
+            </button>
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 };

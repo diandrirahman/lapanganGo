@@ -47,6 +47,9 @@ func (m *mockRepo) GetLatestRefundRequestByBookingID(ctx context.Context, bookin
 func (m *mockRepo) GetRefundRequestByID(ctx context.Context, id string) (refunds.RefundRequestResponse, error) {
 	return m.reqByID, m.reqByIDErr
 }
+func (m *mockRepo) GetNotifiableUserIDsByBookingID(ctx context.Context, bookingID string) ([]string, error) {
+	return []string{"owner-user-123"}, nil
+}
 func (m *mockRepo) ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status string, venueID string, page, limit int) ([]refunds.OwnerRefundRequestListItem, int, error) {
 	return nil, 0, nil
 }

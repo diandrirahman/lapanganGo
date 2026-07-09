@@ -3,10 +3,15 @@ package audit
 import "time"
 
 const (
-	ActionStaffCreated       = "STAFF_CREATED"
-	ActionStaffUpdated       = "STAFF_UPDATED"
-	ActionStaffStatusUpdated = "STAFF_STATUS_UPDATED"
-	ActionStaffVenuesUpdated = "STAFF_VENUES_UPDATED"
+	ActionStaffCreated                = "STAFF_CREATED"
+	ActionStaffUpdated                = "STAFF_UPDATED"
+	ActionStaffStatusUpdated          = "STAFF_STATUS_UPDATED"
+	ActionStaffVenuesUpdated          = "STAFF_VENUES_UPDATED"
+	ActionStaffInviteCreated          = "STAFF_INVITE_CREATED"
+	ActionStaffInviteRegenerated      = "STAFF_INVITE_REGENERATED"
+	ActionStaffPasswordResetRequested = "STAFF_PASSWORD_RESET_REQUESTED"
+	ActionStaffPasswordResetCompleted = "STAFF_PASSWORD_RESET_COMPLETED"
+	ActionStaffPasswordSetupCompleted = "STAFF_PASSWORD_SETUP_COMPLETED"
 
 	ActionBookingPaymentVerified = "BOOKING_PAYMENT_VERIFIED"
 	ActionBookingPaymentRejected = "BOOKING_PAYMENT_REJECTED"

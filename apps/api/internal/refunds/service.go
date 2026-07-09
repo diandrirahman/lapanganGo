@@ -116,16 +116,20 @@ func (s *service) RequestBookingRefund(ctx context.Context, customerID, bookingI
 		}); err != nil {
 			log.Printf("Failed to create refund notification for customer: %v", err)
 		}
-		// To Owner
-		if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
-			UserID:     b.OwnerID,
-			Type:       notifications.TypeRefundRequested,
-			Title:      "Pengajuan Refund Baru",
-			Message:    "Customer mengajukan refund untuk pesanan yang dibatalkan.",
-			EntityType: &entityType,
-			EntityID:   &entityID,
-		}); err != nil {
-			log.Printf("Failed to create refund notification for owner: %v", err)
+		// To Owner and Staff
+		if userIDs, err := s.repo.GetNotifiableUserIDsByBookingID(ctx, req.BookingID); err == nil {
+			for _, uid := range userIDs {
+				if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+					UserID:     uid,
+					Type:       notifications.TypeRefundRequested,
+					Title:      "Pengajuan Refund Baru",
+					Message:    "Customer mengajukan refund untuk pesanan yang dibatalkan.",
+					EntityType: &entityType,
+					EntityID:   &entityID,
+				}); err != nil {
+					log.Printf("Failed to create refund notification for owner/staff: %v", err)
+				}
+			}
 		}
 	}
 
@@ -299,6 +303,20 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerCtx httputil.Ow
 		}); err != nil {
 			log.Printf("Failed to create refund approved notification: %v", err)
 		}
+		if userIDs, err := s.repo.GetNotifiableUserIDsByBookingID(ctx, req.BookingID); err == nil {
+			for _, uid := range userIDs {
+				if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+					UserID:     uid,
+					Type:       notifications.TypeRefundApproved,
+					Title:      "Refund Disetujui (Otomatis)",
+					Message:    "Sistem menyetujui otomatis refund untuk pesanan yang dibatalkan.",
+					EntityType: &entityType,
+					EntityID:   &entityID,
+				}); err != nil {
+					log.Printf("Failed to create refund auto-approve notification for owner/staff: %v", err)
+				}
+			}
+		}
 	}
 
 	return req, nil
@@ -361,6 +379,20 @@ func (s *service) RejectRefundRequest(ctx context.Context, ownerCtx httputil.Own
 			EntityID:   &entityID,
 		}); err != nil {
 			log.Printf("Failed to create refund rejected notification: %v", err)
+		}
+		if userIDs, err := s.repo.GetNotifiableUserIDsByBookingID(ctx, req.BookingID); err == nil {
+			for _, uid := range userIDs {
+				if err := s.notifService.Create(ctx, notifications.CreateNotificationParams{
+					UserID:     uid,
+					Type:       notifications.TypeRefundRejected,
+					Title:      "Refund Ditolak",
+					Message:    "Pengajuan refund Anda ditolak oleh pemilik.",
+					EntityType: &entityType,
+					EntityID:   &entityID,
+				}); err != nil {
+					log.Printf("Failed to create refund notification for owner/staff: %v", err)
+				}
+			}
 		}
 	}
 

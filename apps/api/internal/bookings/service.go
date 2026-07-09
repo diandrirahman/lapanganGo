@@ -71,6 +71,8 @@ type BookingRepository interface {
 	CompleteBooking(ctx context.Context, bookingID string) (Booking, error)
 	GetOwnerUserIDByCourtID(ctx context.Context, courtID string) (string, error)
 	GetOwnerUserIDByBookingID(ctx context.Context, bookingID string) (string, error)
+	GetNotifiableUserIDsByCourtID(ctx context.Context, courtID string) ([]string, error)
+	GetNotifiableUserIDsByBookingID(ctx context.Context, bookingID string) ([]string, error)
 	GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error)
 	GetBookingOwnerProfileAndVenueID(ctx context.Context, bookingID string) (string, string, error)
 	CancelExpiredPendingBookings(ctx context.Context) (int64, error)
@@ -269,15 +271,17 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 			EntityID:   &entityID,
 		})
 
-		if ownerUserID, err := s.repository.GetOwnerUserIDByCourtID(ctx, req.CourtID); err == nil && ownerUserID != "" {
-			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
-				UserID:     ownerUserID,
-				Type:       notifications.TypeBookingCreated,
-				Title:      "Pesanan Baru Diterima",
-				Message:    "Ada pesanan baru yang menunggu pembayaran.",
-				EntityType: &entityType,
-				EntityID:   &entityID,
-			})
+		if userIDs, err := s.repository.GetNotifiableUserIDsByCourtID(ctx, req.CourtID); err == nil {
+			for _, uid := range userIDs {
+				_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+					UserID:     uid,
+					Type:       notifications.TypeBookingCreated,
+					Title:      "Pesanan Baru Diterima",
+					Message:    "Ada pesanan baru yang menunggu pembayaran.",
+					EntityType: &entityType,
+					EntityID:   &entityID,
+				})
+			}
 		}
 	}
 
@@ -306,15 +310,17 @@ func (s *Service) SubmitPaymentProof(ctx context.Context, customerID, bookingID,
 			EntityID:   &entityID,
 		})
 
-		if ownerUserID, err := s.repository.GetOwnerUserIDByBookingID(ctx, bookingID); err == nil && ownerUserID != "" {
-			_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
-				UserID:     ownerUserID,
-				Type:       notifications.TypePaymentProofSubmitted,
-				Title:      "Bukti Pembayaran Baru",
-				Message:    "Customer telah mengunggah bukti pembayaran untuk diverifikasi.",
-				EntityType: &entityType,
-				EntityID:   &entityID,
-			})
+		if userIDs, err := s.repository.GetNotifiableUserIDsByBookingID(ctx, bookingID); err == nil {
+			for _, uid := range userIDs {
+				_ = s.notifService.Create(ctx, notifications.CreateNotificationParams{
+					UserID:     uid,
+					Type:       notifications.TypePaymentProofSubmitted,
+					Title:      "Bukti Pembayaran Baru",
+					Message:    "Customer telah mengunggah bukti pembayaran untuk diverifikasi.",
+					EntityType: &entityType,
+					EntityID:   &entityID,
+				})
+			}
 		}
 	}
 

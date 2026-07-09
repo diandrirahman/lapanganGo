@@ -76,8 +76,16 @@ func (m *mockRepo) GetOwnerUserIDByCourtID(ctx context.Context, courtID string) 
 	return "owner-user-123", nil
 }
 
+func (m *mockRepo) GetNotifiableUserIDsByCourtID(ctx context.Context, courtID string) ([]string, error) {
+	return []string{"owner-user-123"}, nil
+}
+
 func (m *mockRepo) GetOwnerUserIDByBookingID(ctx context.Context, bookingID string) (string, error) {
 	return "owner-user-123", nil
+}
+
+func (m *mockRepo) GetNotifiableUserIDsByBookingID(ctx context.Context, bookingID string) ([]string, error) {
+	return []string{"owner-user-123"}, nil
 }
 
 func (m *mockRepo) AutoCompleteFinishedBookings(ctx context.Context) ([]Booking, error) {

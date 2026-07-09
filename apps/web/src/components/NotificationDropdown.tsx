@@ -89,13 +89,13 @@ export const NotificationDropdown: React.FC = () => {
 
     // Navigation logic
     if (notification.entity_type === 'BOOKING' && notification.entity_id) {
-      if (user?.role === 'OWNER') {
+      if (user?.role === 'OWNER' || user?.role === 'STAFF') {
         navigate(`/owner/bookings?q=${notification.entity_id.substring(0, 8)}`);
       } else {
         navigate(`/bookings/${notification.entity_id}`);
       }
     } else if (notification.entity_type === 'REFUND') {
-      if (user?.role === 'OWNER') {
+      if (user?.role === 'OWNER' || user?.role === 'STAFF') {
         navigate('/owner/refunds');
       } else {
         navigate('/bookings');

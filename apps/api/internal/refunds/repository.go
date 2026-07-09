@@ -27,6 +27,7 @@ type Repository interface {
 	GetActiveRefundRequestByBookingID(ctx context.Context, bookingID string) (*RefundRequestResponse, error)
 	GetLatestRefundRequestByBookingID(ctx context.Context, bookingID string) (*RefundRequestResponse, error)
 	GetRefundRequestByID(ctx context.Context, id string) (RefundRequestResponse, error)
+	GetNotifiableUserIDsByBookingID(ctx context.Context, bookingID string) ([]string, error)
 	ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error)
 
 	// Transactional methods
@@ -241,6 +242,45 @@ func (r *repository) LockBooking(ctx context.Context, tx pgx.Tx, bookingID strin
 		&b.ID, &b.CustomerID, &b.OwnerID, &b.VenueID, &b.Status, &b.Date, &b.StartTime, &b.TotalPrice,
 	)
 	return b, err
+}
+
+func (r *repository) GetNotifiableUserIDsByBookingID(ctx context.Context, bookingID string) ([]string, error) {
+	query := `
+		SELECT op.user_id 
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		JOIN owner_profiles op ON v.owner_profile_id = op.id
+		WHERE b.id = $1
+		UNION
+		SELECT sm.user_id
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		JOIN owner_staff_venue_access sva ON sva.venue_id = v.id
+		JOIN owner_staff_members sm ON sm.id = sva.staff_member_id
+		JOIN users u ON u.id = sm.user_id
+		WHERE b.id = $1
+		  AND sm.status = 'ACTIVE'
+		  AND sm.invitation_status = 'ACTIVE'
+		  AND 'REFUNDS_READ'::owner_staff_permission = ANY(sm.permissions)
+		  AND u.status = 'ACTIVE'
+	`
+	rows, err := r.db.Query(ctx, query, bookingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var userIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		userIDs = append(userIDs, id)
+	}
+	return userIDs, rows.Err()
 }
 
 func (r *repository) HasBookingIncomeLedger(ctx context.Context, tx pgx.Tx, bookingID string) (bool, error) {

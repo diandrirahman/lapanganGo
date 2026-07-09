@@ -28,6 +28,8 @@ type CreateStaffParams struct {
 	Permissions     []string
 	VenueIDs        []string
 	CreatedByUserID string
+	InviteTokenHash string
+	InviteExpiresAt time.Time
 }
 
 func (r *Repository) CreateStaff(ctx context.Context, params CreateStaffParams) (StaffResponse, error) {
@@ -61,17 +63,18 @@ func (r *Repository) CreateStaff(ctx context.Context, params CreateStaffParams) 
 	// 2. Create Staff Membership
 	var staffID string
 	var createdAt, updatedAt time.Time
+	var invitedAt time.Time
 	err = tx.QueryRow(
 		ctx,
-		`INSERT INTO owner_staff_members (owner_profile_id, user_id, role, permissions, status, created_by_user_id)
-		 VALUES ($1, $2, $3, $4, 'ACTIVE', $5)
-		 RETURNING id::text, created_at, updated_at`,
+		`INSERT INTO owner_staff_members (owner_profile_id, user_id, role, permissions, status, created_by_user_id, invitation_status, invited_at)
+		 VALUES ($1, $2, $3, $4, 'ACTIVE', $5, 'INVITED', now())
+		 RETURNING id::text, created_at, updated_at, invited_at`,
 		params.OwnerProfileID,
 		userID,
 		params.Role,
 		params.Permissions,
 		params.CreatedByUserID,
-	).Scan(&staffID, &createdAt, &updatedAt)
+	).Scan(&staffID, &createdAt, &updatedAt, &invitedAt)
 	if err != nil {
 		return StaffResponse{}, err
 	}
@@ -83,6 +86,23 @@ func (r *Repository) CreateStaff(ctx context.Context, params CreateStaffParams) 
 			`INSERT INTO owner_staff_venue_access (staff_member_id, venue_id) VALUES ($1, $2)`,
 			staffID,
 			venueID,
+		)
+		if err != nil {
+			return StaffResponse{}, err
+		}
+	}
+
+	if params.InviteTokenHash != "" {
+		_, err = tx.Exec(
+			ctx,
+			`INSERT INTO owner_staff_invites (staff_member_id, owner_profile_id, staff_user_id, token_hash, purpose, expires_at, created_by_user_id)
+			 VALUES ($1, $2, $3, $4, 'SET_PASSWORD', $5, $6)`,
+			staffID,
+			params.OwnerProfileID,
+			userID,
+			params.InviteTokenHash,
+			params.InviteExpiresAt,
+			params.CreatedByUserID,
 		)
 		if err != nil {
 			return StaffResponse{}, err
@@ -101,18 +121,20 @@ func (r *Repository) CreateStaff(ctx context.Context, params CreateStaffParams) 
 	}
 
 	return StaffResponse{
-		ID:             staffID,
-		OwnerProfileID: params.OwnerProfileID,
-		UserID:         userID,
-		Name:           params.Name,
-		Email:          params.Email,
-		Phone:          params.Phone,
-		Role:           params.Role,
-		Permissions:    params.Permissions,
-		Status:         "ACTIVE",
-		VenueIDs:       params.VenueIDs,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
+		ID:               staffID,
+		OwnerProfileID:   params.OwnerProfileID,
+		UserID:           userID,
+		Name:             params.Name,
+		Email:            params.Email,
+		Phone:            params.Phone,
+		Role:             params.Role,
+		Permissions:      params.Permissions,
+		Status:           "ACTIVE",
+		InvitationStatus: "INVITED",
+		VenueIDs:         params.VenueIDs,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
+		InvitedAt:        &invitedAt,
 	}, nil
 }
 
@@ -128,8 +150,11 @@ func (r *Repository) ListStaffByOwner(ctx context.Context, ownerProfileID string
 			m.role::text, 
 			m.permissions::text[], 
 			m.status::text,
+			m.invitation_status::text,
 			m.created_at, 
 			m.updated_at,
+			m.invited_at,
+			m.activated_at,
 			COALESCE(array_agg(v.venue_id::text) FILTER (WHERE v.venue_id IS NOT NULL), '{}') as venue_ids
 		FROM owner_staff_members m
 		JOIN users u ON m.user_id = u.id
@@ -160,8 +185,11 @@ func (r *Repository) ListStaffByOwner(ctx context.Context, ownerProfileID string
 			&s.Role,
 			&permissions,
 			&s.Status,
+			&s.InvitationStatus,
 			&s.CreatedAt,
 			&s.UpdatedAt,
+			&s.InvitedAt,
+			&s.ActivatedAt,
 			&venueIDs,
 		)
 		if err != nil {
@@ -193,8 +221,11 @@ func (r *Repository) GetStaffByID(ctx context.Context, ownerProfileID, staffID s
 			m.role::text, 
 			m.permissions::text[], 
 			m.status::text,
+			m.invitation_status::text,
 			m.created_at, 
 			m.updated_at,
+			m.invited_at,
+			m.activated_at,
 			COALESCE(array_agg(v.venue_id::text) FILTER (WHERE v.venue_id IS NOT NULL), '{}') as venue_ids
 		FROM owner_staff_members m
 		JOIN users u ON m.user_id = u.id
@@ -216,8 +247,11 @@ func (r *Repository) GetStaffByID(ctx context.Context, ownerProfileID, staffID s
 		&s.Role,
 		&permissions,
 		&s.Status,
+		&s.InvitationStatus,
 		&s.CreatedAt,
 		&s.UpdatedAt,
+		&s.InvitedAt,
+		&s.ActivatedAt,
 		&venueIDs,
 	)
 	if err != nil {
@@ -416,6 +450,14 @@ func IsNotFound(err error) bool {
 func IsUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func UniqueViolationConstraint(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return ""
+	}
+	return pgErr.ConstraintName
 }
 
 func IsForeignKeyViolation(err error) bool {

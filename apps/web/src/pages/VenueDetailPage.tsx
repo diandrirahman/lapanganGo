@@ -230,7 +230,7 @@ export const VenueDetailPage: React.FC = () => {
                   key={court.id} 
                   court={court} 
                   onSelect={(courtId) => {
-                    if (user?.role === 'OWNER') {
+                    if (user?.role === 'OWNER' || user?.role === 'STAFF') {
                       toast.error('Gunakan akun customer untuk membuat booking.');
                       return;
                     }

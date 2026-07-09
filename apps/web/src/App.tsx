@@ -12,6 +12,7 @@ import { CustomerBookingDetailPage } from './pages/CustomerBookingDetailPage';
 import { OpenMatchesPage } from './pages/OpenMatchesPage';
 import { MabarDetailPage } from './pages/MabarDetailPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { StaffSetupPasswordPage } from './pages/StaffSetupPasswordPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 
 // Owner Pages
@@ -56,6 +57,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/staff/setup-password" element={<StaffSetupPasswordPage />} />
           <Route path="/venues" element={<VenuesSearchPage />} />
           <Route path="/venues/:id" element={<VenueDetailPage />} />
           <Route path="/venues/:venueId/courts/:courtId/availability" element={<CourtAvailabilityPage />} />

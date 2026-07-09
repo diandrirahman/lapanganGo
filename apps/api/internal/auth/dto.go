@@ -24,8 +24,9 @@ type StaffMembershipResponse struct {
 	ID             string   `json:"id"`
 	OwnerProfileID string   `json:"owner_profile_id"`
 	OwnerName      string   `json:"owner_name"`
-	Role           string   `json:"role"`
-	Permissions    []string `json:"permissions"`
+	Role             string   `json:"role"`
+	InvitationStatus string   `json:"invitation_status"`
+	Permissions      []string `json:"permissions"`
 }
 
 type UserResponse struct {

@@ -3,6 +3,8 @@ package staff
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"lapangango-api/internal/audit"
 	"lapangango-api/internal/httputil"
@@ -19,6 +21,20 @@ func NewHandler(service *Service, auditService audit.Service) *Handler {
 	return &Handler{service: service, auditService: auditService}
 }
 
+func frontendBaseURLFromRequest(c *gin.Context) string {
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+
+	return strings.TrimRight(origin, "/")
+}
+
 func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc, requireActualOwner gin.HandlerFunc) {
 	staffGroup := router.Group("/owner/staff", authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
 	staffGroup.POST("", h.CreateStaff)
@@ -27,6 +43,10 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	staffGroup.PUT("/:id", h.UpdateStaff)
 	staffGroup.PATCH("/:id/status", h.UpdateStatus)
 	staffGroup.PUT("/:id/venues", h.UpdateVenues)
+	staffGroup.POST("/:id/regenerate-invite", h.RegenerateInvite)
+	staffGroup.POST("/:id/reset-password", h.ResetPassword)
+
+	router.POST("/staff/setup-password", h.SetupPassword)
 }
 
 func (h *Handler) CreateStaff(c *gin.Context) {
@@ -39,7 +59,7 @@ func (h *Handler) CreateStaff(c *gin.Context) {
 	ownerProfileID := httputil.GetOwnerProfileID(c)
 	actorUserID := httputil.GetActorUserID(c)
 
-	staff, err := h.service.CreateStaff(c.Request.Context(), ownerProfileID, actorUserID, req)
+	staff, err := h.service.CreateStaff(c.Request.Context(), ownerProfileID, actorUserID, frontendBaseURLFromRequest(c), req)
 	if err != nil {
 		if errors.Is(err, ErrEmailAlreadyUsed) || errors.Is(err, ErrPhoneAlreadyUsed) {
 			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
@@ -63,7 +83,7 @@ func (h *Handler) CreateStaff(c *gin.Context) {
 		OwnerProfileID: ownerProfileID,
 		ActorUserID:    actorUserID,
 		ActorRole:      httputil.GetActorRole(c),
-		Action:         audit.ActionStaffCreated,
+		Action:         audit.ActionStaffInviteCreated,
 		EntityType:     audit.EntityStaff,
 		EntityID:       &staff.ID,
 		Metadata: map[string]any{
@@ -231,8 +251,6 @@ func (h *Handler) UpdateVenues(c *gin.Context) {
 		return
 	}
 
-
-
 	staff, err := h.service.UpdateVenues(c.Request.Context(), ownerProfileID, staffID, req)
 	if err != nil {
 		if errors.Is(err, ErrStaffNotFound) {
@@ -249,7 +267,7 @@ func (h *Handler) UpdateVenues(c *gin.Context) {
 
 	ip := c.ClientIP()
 	ua := c.Request.UserAgent()
-	
+
 	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
 		OwnerProfileID: ownerProfileID,
 		ActorUserID:    httputil.GetActorUserID(c),
@@ -266,4 +284,110 @@ func (h *Handler) UpdateVenues(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusOK, staff)
+}
+
+func (h *Handler) RegenerateInvite(c *gin.Context) {
+	ownerProfileID := httputil.GetOwnerProfileID(c)
+	actorUserID := httputil.GetActorUserID(c)
+	staffID := c.Param("id")
+
+	res, err := h.service.RegenerateInvite(c.Request.Context(), ownerProfileID, staffID, actorUserID, frontendBaseURLFromRequest(c))
+	if err != nil {
+		if errors.Is(err, ErrStaffNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"message": "failed to regenerate invite", "error": err.Error()})
+		return
+	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerProfileID,
+		ActorUserID:    actorUserID,
+		ActorRole:      httputil.GetActorRole(c),
+		Action:         audit.ActionStaffInviteRegenerated,
+		EntityType:     audit.EntityStaff,
+		EntityID:       &staffID,
+		Metadata: map[string]any{
+			"expires_at": res.ExpiresAt,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
+
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) ResetPassword(c *gin.Context) {
+	ownerProfileID := httputil.GetOwnerProfileID(c)
+	actorUserID := httputil.GetActorUserID(c)
+	staffID := c.Param("id")
+
+	res, err := h.service.ResetPasswordToken(c.Request.Context(), ownerProfileID, staffID, actorUserID, frontendBaseURLFromRequest(c))
+	if err != nil {
+		if errors.Is(err, ErrStaffNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"message": "failed to generate reset token", "error": err.Error()})
+		return
+	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerProfileID,
+		ActorUserID:    actorUserID,
+		ActorRole:      httputil.GetActorRole(c),
+		Action:         audit.ActionStaffPasswordResetRequested,
+		EntityType:     audit.EntityStaff,
+		EntityID:       &staffID,
+		Metadata: map[string]any{
+			"expires_at": res.ExpiresAt,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
+
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) SetupPassword(c *gin.Context) {
+	var req SetupStaffPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	invite, err := h.service.SetupPassword(c.Request.Context(), req)
+	if err != nil {
+		if errors.Is(err, ErrWeakPassword) || errors.Is(err, ErrInvalidToken) {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to setup password", "error": err.Error()})
+		return
+	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	action := audit.ActionStaffPasswordSetupCompleted
+	if invite.Purpose == "RESET_PASSWORD" {
+		action = audit.ActionStaffPasswordResetCompleted
+	}
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: invite.OwnerProfileID,
+		ActorUserID:    invite.StaffUserID, // The staff themselves
+		ActorRole:      "STAFF",
+		Action:         action,
+		EntityType:     audit.EntityStaff,
+		EntityID:       &invite.StaffMemberID,
+		Metadata:       map[string]any{},
+		IPAddress:      &ip,
+		UserAgent:      &ua,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"message": "password setup successfully"})
 }

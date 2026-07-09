@@ -941,7 +941,7 @@ export async function fetchOwnerVenueBookings(venueId: string, token: string, da
   if (isMock) {
     return new Promise((resolve) => setTimeout(() => resolve({ data: [], page: 1, total_pages: 1, total: 0, limit: 10 }), 500));
   }
-  const url = new URL(`${API_BASE_URL}/owner/venues/${venueId}/bookings`);
+  const url = new URL(`${API_BASE_URL}/owner/venues/${venueId}/bookings`, window.location.origin);
   if (date) url.searchParams.append('date', date);
   if (status) url.searchParams.append('status', status);
   if (scope) url.searchParams.append('scope', scope);
@@ -976,7 +976,7 @@ export async function fetchOwnerGlobalBookings(token: string, params: GlobalBook
   if (isMock) {
     return new Promise((resolve) => setTimeout(() => resolve({ data: [], page: 1, total_pages: 1, total: 0, limit: 10 }), 500));
   }
-  const url = new URL(`${API_BASE_URL}/owner/bookings`);
+  const url = new URL(`${API_BASE_URL}/owner/bookings`, window.location.origin);
 
   if (params.venue_id) url.searchParams.append('venue_id', params.venue_id);
   if (params.status) url.searchParams.append('status', params.status);

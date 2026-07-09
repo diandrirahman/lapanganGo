@@ -12,7 +12,7 @@ import (
 func CORS() gin.HandlerFunc {
 	allowedOriginsStr := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if allowedOriginsStr == "" {
-		allowedOriginsStr = "http://localhost:5173,http://localhost:3000"
+		allowedOriginsStr = "http://localhost:5173,http://localhost:5174,http://localhost:3000"
 	}
 
 	originsList := strings.Split(allowedOriginsStr, ",")
