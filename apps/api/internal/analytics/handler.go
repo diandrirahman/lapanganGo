@@ -40,7 +40,7 @@ func parseVenueQuery(c *gin.Context) *string {
 }
 
 func (h *Handler) GetBookingsTrend(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -50,7 +50,7 @@ func (h *Handler) GetBookingsTrend(c *gin.Context) {
 	startDate := parseDateQuery(c, "start_date")
 	endDate := parseDateQuery(c, "end_date")
 
-	resp, err := h.service.GetBookingsTrend(c.Request.Context(), ownerID, venueID, startDate, endDate)
+	resp, err := h.service.GetBookingsTrend(c.Request.Context(), ownerCtx, venueID, startDate, endDate)
 	if err != nil {
 		log.Printf("error getting bookings trend: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch bookings trend"})
@@ -60,7 +60,7 @@ func (h *Handler) GetBookingsTrend(c *gin.Context) {
 }
 
 func (h *Handler) GetRevenueTrend(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -70,7 +70,7 @@ func (h *Handler) GetRevenueTrend(c *gin.Context) {
 	startDate := parseDateQuery(c, "start_date")
 	endDate := parseDateQuery(c, "end_date")
 
-	resp, err := h.service.GetRevenueTrend(c.Request.Context(), ownerID, venueID, startDate, endDate)
+	resp, err := h.service.GetRevenueTrend(c.Request.Context(), ownerCtx, venueID, startDate, endDate)
 	if err != nil {
 		log.Printf("error getting revenue trend: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch revenue trend"})
@@ -80,7 +80,7 @@ func (h *Handler) GetRevenueTrend(c *gin.Context) {
 }
 
 func (h *Handler) GetStatusBreakdown(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -90,7 +90,7 @@ func (h *Handler) GetStatusBreakdown(c *gin.Context) {
 	startDate := parseDateQuery(c, "start_date")
 	endDate := parseDateQuery(c, "end_date")
 
-	resp, err := h.service.GetStatusBreakdown(c.Request.Context(), ownerID, venueID, startDate, endDate)
+	resp, err := h.service.GetStatusBreakdown(c.Request.Context(), ownerCtx, venueID, startDate, endDate)
 	if err != nil {
 		log.Printf("error getting status breakdown: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch status breakdown"})
@@ -100,7 +100,7 @@ func (h *Handler) GetStatusBreakdown(c *gin.Context) {
 }
 
 func (h *Handler) GetExpensesBreakdown(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -110,7 +110,7 @@ func (h *Handler) GetExpensesBreakdown(c *gin.Context) {
 	startDate := parseDateQuery(c, "start_date")
 	endDate := parseDateQuery(c, "end_date")
 
-	resp, err := h.service.GetExpensesBreakdown(c.Request.Context(), ownerID, venueID, startDate, endDate)
+	resp, err := h.service.GetExpensesBreakdown(c.Request.Context(), ownerCtx, venueID, startDate, endDate)
 	if err != nil {
 		log.Printf("error getting expenses breakdown: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch expenses breakdown"})

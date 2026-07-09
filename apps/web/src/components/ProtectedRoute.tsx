@@ -5,11 +5,18 @@ import { PageShell } from './layout/PageShell';
 
 interface ProtectedRouteProps {
   requiredRole?: string;
+  requiredPermission?: string;
+  requireActualOwner?: boolean;
   children?: React.ReactNode;
 }
 
-export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole, children }) => {
-  const { isAuthenticated, isLoading, user } = useAuth();
+export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
+  requiredRole,
+  requiredPermission,
+  requireActualOwner,
+  children
+}) => {
+  const { isAuthenticated, isLoading, user, isWorkspaceUser, hasOwnerPermission, isActualOwner } = useAuth();
 
   if (isLoading) {
     return (
@@ -25,8 +32,21 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole, ch
     return <Navigate to="/login" replace />;
   }
 
-  if (requiredRole && user?.role !== requiredRole) {
-    const redirectPath = user?.role === 'OWNER' ? '/owner/dashboard' : '/';
+  // Handle owner workspace routes
+  if (requiredRole === 'OWNER') {
+    if (!isWorkspaceUser()) {
+      return <Navigate to="/" replace />;
+    }
+
+    if (requireActualOwner && !isActualOwner()) {
+      return <Navigate to="/owner/dashboard" replace />;
+    }
+
+    if (requiredPermission && !hasOwnerPermission(requiredPermission)) {
+      return <Navigate to="/owner/dashboard" replace />;
+    }
+  } else if (requiredRole && user?.role !== requiredRole) {
+    const redirectPath = isWorkspaceUser() ? '/owner/dashboard' : '/';
     return <Navigate to={redirectPath} replace />;
   }
 

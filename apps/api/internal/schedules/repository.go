@@ -21,6 +21,7 @@ type OwnerProfile struct {
 type Court struct {
 	ID             string
 	OwnerProfileID string
+	VenueID        string
 }
 
 type OperatingHour struct {
@@ -68,7 +69,7 @@ func (r *Repository) FindOwnerProfileByUserID(ctx context.Context, userID string
 
 func (r *Repository) FindCourtByIDAndOwnerProfileID(ctx context.Context, courtID, ownerProfileID string) (Court, error) {
 	query := `
-		SELECT c.id::text, v.owner_profile_id::text
+		SELECT c.id::text, v.owner_profile_id::text, c.venue_id::text
 		FROM courts c
 		JOIN venues v ON v.id = c.venue_id
 		WHERE c.id = $1
@@ -80,6 +81,7 @@ func (r *Repository) FindCourtByIDAndOwnerProfileID(ctx context.Context, courtID
 	err := r.db.QueryRow(ctx, query, courtID, ownerProfileID).Scan(
 		&court.ID,
 		&court.OwnerProfileID,
+		&court.VenueID,
 	)
 	if err != nil {
 		return Court{}, err

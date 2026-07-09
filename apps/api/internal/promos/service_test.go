@@ -3,6 +3,7 @@ package promos
 import (
 	"context"
 	"errors"
+	"lapangango-api/internal/httputil"
 	"testing"
 	"time"
 )
@@ -34,6 +35,14 @@ type mockRepo struct {
 
 	GetCalls    int
 	UpdateCalls int
+}
+
+var testOwnerCtx = httputil.OwnerContext{
+	ActorUserID:          "owner-1",
+	EffectiveOwnerUserID: "owner-1",
+	OwnerProfileID:       "owner-profile-1",
+	IsOwner:              true,
+	AllowedVenueIDs:      []string{},
 }
 
 func (m *mockRepo) CreatePromo(ctx context.Context, p Promo) (Promo, error) {
@@ -252,7 +261,7 @@ func TestDeletePromoRejectsCancelledBookingReference(t *testing.T) {
 	}
 	service := NewService(repo)
 
-	err := service.DeletePromo(context.Background(), "promo-1", "owner-1")
+	err := service.DeletePromo(context.Background(), "promo-1", testOwnerCtx)
 	if !errors.Is(err, ErrPromoAlreadyUsed) {
 		t.Fatalf("expected ErrPromoAlreadyUsed, got %v", err)
 	}
@@ -270,7 +279,7 @@ func TestDeletePromoAllowsUnusedPromo(t *testing.T) {
 	}
 	service := NewService(repo)
 
-	err := service.DeletePromo(context.Background(), "promo-1", "owner-1")
+	err := service.DeletePromo(context.Background(), "promo-1", testOwnerCtx)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -294,7 +303,7 @@ func TestUpdatePromoReturnsRefetchedUsageSummary(t *testing.T) {
 	}
 	service := NewService(repo)
 
-	res, err := service.UpdatePromo(context.Background(), "promo-1", "owner-1", CreatePromoRequest{
+	res, err := service.UpdatePromo(context.Background(), "promo-1", testOwnerCtx, CreatePromoRequest{
 		Code:          "PROMO10",
 		Name:          "Promo 10",
 		DiscountType:  "PERCENTAGE",
@@ -331,7 +340,7 @@ func TestTogglePromoStatusReturnsRefetchedUsageSummary(t *testing.T) {
 	}
 	service := NewService(repo)
 
-	res, err := service.TogglePromoStatus(context.Background(), "promo-1", "owner-1")
+	res, err := service.TogglePromoStatus(context.Background(), "promo-1", testOwnerCtx)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}

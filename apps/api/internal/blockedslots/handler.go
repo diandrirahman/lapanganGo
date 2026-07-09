@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
@@ -16,15 +17,15 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	ownerGroup.POST("/courts/:id/blocked-slots", h.CreateBlockedSlot)
-	ownerGroup.GET("/courts/:id/blocked-slots", h.ListBlockedSlots)
-	ownerGroup.DELETE("/blocked-slots/:id", h.DeleteBlockedSlot)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.POST("/courts/:id/blocked-slots", middleware.RequireOwnerPermission("BLOCKED_SLOTS_WRITE"), h.CreateBlockedSlot)
+	ownerGroup.GET("/courts/:id/blocked-slots", middleware.RequireOwnerPermission("BLOCKED_SLOTS_READ"), h.ListBlockedSlots)
+	ownerGroup.DELETE("/blocked-slots/:id", middleware.RequireOwnerPermission("BLOCKED_SLOTS_WRITE"), h.DeleteBlockedSlot)
 }
 
 func (h *Handler) CreateBlockedSlot(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -46,7 +47,7 @@ func (h *Handler) CreateBlockedSlot(c *gin.Context) {
 		return
 	}
 
-	blockedSlot, err := h.service.CreateBlockedSlot(c.Request.Context(), userID, courtID, req)
+	blockedSlot, err := h.service.CreateBlockedSlot(c.Request.Context(), ownerCtx, courtID, req)
 	if err != nil {
 		respondBlockedSlotError(c, err, "Failed to create blocked slot")
 		return
@@ -59,7 +60,7 @@ func (h *Handler) CreateBlockedSlot(c *gin.Context) {
 }
 
 func (h *Handler) ListBlockedSlots(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -74,7 +75,7 @@ func (h *Handler) ListBlockedSlots(c *gin.Context) {
 
 	blockedSlots, err := h.service.ListBlockedSlots(
 		c.Request.Context(),
-		userID,
+		ownerCtx,
 		courtID,
 		c.Query("from"),
 		c.Query("to"),
@@ -90,7 +91,7 @@ func (h *Handler) ListBlockedSlots(c *gin.Context) {
 }
 
 func (h *Handler) DeleteBlockedSlot(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -103,7 +104,7 @@ func (h *Handler) DeleteBlockedSlot(c *gin.Context) {
 		return
 	}
 
-	blockedSlot, err := h.service.DeleteBlockedSlot(c.Request.Context(), userID, blockedSlotID)
+	blockedSlot, err := h.service.DeleteBlockedSlot(c.Request.Context(), ownerCtx, blockedSlotID)
 	if err != nil {
 		respondBlockedSlotError(c, err, "Failed to delete blocked slot")
 		return

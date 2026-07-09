@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"lapangango-api/internal/httputil"
 )
 
 var (
@@ -48,7 +49,7 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) CreatePromo(ctx context.Context, ownerID string, req CreatePromoRequest) (PromoResponse, error) {
+func (s *Service) CreatePromo(ctx context.Context, ownerCtx httputil.OwnerContext, req CreatePromoRequest) (PromoResponse, error) {
 	code := strings.ToUpper(strings.TrimSpace(req.Code))
 	if strings.ContainsAny(code, " \t\n\r") {
 		return PromoResponse{}, ErrInvalidPromoCode
@@ -73,17 +74,22 @@ func (s *Service) CreatePromo(ctx context.Context, ownerID string, req CreatePro
 	}
 
 	if req.VenueID != nil {
-		isOwned, err := s.repo.IsVenueOwnedByOwner(ctx, ownerID, *req.VenueID)
+		isOwned, err := s.repo.IsVenueOwnedByOwner(ctx, ownerCtx.EffectiveOwnerUserID, *req.VenueID)
 		if err != nil {
 			return PromoResponse{}, err
 		}
 		if !isOwned {
 			return PromoResponse{}, ErrPromoVenueForbidden
 		}
+		if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, *req.VenueID) {
+			return PromoResponse{}, ErrPromoVenueForbidden
+		}
+	} else if !ownerCtx.IsOwner {
+		return PromoResponse{}, ErrPromoVenueForbidden
 	}
 
 	// Check existing code
-	_, err = s.repo.FindActivePromoByCode(ctx, ownerID, code)
+	_, err = s.repo.FindActivePromoByCode(ctx, ownerCtx.EffectiveOwnerUserID, code)
 	if err == nil {
 		// Actually we should check if any promo exists with this code, but repo doesn't have FindPromoByCode for all status.
 		// Wait, unique index will enforce it anyway. Let's just rely on DB unique constraint.
@@ -102,7 +108,7 @@ func (s *Service) CreatePromo(ctx context.Context, ownerID string, req CreatePro
 	}
 
 	p := Promo{
-		OwnerID:       ownerID,
+		OwnerID:       ownerCtx.EffectiveOwnerUserID,
 		VenueID:       req.VenueID,
 		Code:          code,
 		Name:          req.Name,
@@ -124,36 +130,81 @@ func (s *Service) CreatePromo(ctx context.Context, ownerID string, req CreatePro
 	return toPromoResponse(created), nil
 }
 
-func (s *Service) ListOwnerPromos(ctx context.Context, ownerID string) ([]PromoResponse, error) {
-	promos, err := s.repo.ListOwnerPromos(ctx, ownerID)
+func containsID(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+func toPromoResponses(promos []Promo) []PromoResponse {
+	res := make([]PromoResponse, len(promos))
+	for i, p := range promos {
+		res[i] = toPromoResponse(p)
+	}
+	return res
+}
+
+func (s *Service) ListOwnerPromos(ctx context.Context, ownerCtx httputil.OwnerContext) ([]PromoResponse, error) {
+	promos, err := s.repo.ListOwnerPromos(ctx, ownerCtx.EffectiveOwnerUserID)
 	if err != nil {
 		return nil, err
 	}
-	res := make([]PromoResponse, 0, len(promos))
+
+	var allowedPromos []Promo
 	for _, p := range promos {
-		res = append(res, toPromoResponse(p))
+		if !ownerCtx.IsOwner && p.VenueID != nil {
+			if !containsID(ownerCtx.AllowedVenueIDs, *p.VenueID) {
+				continue
+			}
+		} else if !ownerCtx.IsOwner && p.VenueID == nil {
+			continue // staff can't see global promos
+		}
+		allowedPromos = append(allowedPromos, p)
 	}
-	return res, nil
+
+	return toPromoResponses(allowedPromos), nil
 }
 
-func (s *Service) GetPromo(ctx context.Context, id, ownerID string) (PromoResponse, error) {
-	p, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerID)
+func (s *Service) GetPromo(ctx context.Context, id string, ownerCtx httputil.OwnerContext) (PromoResponse, error) {
+	promo, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PromoResponse{}, ErrPromoNotFound
 		}
 		return PromoResponse{}, err
 	}
-	return toPromoResponse(p), nil
+
+	if !ownerCtx.IsOwner {
+		if promo.VenueID == nil {
+			return PromoResponse{}, ErrPromoNotFound
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *promo.VenueID) {
+			return PromoResponse{}, ErrPromoNotFound
+		}
+	}
+
+	return toPromoResponse(promo), nil
 }
 
-func (s *Service) UpdatePromo(ctx context.Context, id, ownerID string, req CreatePromoRequest) (PromoResponse, error) {
-	_, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerID)
+func (s *Service) UpdatePromo(ctx context.Context, id string, ownerCtx httputil.OwnerContext, req CreatePromoRequest) (PromoResponse, error) {
+	promo, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PromoResponse{}, ErrPromoNotFound
 		}
 		return PromoResponse{}, err
+	}
+
+	if !ownerCtx.IsOwner {
+		if promo.VenueID == nil {
+			return PromoResponse{}, ErrPromoVenueForbidden
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *promo.VenueID) {
+			return PromoResponse{}, ErrPromoVenueForbidden
+		}
 	}
 
 	startsAt, err := time.Parse(time.RFC3339, req.StartsAt)
@@ -193,31 +244,40 @@ func (s *Service) UpdatePromo(ctx context.Context, id, ownerID string, req Creat
 		params.Status = nil
 	}
 
-	_, err = s.repo.UpdatePromo(ctx, id, ownerID, params)
+	_, err = s.repo.UpdatePromo(ctx, id, ownerCtx.EffectiveOwnerUserID, params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PromoResponse{}, ErrPromoNotFound
 		}
 		return PromoResponse{}, err
 	}
-	return s.GetPromo(ctx, id, ownerID)
+	return s.GetPromo(ctx, id, ownerCtx)
 }
 
-func (s *Service) TogglePromoStatus(ctx context.Context, id, ownerID string) (PromoResponse, error) {
-	p, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerID)
+func (s *Service) TogglePromoStatus(ctx context.Context, id string, ownerCtx httputil.OwnerContext) (PromoResponse, error) {
+	promo, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PromoResponse{}, ErrPromoNotFound
 		}
 		return PromoResponse{}, err
+	}
+
+	if !ownerCtx.IsOwner {
+		if promo.VenueID == nil {
+			return PromoResponse{}, ErrPromoNotFound
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *promo.VenueID) {
+			return PromoResponse{}, ErrPromoNotFound
+		}
 	}
 
 	newStatus := "ACTIVE"
-	if p.Status == "ACTIVE" {
+	if promo.Status == "ACTIVE" {
 		newStatus = "INACTIVE"
 	}
 
-	_, err = s.repo.UpdatePromo(ctx, id, ownerID, UpdatePromoParams{
+	_, err = s.repo.UpdatePromo(ctx, id, ownerCtx.EffectiveOwnerUserID, UpdatePromoParams{
 		Status: &newStatus,
 	})
 	if err != nil {
@@ -226,7 +286,7 @@ func (s *Service) TogglePromoStatus(ctx context.Context, id, ownerID string) (Pr
 		}
 		return PromoResponse{}, err
 	}
-	return s.GetPromo(ctx, id, ownerID)
+	return s.GetPromo(ctx, id, ownerCtx)
 }
 
 func toPromoResponse(p Promo) PromoResponse {
@@ -379,19 +439,29 @@ func (s *Service) ValidatePromo(ctx context.Context, req ValidatePromoRequest) (
 	}, nil
 }
 
-func (s *Service) DeletePromo(ctx context.Context, id, ownerID string) error {
-	p, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerID)
+func (s *Service) DeletePromo(ctx context.Context, id string, ownerCtx httputil.OwnerContext) error {
+	promo, err := s.repo.GetPromoByIDAndOwner(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrPromoNotFound
 		}
 		return err
 	}
-	if p.BookingReferenceCount > 0 {
+
+	if !ownerCtx.IsOwner {
+		if promo.VenueID == nil {
+			return ErrPromoNotFound
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *promo.VenueID) {
+			return ErrPromoNotFound
+		}
+	}
+
+	if promo.BookingReferenceCount > 0 {
 		return ErrPromoAlreadyUsed
 	}
 
-	err = s.repo.DeletePromo(ctx, id, ownerID)
+	err = s.repo.DeletePromo(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPromoNotFound
 	}

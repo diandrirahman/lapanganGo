@@ -5,6 +5,7 @@ import type { PaginatedResponse } from '../types/pagination';
 import type { OpenMatch } from '../types/mabar';
 import type { FinanceSummaryResult } from '../types/finance';
 import type { NotificationListResponse } from '../types/notification';
+import type { AuditLog, AuditLogQuery } from '../types/audit';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
@@ -209,7 +210,7 @@ export async function fetchVenues(page: number = 1, limit: number = 10, filters?
   if (import.meta.env.VITE_USE_MOCK_VENUE === 'true') {
     return new Promise((resolve) => setTimeout(() => resolve({ data: MOCK_VENUES, page: 1, limit: 10, total: MOCK_VENUES.length, total_pages: 1 }), 500));
   }
-  
+
   const params = new URLSearchParams({
     page: page.toString(),
     limit: limit.toString()
@@ -293,7 +294,7 @@ export async function fetchCourtAvailability(courtId: string, date: string): Pro
           const startAt = new Date(`${date}T${i.toString().padStart(2, '0')}:00:00+07:00`).toISOString();
           const endAt = new Date(`${date}T${(i + 1).toString().padStart(2, '0')}:00:00+07:00`).toISOString();
           let status: 'AVAILABLE' | 'BOOKED' | 'BLOCKED' = 'AVAILABLE';
-          
+
           if (i === 8 || i === 18 || i === 19) status = 'BOOKED';
           else if (i === 12 || i === 13) status = 'BLOCKED';
 
@@ -356,7 +357,7 @@ export const validatePromo = async (data: {
 
 export const createBooking = async (data: CreateBookingRequest, token: string): Promise<Booking> => {
   const isMock = import.meta.env.VITE_USE_MOCK_VENUE === 'true';
-  
+
   if (isMock) {
     return new Promise((resolve) => {
       setTimeout(() => {
@@ -946,7 +947,7 @@ export async function fetchOwnerVenueBookings(venueId: string, token: string, da
   if (scope) url.searchParams.append('scope', scope);
   url.searchParams.append('page', page.toString());
   url.searchParams.append('limit', limit.toString());
-  
+
   const response = await apiFetch(url.toString(), {
     headers: { 'Authorization': `Bearer ${token}` }
   });
@@ -976,7 +977,7 @@ export async function fetchOwnerGlobalBookings(token: string, params: GlobalBook
     return new Promise((resolve) => setTimeout(() => resolve({ data: [], page: 1, total_pages: 1, total: 0, limit: 10 }), 500));
   }
   const url = new URL(`${API_BASE_URL}/owner/bookings`);
-  
+
   if (params.venue_id) url.searchParams.append('venue_id', params.venue_id);
   if (params.status) url.searchParams.append('status', params.status);
   if (params.scope) url.searchParams.append('scope', params.scope);
@@ -984,19 +985,19 @@ export async function fetchOwnerGlobalBookings(token: string, params: GlobalBook
   if (params.end_date) url.searchParams.append('end_date', params.end_date);
   if (params.q) url.searchParams.append('q', params.q);
   if (params.sort) url.searchParams.append('sort', params.sort);
-  
+
   url.searchParams.append('page', (params.page || 1).toString());
   url.searchParams.append('limit', (params.limit || 10).toString());
-  
+
   const response = await apiFetch(url.toString(), {
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.message || 'Failed to fetch global bookings');
   }
-  
+
   const data = await response.json();
   return data;
 }
@@ -1006,7 +1007,7 @@ export async function createOwnerOfflineBooking(token: string, payload: import('
   if (isMock) {
     return new Promise((resolve) => setTimeout(() => resolve({} as any), 500));
   }
-  
+
   const response = await apiFetch(`${API_BASE_URL}/owner/bookings/offline`, {
     method: 'POST',
     headers: {
@@ -1015,12 +1016,12 @@ export async function createOwnerOfflineBooking(token: string, payload: import('
     },
     body: JSON.stringify(payload)
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.message || 'Failed to create offline booking');
   }
-  
+
   const data = await response.json();
   return data;
 }
@@ -1083,12 +1084,12 @@ export async function fetchOwnerFinanceSummary(
   const response = await apiFetch(url, {
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil ringkasan keuangan');
   }
-  
+
   return response.json();
 }
 
@@ -1111,30 +1112,30 @@ export async function fetchTransactions(
   const response = await apiFetch(url, {
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil data transaksi');
   }
-  
+
   return response.json();
 }
 
 export async function createTransaction(token: string, data: CreateTransactionRequest): Promise<FinanceTransaction> {
   const response = await apiFetch(`${API_BASE_URL}/owner/finance/transactions`, {
     method: 'POST',
-    headers: { 
+    headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(data)
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal menambah transaksi');
   }
-  
+
   return response.json();
 }
 
@@ -1143,7 +1144,7 @@ export async function deleteTransaction(token: string, id: string): Promise<void
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal menghapus transaksi');
@@ -1160,12 +1161,12 @@ export async function fetchAnalyticsBookingsTrend(token: string, params: { start
 
   const url = `${API_BASE_URL}/owner/analytics/bookings${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   const response = await apiFetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil data analitik');
   }
-  
+
   return response.json();
 }
 
@@ -1177,12 +1178,12 @@ export async function fetchAnalyticsRevenueTrend(token: string, params: { start_
 
   const url = `${API_BASE_URL}/owner/analytics/revenue${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   const response = await apiFetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil data analitik');
   }
-  
+
   return response.json();
 }
 
@@ -1194,12 +1195,12 @@ export async function fetchAnalyticsStatusBreakdown(token: string, params: { sta
 
   const url = `${API_BASE_URL}/owner/analytics/status${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   const response = await apiFetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil data analitik');
   }
-  
+
   return response.json();
 }
 
@@ -1211,12 +1212,12 @@ export async function fetchAnalyticsExpensesBreakdown(token: string, params: { s
 
   const url = `${API_BASE_URL}/owner/analytics/expenses${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   const response = await apiFetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || 'Gagal mengambil data analitik');
   }
-  
+
   return response.json();
 }
 
@@ -1258,8 +1259,8 @@ export async function fetchRefundRequestByBooking(bookingId: string, token: stri
 }
 
 export async function fetchOwnerRefundRequests(
-  token: string, 
-  page = 1, 
+  token: string,
+  page = 1,
   limit = 10,
   status = '',
   venueId = ''
@@ -1353,4 +1354,24 @@ export const markAllNotificationsRead = async (token: string): Promise<void> => 
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!res.ok) throw new Error('Failed to mark all notifications as read');
+};
+
+export const getAuditLogs = async (token: string, query: AuditLogQuery): Promise<PaginatedResponse<AuditLog>> => {
+  const params = new URLSearchParams();
+  if (query.action) params.append('action', query.action);
+  if (query.entity_type) params.append('entity_type', query.entity_type);
+  if (query.start_date) params.append('start_date', query.start_date);
+  if (query.end_date) params.append('end_date', query.end_date);
+  if (query.page) params.append('page', query.page.toString());
+  if (query.limit) params.append('limit', query.limit.toString());
+
+  const res = await apiFetch(`${API_BASE_URL}/owner/audit-logs?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.message || 'Failed to fetch audit logs');
+  }
+  return res.json();
 };

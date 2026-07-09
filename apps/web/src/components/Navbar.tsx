@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, CalendarDays, LayoutDashboard, LogOut, MapPin, Menu, Search, Trophy, X, Undo2, Tag } from 'lucide-react';
+import { BarChart3, CalendarDays, LayoutDashboard, LogOut, MapPin, Menu, Search, Trophy, X, Undo2, Tag, Users, ClipboardList } from 'lucide-react';
 import { NotificationDropdown } from './NotificationDropdown';
 
 export const Navbar: React.FC = () => {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, logout, isWorkspaceUser, hasOwnerPermission, isActualOwner } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -25,32 +25,54 @@ export const Navbar: React.FC = () => {
 
     return (
       <>
-      {user?.role === 'OWNER' ? (
+      {isWorkspaceUser() ? (
         <>
           <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/dashboard" className={linkClass(location.pathname.startsWith('/owner/dashboard'))}>
             {mobile && <LayoutDashboard className={iconClass} />}
             Dashboard
           </Link>
-          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/bookings" className={linkClass(location.pathname.startsWith('/owner/bookings'))}>
-            {mobile && <CalendarDays className={iconClass} />}
-            Pesanan
-          </Link>
-          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/refunds" className={linkClass(location.pathname.startsWith('/owner/refunds'))}>
-            {mobile && <Undo2 className={iconClass} />}
-            Refunds
-          </Link>
-          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/finance" className={linkClass(location.pathname.startsWith('/owner/finance'))}>
-            {mobile && <BarChart3 className={iconClass} />}
-            Keuangan
-          </Link>
-          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/venues" className={linkClass(location.pathname.startsWith('/owner/venues'))}>
-            {mobile && <MapPin className={iconClass} />}
-            Venue
-          </Link>
-          <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/promos" className={linkClass(location.pathname.startsWith('/owner/promos'))}>
-            {mobile && <Tag className={iconClass} />}
-            Promo
-          </Link>
+          {hasOwnerPermission('BOOKINGS_READ') && (
+            <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/bookings" className={linkClass(location.pathname.startsWith('/owner/bookings'))}>
+              {mobile && <CalendarDays className={iconClass} />}
+              Pesanan
+            </Link>
+          )}
+          {hasOwnerPermission('REFUNDS_READ') && (
+            <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/refunds" className={linkClass(location.pathname.startsWith('/owner/refunds'))}>
+              {mobile && <Undo2 className={iconClass} />}
+              Refunds
+            </Link>
+          )}
+          {hasOwnerPermission('FINANCE_READ') && (
+            <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/finance" className={linkClass(location.pathname.startsWith('/owner/finance'))}>
+              {mobile && <BarChart3 className={iconClass} />}
+              Keuangan
+            </Link>
+          )}
+          {hasOwnerPermission('VENUES_READ') && (
+            <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/venues" className={linkClass(location.pathname.startsWith('/owner/venues'))}>
+              {mobile && <MapPin className={iconClass} />}
+              Venue
+            </Link>
+          )}
+          {hasOwnerPermission('PROMOS_READ') && (
+            <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/promos" className={linkClass(location.pathname.startsWith('/owner/promos'))}>
+              {mobile && <Tag className={iconClass} />}
+              Promo
+            </Link>
+          )}
+          {isActualOwner() && (
+            <>
+              <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/staff" className={linkClass(location.pathname.startsWith('/owner/staff'))}>
+                {mobile && <Users className={iconClass} />}
+                Staff
+              </Link>
+              <Link onClick={() => setIsMobileMenuOpen(false)} to="/owner/audit-logs" className={linkClass(location.pathname.startsWith('/owner/audit-logs'))}>
+                {mobile && <ClipboardList className={iconClass} />}
+                Riwayat Aktivitas
+              </Link>
+            </>
+          )}
         </>
       ) : (
         <>
@@ -74,7 +96,7 @@ export const Navbar: React.FC = () => {
     );
   };
 
-  const logoHref = user?.role === 'OWNER' ? '/owner/dashboard' : '/';
+  const logoHref = isWorkspaceUser() ? '/owner/dashboard' : '/';
 
   return (
     <nav className={`fixed top-0 md:top-6 left-0 md:left-1/2 md:-translate-x-1/2 w-full md:w-[calc(100%-40px)] max-w-6xl z-50 bg-white/95 backdrop-blur-xl border-b md:border border-border-main/50 md:border-white/80 shadow-sm transition-all ${isMobileMenuOpen ? 'rounded-b-2xl md:rounded-[28px]' : 'md:rounded-full'}`}>
@@ -97,7 +119,9 @@ export const Navbar: React.FC = () => {
                 </div>
                 <div className="hidden sm:block">
                   <div className="text-[13px] font-bold text-text-main line-clamp-1">{user.name}</div>
-                  <div className="text-[11px] font-medium text-text-muted">{user.role}</div>
+                  <div className="text-[11px] font-medium text-text-muted">
+                    {user.staff_memberships && user.staff_memberships.length > 0 ? `STAFF - ${user.staff_memberships[0].owner_name}` : user.role}
+                  </div>
                 </div>
               </div>
               <NotificationDropdown />

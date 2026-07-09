@@ -25,12 +25,14 @@ import { OwnerBookingsPage } from './pages/owner/OwnerBookingsPage';
 import { OwnerRefundsPage } from './pages/owner/OwnerRefundsPage';
 import { OwnerFinancePage } from './pages/owner/OwnerFinancePage';
 import { OwnerPromosPage } from './pages/owner/OwnerPromosPage';
+import { OwnerStaffPage } from './pages/owner/OwnerStaffPage';
+import { OwnerAuditLogsPage } from './pages/owner/OwnerAuditLogsPage';
 
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Toaster 
+        <Toaster
           position="top-center"
           toastOptions={{
             duration: 3500,
@@ -65,19 +67,40 @@ function App() {
             <Route path="/bookings" element={<CustomerBookingsPage />} />
             <Route path="/bookings/:id" element={<CustomerBookingDetailPage />} />
           </Route>
-          
+
           {/* Owner Routes */}
           <Route element={<ProtectedRoute requiredRole="OWNER" />}>
             <Route path="/owner/dashboard" element={<OwnerDashboardPage />} />
-            <Route path="/owner/bookings" element={<OwnerBookingsPage />} />
-            <Route path="/owner/refunds" element={<OwnerRefundsPage />} />
-            <Route path="/owner/finance" element={<OwnerFinancePage />} />
-            <Route path="/owner/venues" element={<OwnerVenuesPage />} />
-            <Route path="/owner/venues/new" element={<CreateVenuePage />} />
-            <Route path="/owner/venues/:id/edit" element={<EditVenuePage />} />
-            <Route path="/owner/venues/:id/courts" element={<OwnerCourtsPage />} />
-            <Route path="/owner/venues/:id/bookings" element={<OwnerVenueBookingsPage />} />
-            <Route path="/owner/promos" element={<OwnerPromosPage />} />
+
+            <Route element={<ProtectedRoute requiredRole="OWNER" requiredPermission="BOOKINGS_READ" />}>
+              <Route path="/owner/bookings" element={<OwnerBookingsPage />} />
+              <Route path="/owner/venues/:id/bookings" element={<OwnerVenueBookingsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute requiredRole="OWNER" requiredPermission="REFUNDS_READ" />}>
+              <Route path="/owner/refunds" element={<OwnerRefundsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute requiredRole="OWNER" requiredPermission="FINANCE_READ" />}>
+              <Route path="/owner/finance" element={<OwnerFinancePage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute requiredRole="OWNER" requiredPermission="VENUES_READ" />}>
+              <Route path="/owner/venues" element={<OwnerVenuesPage />} />
+              <Route path="/owner/venues/new" element={<CreateVenuePage />} />
+              <Route path="/owner/venues/:id/edit" element={<EditVenuePage />} />
+              <Route path="/owner/venues/:id/courts" element={<OwnerCourtsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute requiredRole="OWNER" requiredPermission="PROMOS_READ" />}>
+              <Route path="/owner/promos" element={<OwnerPromosPage />} />
+            </Route>
+
+            {/* Staff Management - Owner only */}
+            <Route element={<ProtectedRoute requiredRole="OWNER" requireActualOwner={true} />}>
+              <Route path="/owner/staff" element={<OwnerStaffPage />} />
+              <Route path="/owner/audit-logs" element={<OwnerAuditLogsPage />} />
+            </Route>
           </Route>
 
           {/* Catch-All / 404 */}

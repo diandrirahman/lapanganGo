@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"lapangango-api/internal/httputil"
 )
 
 var (
@@ -24,13 +26,12 @@ func NewService(repository *Repository) *Service {
 	return &Service{repository: repository}
 }
 
-func (s *Service) CreateCourt(ctx context.Context, userID, venueID string, req CreateCourtRequest) (CourtResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return CourtResponse{}, err
+func (s *Service) CreateCourt(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string, req CreateCourtRequest) (CourtResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return CourtResponse{}, ErrVenueNotFound
 	}
 
-	if _, err := s.getOwnedVenue(ctx, venueID, ownerProfile.ID); err != nil {
+	if _, err := s.getOwnedVenue(ctx, venueID, ownerCtx.OwnerProfileID); err != nil {
 		return CourtResponse{}, err
 	}
 
@@ -54,17 +55,16 @@ func (s *Service) CreateCourt(ctx context.Context, userID, venueID string, req C
 	return toCourtResponse(court), nil
 }
 
-func (s *Service) ListCourts(ctx context.Context, userID, venueID string) ([]CourtResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
+func (s *Service) ListCourts(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string) ([]CourtResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return []CourtResponse{}, nil
+	}
+
+	if _, err := s.getOwnedVenue(ctx, venueID, ownerCtx.OwnerProfileID); err != nil {
 		return nil, err
 	}
 
-	if _, err := s.getOwnedVenue(ctx, venueID, ownerProfile.ID); err != nil {
-		return nil, err
-	}
-
-	courts, err := s.repository.ListByVenueIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	courts, err := s.repository.ListByVenueIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return nil, err
 	}
@@ -77,13 +77,9 @@ func (s *Service) ListCourts(ctx context.Context, userID, venueID string) ([]Cou
 	return responses, nil
 }
 
-func (s *Service) GetCourt(ctx context.Context, userID, courtID string) (CourtResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return CourtResponse{}, err
-	}
+func (s *Service) GetCourt(ctx context.Context, ownerCtx httputil.OwnerContext, courtID string) (CourtResponse, error) {
 
-	court, err := s.repository.FindByIDAndOwnerProfileID(ctx, courtID, ownerProfile.ID)
+	court, err := s.repository.FindByIDAndOwnerProfileID(ctx, courtID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return CourtResponse{}, ErrCourtNotFound
 	}
@@ -91,14 +87,14 @@ func (s *Service) GetCourt(ctx context.Context, userID, courtID string) (CourtRe
 		return CourtResponse{}, err
 	}
 
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return CourtResponse{}, ErrCourtNotFound
+	}
+
 	return toCourtResponse(court), nil
 }
 
-func (s *Service) UpdateCourt(ctx context.Context, userID, courtID string, req UpdateCourtRequest) (CourtResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return CourtResponse{}, err
-	}
+func (s *Service) UpdateCourt(ctx context.Context, ownerCtx httputil.OwnerContext, courtID string, req UpdateCourtRequest) (CourtResponse, error) {
 
 	if _, err := s.getSport(ctx, req.SportID); err != nil {
 		return CourtResponse{}, err
@@ -109,7 +105,7 @@ func (s *Service) UpdateCourt(ctx context.Context, userID, courtID string, req U
 		return CourtResponse{}, err
 	}
 
-	court, err := s.repository.UpdateByIDAndOwnerProfileID(ctx, courtID, ownerProfile.ID, params)
+	court, err := s.repository.UpdateByIDAndOwnerProfileID(ctx, courtID, ownerCtx.OwnerProfileID, params)
 	if IsNotFound(err) {
 		return CourtResponse{}, ErrCourtNotFound
 	}
@@ -120,21 +116,21 @@ func (s *Service) UpdateCourt(ctx context.Context, userID, courtID string, req U
 		return CourtResponse{}, err
 	}
 
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return CourtResponse{}, ErrCourtNotFound
+	}
+
 	return toCourtResponse(court), nil
 }
 
-func (s *Service) UpdateCourtStatus(ctx context.Context, userID, courtID, status string) (CourtResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return CourtResponse{}, err
-	}
+func (s *Service) UpdateCourtStatus(ctx context.Context, ownerCtx httputil.OwnerContext, courtID, status string) (CourtResponse, error) {
 
 	status = strings.TrimSpace(status)
 	if !isWritableCourtStatus(status) {
 		return CourtResponse{}, ErrInvalidCourtStatus
 	}
 
-	court, err := s.repository.UpdateStatusByIDAndOwnerProfileID(ctx, courtID, ownerProfile.ID, status)
+	court, err := s.repository.UpdateStatusByIDAndOwnerProfileID(ctx, courtID, ownerCtx.OwnerProfileID, status)
 	if IsNotFound(err) {
 		return CourtResponse{}, ErrCourtNotFound
 	}
@@ -142,20 +138,14 @@ func (s *Service) UpdateCourtStatus(ctx context.Context, userID, courtID, status
 		return CourtResponse{}, err
 	}
 
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return CourtResponse{}, ErrCourtNotFound
+	}
+
 	return toCourtResponse(court), nil
 }
 
-func (s *Service) getOwnerProfile(ctx context.Context, userID string) (OwnerProfile, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, userID)
-	if IsNotFound(err) {
-		return OwnerProfile{}, ErrOwnerProfileNotFound
-	}
-	if err != nil {
-		return OwnerProfile{}, err
-	}
 
-	return profile, nil
-}
 
 func (s *Service) getOwnedVenue(ctx context.Context, venueID, ownerProfileID string) (Venue, error) {
 	venue, err := s.repository.FindVenueByIDAndOwnerProfileID(ctx, venueID, ownerProfileID)
@@ -275,4 +265,13 @@ func toCourtResponse(court Court) CourtResponse {
 		CreatedAt:    court.CreatedAt,
 		UpdatedAt:    court.UpdatedAt,
 	}
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

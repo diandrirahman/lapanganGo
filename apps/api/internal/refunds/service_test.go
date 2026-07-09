@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"lapangango-api/internal/httputil"
 	"lapangango-api/internal/refunds"
 )
 
@@ -46,7 +47,7 @@ func (m *mockRepo) GetLatestRefundRequestByBookingID(ctx context.Context, bookin
 func (m *mockRepo) GetRefundRequestByID(ctx context.Context, id string) (refunds.RefundRequestResponse, error) {
 	return m.reqByID, m.reqByIDErr
 }
-func (m *mockRepo) ListOwnerRefundRequests(ctx context.Context, ownerID string, status string, venueID string, page, limit int) ([]refunds.OwnerRefundRequestListItem, int, error) {
+func (m *mockRepo) ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status string, venueID string, page, limit int) ([]refunds.OwnerRefundRequestListItem, int, error) {
 	return nil, 0, nil
 }
 func (m *mockRepo) BeginTx(ctx context.Context) (pgx.Tx, error) {
@@ -78,6 +79,15 @@ type mockTx struct {
 	pgx.Tx
 	commitErr   error
 	rollbackErr error
+}
+
+func refundOwnerContext(userID string) httputil.OwnerContext {
+	return httputil.OwnerContext{
+		ActorUserID:          userID,
+		EffectiveOwnerUserID: userID,
+		IsOwner:              true,
+		AllowedVenueIDs:      []string{},
+	}
 }
 
 func (m *mockTx) Commit(ctx context.Context) error {
@@ -168,7 +178,7 @@ func TestApproveRefundRequest(t *testing.T) {
 		}
 		service := refunds.NewService(repo, nil)
 
-		_, err := service.ApproveRefundRequest(context.Background(), "o1", "r1", "ok")
+		_, err := service.ApproveRefundRequest(context.Background(), refundOwnerContext("o1"), "r1", "ok")
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -184,7 +194,7 @@ func TestApproveRefundRequest(t *testing.T) {
 		}
 		service := refunds.NewService(repo, nil)
 
-		_, err := service.ApproveRefundRequest(context.Background(), "o1", "r1", "ok")
+		_, err := service.ApproveRefundRequest(context.Background(), refundOwnerContext("o1"), "r1", "ok")
 		if err != refunds.ErrRefundRequestAlreadyReviewed {
 			t.Errorf("expected ErrRefundRequestAlreadyReviewed, got %v", err)
 		}

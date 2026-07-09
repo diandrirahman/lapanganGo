@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"lapangango-api/internal/httputil"
 	"lapangango-api/internal/notifications"
 	"lapangango-api/internal/promos"
 )
@@ -71,8 +72,9 @@ type BookingRepository interface {
 	GetOwnerUserIDByCourtID(ctx context.Context, courtID string) (string, error)
 	GetOwnerUserIDByBookingID(ctx context.Context, bookingID string) (string, error)
 	GetBookingOwnerProfileID(ctx context.Context, bookingID string) (string, error)
+	GetBookingOwnerProfileAndVenueID(ctx context.Context, bookingID string) (string, string, error)
 	CancelExpiredPendingBookings(ctx context.Context) (int64, error)
-	CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error)
+	CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, actorUserID string, bookingID string, reason string) (Booking, error)
 	AutoCompleteFinishedBookings(ctx context.Context) ([]Booking, error)
 	GetBookingsExpiringSoon(ctx context.Context, cutoff time.Time) ([]Booking, error)
 }
@@ -319,17 +321,9 @@ func (s *Service) SubmitPaymentProof(ctx context.Context, customerID, bookingID,
 	return toBookingResponse(b), nil
 }
 
-func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID string, isApproved bool) (BookingResponse, error) {
+func (s *Service) VerifyPayment(ctx context.Context, ownerCtx httputil.OwnerContext, bookingID string, isApproved bool) (BookingResponse, error) {
 	// 1. Ensure the owner actually owns this booking's venue
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return BookingResponse{}, ErrOwnerProfileNotFound
-		}
-		return BookingResponse{}, err
-	}
-
-	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	ownerProfileID, venueID, err := s.repository.GetBookingOwnerProfileAndVenueID(ctx, bookingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -337,11 +331,15 @@ func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID stri
 		return BookingResponse{}, err
 	}
 
-	if ownerProfileID != profile.ID {
+	if ownerProfileID != ownerCtx.OwnerProfileID {
 		return BookingResponse{}, ErrForbidden
 	}
 
-	b, err := s.repository.VerifyPayment(ctx, ownerUserID, bookingID, isApproved)
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	b, err := s.repository.VerifyPayment(ctx, ownerCtx.ActorUserID, bookingID, isApproved)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -376,17 +374,9 @@ func (s *Service) VerifyPayment(ctx context.Context, ownerUserID, bookingID stri
 	return toBookingResponse(b), nil
 }
 
-func (s *Service) MarkBookingPaid(ctx context.Context, ownerUserID, bookingID string) (BookingResponse, error) {
+func (s *Service) MarkBookingPaid(ctx context.Context, ownerCtx httputil.OwnerContext, bookingID string) (BookingResponse, error) {
 	// 1. Ensure the owner actually owns this booking's venue
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return BookingResponse{}, ErrOwnerProfileNotFound
-		}
-		return BookingResponse{}, err
-	}
-
-	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+	ownerProfileID, venueID, err := s.repository.GetBookingOwnerProfileAndVenueID(ctx, bookingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -394,11 +384,15 @@ func (s *Service) MarkBookingPaid(ctx context.Context, ownerUserID, bookingID st
 		return BookingResponse{}, err
 	}
 
-	if ownerProfileID != profile.ID {
+	if ownerProfileID != ownerCtx.OwnerProfileID {
 		return BookingResponse{}, ErrForbidden
 	}
 
-	b, err := s.repository.MarkBookingPaid(ctx, ownerUserID, bookingID)
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	b, err := s.repository.MarkBookingPaid(ctx, ownerCtx.ActorUserID, bookingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingCannotBeMarkedPaid
@@ -408,16 +402,9 @@ func (s *Service) MarkBookingPaid(ctx context.Context, ownerUserID, bookingID st
 	return toBookingResponse(b), nil
 }
 
-func (s *Service) CompleteBooking(ctx context.Context, ownerUserID, bookingID string) (BookingResponse, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return BookingResponse{}, ErrOwnerProfileNotFound
-		}
-		return BookingResponse{}, err
-	}
-
-	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+func (s *Service) CompleteBooking(ctx context.Context, ownerCtx httputil.OwnerContext, bookingID string) (BookingResponse, error) {
+	// 1. Ensure the owner actually owns this booking's venue
+	ownerProfileID, venueID, err := s.repository.GetBookingOwnerProfileAndVenueID(ctx, bookingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -425,7 +412,11 @@ func (s *Service) CompleteBooking(ctx context.Context, ownerUserID, bookingID st
 		return BookingResponse{}, err
 	}
 
-	if ownerProfileID != profile.ID {
+	if ownerProfileID != ownerCtx.OwnerProfileID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
 		return BookingResponse{}, ErrForbidden
 	}
 
@@ -439,16 +430,9 @@ func (s *Service) CompleteBooking(ctx context.Context, ownerUserID, bookingID st
 	return toBookingResponse(b), nil
 }
 
-func (s *Service) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID, bookingID string, reason string) (BookingResponse, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return BookingResponse{}, ErrOwnerProfileNotFound
-		}
-		return BookingResponse{}, err
-	}
-
-	ownerProfileID, err := s.repository.GetBookingOwnerProfileID(ctx, bookingID)
+func (s *Service) CancelPaidBookingWithRefund(ctx context.Context, ownerCtx httputil.OwnerContext, bookingID string, reason string) (BookingResponse, error) {
+	// 1. Ensure the owner actually owns this booking's venue
+	ownerProfileID, venueID, err := s.repository.GetBookingOwnerProfileAndVenueID(ctx, bookingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -456,13 +440,17 @@ func (s *Service) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID, 
 		return BookingResponse{}, err
 	}
 
-	if ownerProfileID != profile.ID {
+	if ownerProfileID != ownerCtx.OwnerProfileID {
+		return BookingResponse{}, ErrForbidden
+	}
+
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
 		return BookingResponse{}, ErrForbidden
 	}
 
 	trimmedReason := strings.TrimSpace(reason)
 
-	b, err := s.repository.CancelPaidBookingWithRefund(ctx, profile.UserID, bookingID, trimmedReason)
+	b, err := s.repository.CancelPaidBookingWithRefund(ctx, ownerCtx.EffectiveOwnerUserID, ownerCtx.ActorUserID, bookingID, trimmedReason)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrBookingNotFound
@@ -521,26 +509,14 @@ func (s *Service) GetBooking(ctx context.Context, customerID, bookingID string) 
 	return toCustomerBookingResponse(b), nil
 }
 
-func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerUserID, venueID string, req OwnerVenueBookingsQuery) ([]OwnerBookingResponse, int, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, 0, ErrOwnerProfileNotFound
-		}
-		return nil, 0, err
-	}
-
-	_, err = s.repository.FindVenueByIDAndOwnerProfileID(ctx, venueID, profile.ID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, 0, ErrVenueNotFound
-		}
-		return nil, 0, err
+func (s *Service) ListOwnerVenueBookings(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string, req OwnerVenueBookingsQuery) ([]OwnerBookingResponse, int, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return []OwnerBookingResponse{}, 0, nil
 	}
 
 	query := normalizeOwnerVenueBookingsQuery(req)
 	offset := (query.Page - 1) * query.Limit
-	bookings, total, err := s.repository.ListOwnerVenueBookings(ctx, profile.ID, venueID, query.Date, query.Status, query.Scope, query.Limit, offset)
+	bookings, total, err := s.repository.ListOwnerVenueBookings(ctx, ownerCtx.OwnerProfileID, venueID, query.Date, query.Status, query.Scope, query.Limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -563,15 +539,7 @@ func normalizeOwnerBookingsQuery(req OwnerBookingsQuery) OwnerBookingsQuery {
 	return req
 }
 
-func (s *Service) ListOwnerBookings(ctx context.Context, ownerUserID string, req OwnerBookingsQuery) (OwnerBookingsResult, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return OwnerBookingsResult{}, ErrOwnerProfileNotFound
-		}
-		return OwnerBookingsResult{}, err
-	}
-
+func (s *Service) ListOwnerBookings(ctx context.Context, ownerCtx httputil.OwnerContext, req OwnerBookingsQuery) (OwnerBookingsResult, error) {
 	query := normalizeOwnerBookingsQuery(req)
 
 	// Apply search trim and length logic
@@ -584,8 +552,12 @@ func (s *Service) ListOwnerBookings(ctx context.Context, ownerUserID string, req
 		}
 	}
 
+	if !ownerCtx.IsOwner {
+		query.AllowedVenueIDs = ownerCtx.AllowedVenueIDs
+	}
+
 	offset := (query.Page - 1) * query.Limit
-	bookings, total, err := s.repository.ListOwnerBookings(ctx, profile.ID, query, query.Limit, offset)
+	bookings, total, err := s.repository.ListOwnerBookings(ctx, ownerCtx.OwnerProfileID, query, query.Limit, offset)
 	if err != nil {
 		return OwnerBookingsResult{}, err
 	}
@@ -778,16 +750,12 @@ func toOwnerBookingResponse(b OwnerBooking) OwnerBookingResponse {
 		UpdatedAt:        b.UpdatedAt,
 	}
 }
-func (s *Service) GetOwnerMetrics(ctx context.Context, ownerUserID string, query OwnerMetricsQuery) (OwnerMetricsResponse, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return OwnerMetricsResponse{}, ErrOwnerProfileNotFound
-		}
-		return OwnerMetricsResponse{}, err
+func (s *Service) GetOwnerMetrics(ctx context.Context, ownerCtx httputil.OwnerContext, query OwnerMetricsQuery) (OwnerMetricsResponse, error) {
+	if !ownerCtx.IsOwner {
+		return OwnerMetricsResponse{}, ErrForbidden
 	}
 
-	metrics, err := s.repository.GetOwnerMetrics(ctx, profile.ID, query.StartDate, query.EndDate)
+	metrics, err := s.repository.GetOwnerMetrics(ctx, ownerCtx.OwnerProfileID, query.StartDate, query.EndDate)
 	if err != nil {
 		return OwnerMetricsResponse{}, err
 	}
@@ -899,23 +867,18 @@ func (s *Service) StartAutoCompleteWorker(ctx context.Context, interval time.Dur
 	}
 }
 
-func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID string, req OwnerCreateOfflineBookingRequest) (BookingResponse, error) {
-	// 1. Verify owner profile
-	ownerProfile, err := s.repository.FindOwnerProfileByUserID(ctx, ownerUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return BookingResponse{}, ErrOwnerProfileNotFound
-		}
-		return BookingResponse{}, err
-	}
-
-	// 2. Verify venue ownership
-	_, err = s.repository.FindVenueByIDAndOwnerProfileID(ctx, req.VenueID, ownerProfile.ID)
+func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerCtx httputil.OwnerContext, req OwnerCreateOfflineBookingRequest) (BookingResponse, error) {
+	// 1. Fetch court & venue info
+	_, err := s.repository.FindVenueByIDAndOwnerProfileID(ctx, req.VenueID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BookingResponse{}, ErrForbidden
 		}
 		return BookingResponse{}, err
+	}
+
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, req.VenueID) {
+		return BookingResponse{}, ErrForbidden
 	}
 
 	// 3. Time validation
@@ -942,7 +905,7 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 
 	var created Booking
 	err = s.repository.ExecuteBookingTx(ctx, func(tx pgx.Tx) error {
-		info, err := s.repository.LockOwnerCourtValidationInfo(ctx, tx, req.CourtID, req.VenueID, ownerProfile.ID)
+		info, err := s.repository.LockOwnerCourtValidationInfo(ctx, tx, req.CourtID, req.VenueID, ownerCtx.OwnerProfileID)
 		if err != nil {
 			return err
 		}
@@ -1009,16 +972,17 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 		}
 
 		params := CreateOfflineBookingParams{
-			VenueID:      req.VenueID,
-			CourtID:      req.CourtID,
-			Date:         req.BookingDate,
-			StartTime:    req.StartTime,
-			EndTime:      req.EndTime,
-			SystemPrice:  systemPrice,
-			FinalPrice:   finalPrice,
-			Status:       req.Status,
-			OwnerUserID:  ownerUserID,
-			CustomerName: req.CustomerName,
+			VenueID:         req.VenueID,
+			CourtID:         req.CourtID,
+			Date:            req.BookingDate,
+			StartTime:       req.StartTime,
+			EndTime:         req.EndTime,
+			SystemPrice:     systemPrice,
+			FinalPrice:      finalPrice,
+			Status:          req.Status,
+			OwnerUserID:     ownerCtx.EffectiveOwnerUserID,
+			CreatedByUserID: ownerCtx.ActorUserID,
+			CustomerName:    req.CustomerName,
 		}
 		if isOverride {
 			params.PriceOverrideReason = &reason
@@ -1046,4 +1010,13 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerUserID str
 	}
 
 	return toBookingResponse(created), nil
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
@@ -16,18 +17,18 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	group := router.Group("/owner/promos", authMiddleware, ownerRoleMiddleware)
-	group.POST("", h.CreatePromo)
-	group.GET("", h.ListPromos)
-	group.GET("/:id", h.GetPromo)
-	group.PUT("/:id", h.UpdatePromo)
-	group.PATCH("/:id/toggle", h.TogglePromo)
-	group.DELETE("/:id", h.DeletePromo)
+func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	group := router.Group("/owner/promos", authMiddleware, ownerWorkspaceMiddleware)
+	group.POST("", middleware.RequireOwnerPermission("PROMOS_WRITE"), h.CreatePromo)
+	group.GET("", middleware.RequireOwnerPermission("PROMOS_READ"), h.ListPromos)
+	group.GET("/:id", middleware.RequireOwnerPermission("PROMOS_READ"), h.GetPromo)
+	group.PUT("/:id", middleware.RequireOwnerPermission("PROMOS_WRITE"), h.UpdatePromo)
+	group.PATCH("/:id/toggle", middleware.RequireOwnerPermission("PROMOS_WRITE"), h.TogglePromo)
+	group.DELETE("/:id", middleware.RequireOwnerPermission("PROMOS_WRITE"), h.DeletePromo)
 }
 
 func (h *Handler) CreatePromo(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -39,7 +40,7 @@ func (h *Handler) CreatePromo(c *gin.Context) {
 		return
 	}
 
-	res, err := h.service.CreatePromo(c.Request.Context(), ownerID, req)
+	res, err := h.service.CreatePromo(c.Request.Context(), ownerCtx, req)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -48,13 +49,13 @@ func (h *Handler) CreatePromo(c *gin.Context) {
 }
 
 func (h *Handler) ListPromos(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
-	res, err := h.service.ListOwnerPromos(c.Request.Context(), ownerID)
+	res, err := h.service.ListOwnerPromos(c.Request.Context(), ownerCtx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Internal server error"})
 		return
@@ -63,14 +64,14 @@ func (h *Handler) ListPromos(c *gin.Context) {
 }
 
 func (h *Handler) GetPromo(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	id := c.Param("id")
-	res, err := h.service.GetPromo(c.Request.Context(), id, ownerID)
+	res, err := h.service.GetPromo(c.Request.Context(), id, ownerCtx)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -79,7 +80,7 @@ func (h *Handler) GetPromo(c *gin.Context) {
 }
 
 func (h *Handler) UpdatePromo(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -92,7 +93,7 @@ func (h *Handler) UpdatePromo(c *gin.Context) {
 		return
 	}
 
-	res, err := h.service.UpdatePromo(c.Request.Context(), id, ownerID, req)
+	res, err := h.service.UpdatePromo(c.Request.Context(), id, ownerCtx, req)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -101,14 +102,14 @@ func (h *Handler) UpdatePromo(c *gin.Context) {
 }
 
 func (h *Handler) TogglePromo(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
 
 	id := c.Param("id")
-	res, err := h.service.TogglePromoStatus(c.Request.Context(), id, ownerID)
+	res, err := h.service.TogglePromoStatus(c.Request.Context(), id, ownerCtx)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -166,7 +167,7 @@ func respondError(c *gin.Context, err error) {
 }
 
 func (h *Handler) DeletePromo(c *gin.Context) {
-	ownerID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -178,7 +179,7 @@ func (h *Handler) DeletePromo(c *gin.Context) {
 		return
 	}
 
-	err := h.service.DeletePromo(c.Request.Context(), id, ownerID)
+	err := h.service.DeletePromo(c.Request.Context(), id, ownerCtx)
 	if err != nil {
 		respondError(c, err)
 		return

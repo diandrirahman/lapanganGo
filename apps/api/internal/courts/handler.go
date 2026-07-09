@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
@@ -16,17 +17,17 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	ownerGroup.POST("/venues/:id/courts", h.CreateCourt)
-	ownerGroup.GET("/venues/:id/courts", h.ListCourts)
-	ownerGroup.GET("/courts/:id", h.GetCourt)
-	ownerGroup.PUT("/courts/:id", h.UpdateCourt)
-	ownerGroup.PATCH("/courts/:id/status", h.UpdateCourtStatus)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.POST("/venues/:id/courts", middleware.RequireOwnerPermission("COURTS_WRITE"), h.CreateCourt)
+	ownerGroup.GET("/venues/:id/courts", middleware.RequireOwnerPermission("COURTS_READ"), h.ListCourts)
+	ownerGroup.GET("/courts/:id", middleware.RequireOwnerPermission("COURTS_READ"), h.GetCourt)
+	ownerGroup.PUT("/courts/:id", middleware.RequireOwnerPermission("COURTS_WRITE"), h.UpdateCourt)
+	ownerGroup.PATCH("/courts/:id/status", middleware.RequireOwnerPermission("COURTS_WRITE"), h.UpdateCourtStatus)
 }
 
 func (h *Handler) CreateCourt(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -48,7 +49,7 @@ func (h *Handler) CreateCourt(c *gin.Context) {
 		return
 	}
 
-	court, err := h.service.CreateCourt(c.Request.Context(), userID, venueID, req)
+	court, err := h.service.CreateCourt(c.Request.Context(), ownerCtx, venueID, req)
 	if err != nil {
 		respondCourtError(c, err, "Failed to create court")
 		return
@@ -61,7 +62,7 @@ func (h *Handler) CreateCourt(c *gin.Context) {
 }
 
 func (h *Handler) ListCourts(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -74,7 +75,7 @@ func (h *Handler) ListCourts(c *gin.Context) {
 		return
 	}
 
-	courts, err := h.service.ListCourts(c.Request.Context(), userID, venueID)
+	courts, err := h.service.ListCourts(c.Request.Context(), ownerCtx, venueID)
 	if err != nil {
 		respondCourtError(c, err, "Failed to list courts")
 		return
@@ -86,7 +87,7 @@ func (h *Handler) ListCourts(c *gin.Context) {
 }
 
 func (h *Handler) GetCourt(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -99,7 +100,7 @@ func (h *Handler) GetCourt(c *gin.Context) {
 		return
 	}
 
-	court, err := h.service.GetCourt(c.Request.Context(), userID, courtID)
+	court, err := h.service.GetCourt(c.Request.Context(), ownerCtx, courtID)
 	if err != nil {
 		respondCourtError(c, err, "Failed to get court")
 		return
@@ -111,7 +112,7 @@ func (h *Handler) GetCourt(c *gin.Context) {
 }
 
 func (h *Handler) UpdateCourt(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -133,7 +134,7 @@ func (h *Handler) UpdateCourt(c *gin.Context) {
 		return
 	}
 
-	court, err := h.service.UpdateCourt(c.Request.Context(), userID, courtID, req)
+	court, err := h.service.UpdateCourt(c.Request.Context(), ownerCtx, courtID, req)
 	if err != nil {
 		respondCourtError(c, err, "Failed to update court")
 		return
@@ -146,7 +147,7 @@ func (h *Handler) UpdateCourt(c *gin.Context) {
 }
 
 func (h *Handler) UpdateCourtStatus(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -168,7 +169,7 @@ func (h *Handler) UpdateCourtStatus(c *gin.Context) {
 		return
 	}
 
-	court, err := h.service.UpdateCourtStatus(c.Request.Context(), userID, courtID, req.Status)
+	court, err := h.service.UpdateCourtStatus(c.Request.Context(), ownerCtx, courtID, req.Status)
 	if err != nil {
 		respondCourtError(c, err, "Failed to update court status")
 		return

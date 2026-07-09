@@ -3,6 +3,7 @@ package bookings
 import (
 	"context"
 	"errors"
+	"lapangango-api/internal/httputil"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ type mockRepo struct {
 	OwnerMetricsErr error
 
 	BookingOwnerProfileID    string
+	BookingVenueID           string
 	BookingOwnerProfileIDErr error
 
 	CancelExpiredCount int64
@@ -54,6 +56,16 @@ type mockRepo struct {
 	AutoCompleteErr   error
 
 	LastOperatingHourDayOfWeek int
+}
+
+func testOwnerContext(userID, ownerProfileID string) httputil.OwnerContext {
+	return httputil.OwnerContext{
+		ActorUserID:          userID,
+		EffectiveOwnerUserID: userID,
+		OwnerProfileID:       ownerProfileID,
+		IsOwner:              true,
+		AllowedVenueIDs:      []string{},
+	}
 }
 
 func (m *mockRepo) CancelExpiredPendingBookings(ctx context.Context) (int64, error) {
@@ -103,7 +115,7 @@ func (m *mockRepo) CompleteBooking(ctx context.Context, bookingID string) (Booki
 	return m.UpdatedBooking, m.UpdateErr
 }
 
-func (m *mockRepo) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error) {
+func (m *mockRepo) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, actorUserID string, bookingID string, reason string) (Booking, error) {
 	return m.UpdatedBooking, m.UpdateErr
 }
 
@@ -121,6 +133,21 @@ func (m *mockRepo) GetBookingOwnerProfileID(ctx context.Context, bookingID strin
 		return m.OwnerProfile.ID, nil
 	}
 	return "mock-owner-profile-id", nil
+}
+
+func (m *mockRepo) GetBookingOwnerProfileAndVenueID(ctx context.Context, bookingID string) (string, string, error) {
+	if m.BookingOwnerProfileIDErr != nil {
+		return "", "", m.BookingOwnerProfileIDErr
+	}
+	ownerProfileID := m.BookingOwnerProfileID
+	if ownerProfileID == "" {
+		ownerProfileID = "mock-owner-profile-id"
+	}
+	venueID := m.BookingVenueID
+	if venueID == "" {
+		venueID = "venue-1"
+	}
+	return ownerProfileID, venueID, nil
 }
 
 func (m *mockRepo) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error) {
@@ -472,7 +499,7 @@ func TestListOwnerVenueBookings_Success(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	result, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{
+	result, _, err := svc.ListOwnerVenueBookings(context.Background(), testOwnerContext("owner-user-1", "owner-profile-1"), "venue-1", OwnerVenueBookingsQuery{
 		Date:   "2026-06-25",
 		Status: "PENDING_PAYMENT",
 		Limit:  20,
@@ -490,26 +517,32 @@ func TestListOwnerVenueBookings_Success(t *testing.T) {
 	}
 }
 
-func TestListOwnerVenueBookings_Fail_OwnerProfileNotFound(t *testing.T) {
+func TestListOwnerVenueBookings_UsesOwnerContextProfile(t *testing.T) {
 	repo := &mockRepo{OwnerProfileErr: pgx.ErrNoRows}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
-	if err != ErrOwnerProfileNotFound {
-		t.Fatalf("expected ErrOwnerProfileNotFound, got %v", err)
+	result, total, err := svc.ListOwnerVenueBookings(context.Background(), testOwnerContext("owner-user-1", "owner-profile-1"), "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(result) != 0 || total != 0 {
+		t.Fatalf("expected empty result, got result=%d total=%d", len(result), total)
 	}
 }
 
-func TestListOwnerVenueBookings_Fail_VenueNotFound(t *testing.T) {
+func TestListOwnerVenueBookings_EmptyWhenRepositoryReturnsNoVenueRows(t *testing.T) {
 	repo := &mockRepo{
 		OwnerProfile:  OwnerProfile{ID: "owner-profile-1", UserID: "owner-user-1"},
 		OwnerVenueErr: pgx.ErrNoRows,
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, _, err := svc.ListOwnerVenueBookings(context.Background(), "owner-user-1", "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
-	if err != ErrVenueNotFound {
-		t.Fatalf("expected ErrVenueNotFound, got %v", err)
+	result, total, err := svc.ListOwnerVenueBookings(context.Background(), testOwnerContext("owner-user-1", "owner-profile-1"), "venue-1", OwnerVenueBookingsQuery{Date: "2026-06-25"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(result) != 0 || total != 0 {
+		t.Fatalf("expected empty result, got result=%d total=%d", len(result), total)
 	}
 }
 
@@ -705,7 +738,7 @@ func TestVerifyPayment_Success(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	resp, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	resp, err := svc.VerifyPayment(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), "booking-1", true)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -721,7 +754,7 @@ func TestVerifyPayment_Fail_ErrForbidden(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	_, err := svc.VerifyPayment(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), "booking-1", true)
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -734,7 +767,7 @@ func TestVerifyPayment_Fail_ErrBookingNotFound(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
+	_, err := svc.VerifyPayment(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), "booking-1", true)
 	if err != ErrBookingNotFound {
 		t.Fatalf("expected ErrBookingNotFound, got %v", err)
 	}
@@ -746,9 +779,9 @@ func TestVerifyPayment_Fail_ErrOwnerProfileNotFound(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, err := svc.VerifyPayment(context.Background(), "owner-user-1", "booking-1", true)
-	if err != ErrOwnerProfileNotFound {
-		t.Fatalf("expected ErrOwnerProfileNotFound, got %v", err)
+	_, err := svc.VerifyPayment(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), "booking-1", true)
+	if err != ErrForbidden {
+		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
 }
 
@@ -859,7 +892,12 @@ func TestCancelPaidBookingWithRefund_Success(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	resp, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-1", "booking-1", "Customer requested")
+	resp, err := svc.CancelPaidBookingWithRefund(context.Background(), httputil.OwnerContext{
+		ActorUserID:          "user-1",
+		EffectiveOwnerUserID: "user-1",
+		OwnerProfileID:       "profile-1",
+		IsOwner:              true,
+	}, "booking-1", "Customer requested")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -875,7 +913,12 @@ func TestCancelPaidBookingWithRefund_Forbidden(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-2", "booking-1", "Customer requested")
+	_, err := svc.CancelPaidBookingWithRefund(context.Background(), httputil.OwnerContext{
+		ActorUserID:          "user-2",
+		EffectiveOwnerUserID: "user-2",
+		OwnerProfileID:       "profile-2",
+		IsOwner:              true,
+	}, "booking-1", "Customer requested")
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -889,7 +932,12 @@ func TestCancelPaidBookingWithRefund_NoIncomeLedger(t *testing.T) {
 	}
 	svc := NewService(repo, 30, nil, nil)
 
-	_, err := svc.CancelPaidBookingWithRefund(context.Background(), "user-1", "booking-1", "Customer requested")
+	_, err := svc.CancelPaidBookingWithRefund(context.Background(), httputil.OwnerContext{
+		ActorUserID:          "user-1",
+		EffectiveOwnerUserID: "user-1",
+		OwnerProfileID:       "profile-1",
+		IsOwner:              true,
+	}, "booking-1", "Customer requested")
 	if err != ErrBookingIncomeLedgerNotFound {
 		t.Fatalf("expected ErrBookingIncomeLedgerNotFound, got %v", err)
 	}
@@ -925,7 +973,7 @@ func TestOwnerCreateOfflineBooking_Success(t *testing.T) {
 		TotalPrice:   150000,
 		Status:       "PAID",
 	}
-	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -974,7 +1022,7 @@ func TestOwnerCreateOfflineBooking_Success_WithOverride(t *testing.T) {
 		PriceOverrideReason: "Promo member",
 		Status:              "PAID",
 	}
-	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -1022,7 +1070,7 @@ func TestOwnerCreateOfflineBooking_Fail_OverrideWithoutReason(t *testing.T) {
 		Status:       "PAID",
 		// PriceOverrideReason is empty
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if !errors.Is(err, ErrPriceOverrideReasonRequired) {
 		t.Fatalf("expected ErrPriceOverrideReasonRequired, got %v", err)
 	}
@@ -1057,7 +1105,7 @@ func TestOwnerCreateOfflineBooking_Fail_InvalidPrice(t *testing.T) {
 		TotalPrice:   0, // Invalid price
 		Status:       "PAID",
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if !errors.Is(err, ErrInvalidPrice) {
 		t.Fatalf("expected ErrInvalidPrice, got %v", err)
 	}
@@ -1093,7 +1141,7 @@ func TestOwnerCreateOfflineBooking_Fail_OverrideReasonTooLong(t *testing.T) {
 		PriceOverrideReason: strings.Repeat("a", 501),
 		Status:              "PAID",
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if !errors.Is(err, ErrPriceOverrideReasonTooLong) {
 		t.Fatalf("expected ErrPriceOverrideReasonTooLong, got %v", err)
 	}
@@ -1112,7 +1160,7 @@ func TestOwnerCreateOfflineBooking_Fail_Forbidden(t *testing.T) {
 		StartTime:   "10:00",
 		EndTime:     "12:00",
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -1142,7 +1190,7 @@ func TestOwnerCreateOfflineBooking_Fail_Overlap(t *testing.T) {
 		StartTime:   "10:00",
 		EndTime:     "12:00",
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != ErrOverlapBooking {
 		t.Fatalf("expected ErrOverlapBooking, got %v", err)
 	}
@@ -1153,7 +1201,7 @@ func TestOwnerCreateOfflineBooking_Fail_Overlap(t *testing.T) {
 		StartTime:   "09:00",
 		EndTime:     "11:00",
 	}
-	_, err = svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", reqPartialStart)
+	_, err = svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), reqPartialStart)
 	if err != ErrOverlapBooking {
 		t.Fatalf("expected ErrOverlapBooking for partial overlap start, got %v", err)
 	}
@@ -1164,7 +1212,7 @@ func TestOwnerCreateOfflineBooking_Fail_Overlap(t *testing.T) {
 		StartTime:   "11:00",
 		EndTime:     "13:00",
 	}
-	_, err = svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", reqPartialEnd)
+	_, err = svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), reqPartialEnd)
 	if err != ErrOverlapBooking {
 		t.Fatalf("expected ErrOverlapBooking for partial overlap end, got %v", err)
 	}
@@ -1192,7 +1240,7 @@ func TestOwnerCreateOfflineBooking_Fail_OutsideOpHours(t *testing.T) {
 		StartTime:   "10:00",
 		EndTime:     "12:00",
 	}
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != ErrOutsideOpHours {
 		t.Fatalf("expected ErrOutsideOpHours, got %v", err)
 	}
@@ -1233,7 +1281,7 @@ func TestOwnerCreateOfflineBooking_SundayUsesDayOfWeekZero(t *testing.T) {
 		Status:       "PAID",
 	}
 
-	_, err := svc.OwnerCreateOfflineBooking(context.Background(), "owner-user-1", req)
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

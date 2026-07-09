@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
@@ -17,21 +18,21 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	router.GET("/venues", h.GetPublicVenues)
 	router.GET("/venues/:id", h.GetPublicVenue)
 	router.GET("/sports", h.GetSports)
 	router.GET("/facilities", h.GetFacilities)
 
-	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	ownerGroup.POST("/venues", h.CreateVenue)
-	ownerGroup.GET("/venues", h.ListVenues)
-	ownerGroup.GET("/venues/:id", h.GetVenue)
-	ownerGroup.PUT("/venues/:id", h.UpdateVenue)
-	ownerGroup.PATCH("/venues/:id/status", h.UpdateVenueStatus)
-	ownerGroup.POST("/venues/:id/photos", h.AddVenuePhoto)
-	ownerGroup.PUT("/venues/:id/photos/:photo_id", h.UpdateVenuePhoto)
-	ownerGroup.DELETE("/venues/:id/photos/:photo_id", h.DeleteVenuePhoto)
+	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.POST("/venues", middleware.RequireOwnerPermission("VENUES_WRITE"), h.CreateVenue)
+	ownerGroup.GET("/venues", middleware.RequireOwnerPermission("VENUES_READ"), h.ListVenues)
+	ownerGroup.GET("/venues/:id", middleware.RequireOwnerPermission("VENUES_READ"), h.GetVenue)
+	ownerGroup.PUT("/venues/:id", middleware.RequireOwnerPermission("VENUES_WRITE"), h.UpdateVenue)
+	ownerGroup.PATCH("/venues/:id/status", middleware.RequireOwnerPermission("VENUES_WRITE"), h.UpdateVenueStatus)
+	ownerGroup.POST("/venues/:id/photos", middleware.RequireOwnerPermission("VENUES_WRITE"), h.AddVenuePhoto)
+	ownerGroup.PUT("/venues/:id/photos/:photo_id", middleware.RequireOwnerPermission("VENUES_WRITE"), h.UpdateVenuePhoto)
+	ownerGroup.DELETE("/venues/:id/photos/:photo_id", middleware.RequireOwnerPermission("VENUES_WRITE"), h.DeleteVenuePhoto)
 }
 
 func (h *Handler) GetPublicVenues(c *gin.Context) {
@@ -108,7 +109,7 @@ func (h *Handler) GetFacilities(c *gin.Context) {
 }
 
 func (h *Handler) CreateVenue(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -125,7 +126,7 @@ func (h *Handler) CreateVenue(c *gin.Context) {
 		return
 	}
 
-	venue, err := h.service.CreateVenue(c.Request.Context(), userID, req)
+	venue, err := h.service.CreateVenue(c.Request.Context(), ownerCtx, req)
 	if err != nil {
 		respondVenueError(c, err, "Failed to create venue")
 		return
@@ -138,7 +139,7 @@ func (h *Handler) CreateVenue(c *gin.Context) {
 }
 
 func (h *Handler) ListVenues(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -146,7 +147,7 @@ func (h *Handler) ListVenues(c *gin.Context) {
 		return
 	}
 
-	venues, err := h.service.ListVenues(c.Request.Context(), userID)
+	venues, err := h.service.ListVenues(c.Request.Context(), ownerCtx)
 	if err != nil {
 		respondVenueError(c, err, "Failed to list venues")
 		return
@@ -158,7 +159,7 @@ func (h *Handler) ListVenues(c *gin.Context) {
 }
 
 func (h *Handler) GetVenue(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -171,7 +172,7 @@ func (h *Handler) GetVenue(c *gin.Context) {
 		return
 	}
 
-	venue, err := h.service.GetVenue(c.Request.Context(), userID, venueID)
+	venue, err := h.service.GetVenue(c.Request.Context(), ownerCtx, venueID)
 	if err != nil {
 		respondVenueError(c, err, "Failed to get venue")
 		return
@@ -183,7 +184,7 @@ func (h *Handler) GetVenue(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenue(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -205,7 +206,7 @@ func (h *Handler) UpdateVenue(c *gin.Context) {
 		return
 	}
 
-	venue, err := h.service.UpdateVenue(c.Request.Context(), userID, venueID, req)
+	venue, err := h.service.UpdateVenue(c.Request.Context(), ownerCtx, venueID, req)
 	if err != nil {
 		respondVenueError(c, err, "Failed to update venue")
 		return
@@ -218,7 +219,7 @@ func (h *Handler) UpdateVenue(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenueStatus(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -240,7 +241,7 @@ func (h *Handler) UpdateVenueStatus(c *gin.Context) {
 		return
 	}
 
-	venue, err := h.service.UpdateVenueStatus(c.Request.Context(), userID, venueID, req.Status)
+	venue, err := h.service.UpdateVenueStatus(c.Request.Context(), ownerCtx, venueID, req.Status)
 	if err != nil {
 		respondVenueError(c, err, "Failed to update venue status")
 		return
@@ -284,7 +285,7 @@ func respondVenueError(c *gin.Context, err error, fallbackMessage string) {
 }
 
 func (h *Handler) AddVenuePhoto(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -301,7 +302,7 @@ func (h *Handler) AddVenuePhoto(c *gin.Context) {
 		return
 	}
 
-	photo, err := h.service.AddVenuePhoto(c.Request.Context(), userID, venueID, req)
+	photo, err := h.service.AddVenuePhoto(c.Request.Context(), ownerCtx, venueID, req)
 	if err != nil {
 		respondVenueError(c, err, "Failed to add venue photo")
 		return
@@ -311,7 +312,7 @@ func (h *Handler) AddVenuePhoto(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenuePhoto(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -333,7 +334,7 @@ func (h *Handler) UpdateVenuePhoto(c *gin.Context) {
 		return
 	}
 
-	photo, err := h.service.UpdateVenuePhoto(c.Request.Context(), userID, venueID, photoID, req)
+	photo, err := h.service.UpdateVenuePhoto(c.Request.Context(), ownerCtx, venueID, photoID, req)
 	if err != nil {
 		respondVenueError(c, err, "Failed to update venue photo")
 		return
@@ -343,7 +344,7 @@ func (h *Handler) UpdateVenuePhoto(c *gin.Context) {
 }
 
 func (h *Handler) DeleteVenuePhoto(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -359,7 +360,7 @@ func (h *Handler) DeleteVenuePhoto(c *gin.Context) {
 		return
 	}
 
-	err := h.service.DeleteVenuePhoto(c.Request.Context(), userID, venueID, photoID)
+	err := h.service.DeleteVenuePhoto(c.Request.Context(), ownerCtx, venueID, photoID)
 	if err != nil {
 		respondVenueError(c, err, "Failed to delete venue photo")
 		return

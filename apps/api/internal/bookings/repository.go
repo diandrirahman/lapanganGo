@@ -53,6 +53,7 @@ type CreateOfflineBookingParams struct {
 	FinalPrice          float64
 	Status              string
 	OwnerUserID         string
+	CreatedByUserID     string
 	CustomerName        string
 	CustomerPhone       *string
 	CustomerEmail       *string
@@ -497,7 +498,7 @@ func (r *Repository) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, para
 	if params.PriceOverrideReason != nil && *params.PriceOverrideReason != "" {
 		desc = desc + ". Price adjusted from Rp" + fmt.Sprintf("%.2f", params.SystemPrice) + " to Rp" + fmt.Sprintf("%.2f", params.FinalPrice) + ": " + *params.PriceOverrideReason
 	}
-	_, err = tx.Exec(ctx, queryLedger, params.OwnerUserID, params.VenueID, b.ID, params.OwnerUserID, params.FinalPrice, desc)
+	_, err = tx.Exec(ctx, queryLedger, params.OwnerUserID, params.VenueID, b.ID, params.CreatedByUserID, params.FinalPrice, desc)
 	if err != nil {
 		return b, err
 	}
@@ -703,7 +704,7 @@ func (r *Repository) CompleteBooking(ctx context.Context, bookingID string) (Boo
 	return b, nil
 }
 
-func (r *Repository) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, bookingID string, reason string) (Booking, error) {
+func (r *Repository) CancelPaidBookingWithRefund(ctx context.Context, ownerUserID string, actorUserID string, bookingID string, reason string) (Booking, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Booking{}, err
@@ -823,7 +824,7 @@ func (r *Repository) CancelPaidBookingWithRefund(ctx context.Context, ownerUserI
 		VALUES
 		  ($1, $2, $3, $4, 'EXPENSE', 'REFUND', 'BOOKING_REFUND', $5, CURRENT_DATE, $6)
 	`
-	_, err = tx.Exec(ctx, insertRefundQuery, ownerUserID, venueID, bookingID, ownerUserID, b.TotalPrice, description)
+	_, err = tx.Exec(ctx, insertRefundQuery, ownerUserID, venueID, bookingID, actorUserID, b.TotalPrice, description)
 	if err != nil {
 		return b, err
 	}
@@ -844,15 +845,34 @@ func (r *Repository) GetBookingOwnerProfileID(ctx context.Context, bookingID str
 		JOIN venues v ON c.venue_id = v.id
 		WHERE b.id = $1
 	`
-	var ownerProfileID string
-	err := r.db.QueryRow(ctx, query, bookingID).Scan(&ownerProfileID)
+	var id string
+	err := r.db.QueryRow(ctx, query, bookingID).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", pgx.ErrNoRows
+			return "", err
 		}
 		return "", err
 	}
-	return ownerProfileID, nil
+	return id, nil
+}
+
+func (r *Repository) GetBookingOwnerProfileAndVenueID(ctx context.Context, bookingID string) (string, string, error) {
+	query := `
+		SELECT v.owner_profile_id::text, v.id::text
+		FROM bookings b
+		JOIN courts c ON b.court_id = c.id
+		JOIN venues v ON c.venue_id = v.id
+		WHERE b.id = $1
+	`
+	var ownerProfileID, venueID string
+	err := r.db.QueryRow(ctx, query, bookingID).Scan(&ownerProfileID, &venueID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", "", err
+		}
+		return "", "", err
+	}
+	return ownerProfileID, venueID, nil
 }
 
 type OwnerMetrics struct {
@@ -1003,9 +1023,14 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 				c.name ILIKE '%' || $7 || '%' OR
 				b.id::text ILIKE '%' || $7 || '%'
 			))
+			AND ($8::text[] IS NULL OR v.id::text = ANY($8::text[]))
 	`
 	var total int
-	if err := r.db.QueryRow(ctx, countQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q).Scan(&total); err != nil {
+	var allowedVenuesParam interface{}
+	if query.AllowedVenueIDs != nil {
+		allowedVenuesParam = query.AllowedVenueIDs
+	}
+	if err := r.db.QueryRow(ctx, countQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q, allowedVenuesParam).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -1067,11 +1092,12 @@ func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID strin
 				c.name ILIKE '%' || $7 || '%' OR
 				b.id::text ILIKE '%' || $7 || '%'
 			))
+			AND ($8::text[] IS NULL OR v.id::text = ANY($8::text[]))
 		` + orderClause + `
-		LIMIT $8 OFFSET $9
+		LIMIT $9 OFFSET $10
 	`
 
-	rows, err := r.db.Query(ctx, sqlQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q, limit, offset)
+	rows, err := r.db.Query(ctx, sqlQuery, ownerProfileID, query.VenueID, query.Status, query.Scope, query.StartDate, query.EndDate, query.Q, allowedVenuesParam, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}

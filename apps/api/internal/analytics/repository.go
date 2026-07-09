@@ -41,14 +41,24 @@ func (r *repository) buildDateFilter(startDate *time.Time, endDate *time.Time, d
 	return filter, args
 }
 
+func (r *repository) buildVenueFilter(params AnalyticsParams, venueColumn string, argIdx int) (string, []interface{}) {
+	var filter string
+	var args []interface{}
+
+	if params.VenueID != nil {
+		filter = fmt.Sprintf(" AND %s = $%d", venueColumn, argIdx)
+		args = append(args, *params.VenueID)
+	} else if len(params.AllowedVenueIDs) > 0 {
+		filter = fmt.Sprintf(" AND %s = ANY($%d::uuid[])", venueColumn, argIdx)
+		args = append(args, params.AllowedVenueIDs)
+	}
+	return filter, args
+}
+
 func (r *repository) GetBookingsTrend(ctx context.Context, params AnalyticsParams) ([]BookingTrendItem, error) {
 	dateFilter, dateArgs := r.buildDateFilter(params.StartDate, params.EndDate, "b.booking_date")
-
-	venueFilter := ""
-	if params.VenueID != nil {
-		venueFilter = fmt.Sprintf(" AND v.id = $%d", len(dateArgs)+2)
-		dateArgs = append(dateArgs, *params.VenueID)
-	}
+	venueFilter, venueArgs := r.buildVenueFilter(params, "v.id", len(dateArgs)+2)
+	dateArgs = append(dateArgs, venueArgs...)
 
 	query := `
 		SELECT 
@@ -92,12 +102,8 @@ func (r *repository) GetBookingsTrend(ctx context.Context, params AnalyticsParam
 
 func (r *repository) GetRevenueTrend(ctx context.Context, params AnalyticsParams) ([]RevenueTrendItem, error) {
 	dateFilter, dateArgs := r.buildDateFilter(params.StartDate, params.EndDate, "t.transaction_date")
-
-	venueFilter := ""
-	if params.VenueID != nil {
-		venueFilter = fmt.Sprintf(" AND t.venue_id = $%d", len(dateArgs)+2)
-		dateArgs = append(dateArgs, *params.VenueID)
-	}
+	venueFilter, venueArgs := r.buildVenueFilter(params, "t.venue_id", len(dateArgs)+2)
+	dateArgs = append(dateArgs, venueArgs...)
 
 	query := `
 		SELECT 
@@ -139,12 +145,8 @@ func (r *repository) GetRevenueTrend(ctx context.Context, params AnalyticsParams
 
 func (r *repository) GetRevenueByVenue(ctx context.Context, params AnalyticsParams) ([]RevenueVenueItem, error) {
 	dateFilter, dateArgs := r.buildDateFilter(params.StartDate, params.EndDate, "t.transaction_date")
-
-	venueFilter := ""
-	if params.VenueID != nil {
-		venueFilter = fmt.Sprintf(" AND v.id = $%d", len(dateArgs)+2)
-		dateArgs = append(dateArgs, *params.VenueID)
-	}
+	venueFilter, venueArgs := r.buildVenueFilter(params, "t.venue_id", len(dateArgs)+2)
+	dateArgs = append(dateArgs, venueArgs...)
 
 	query := `
 		SELECT 
@@ -190,12 +192,8 @@ func (r *repository) GetRevenueByVenue(ctx context.Context, params AnalyticsPara
 
 func (r *repository) GetStatusBreakdown(ctx context.Context, params AnalyticsParams) ([]StatusBreakdownItem, error) {
 	dateFilter, dateArgs := r.buildDateFilter(params.StartDate, params.EndDate, "b.created_at")
-
-	venueFilter := ""
-	if params.VenueID != nil {
-		venueFilter = fmt.Sprintf(" AND v.id = $%d", len(dateArgs)+2)
-		dateArgs = append(dateArgs, *params.VenueID)
-	}
+	venueFilter, venueArgs := r.buildVenueFilter(params, "v.id", len(dateArgs)+2)
+	dateArgs = append(dateArgs, venueArgs...)
 
 	query := `
 		SELECT 
@@ -239,12 +237,8 @@ func (r *repository) GetStatusBreakdown(ctx context.Context, params AnalyticsPar
 
 func (r *repository) GetExpenseByCategory(ctx context.Context, params AnalyticsParams) ([]ExpenseCategoryItem, error) {
 	dateFilter, dateArgs := r.buildDateFilter(params.StartDate, params.EndDate, "transaction_date")
-
-	venueFilter := ""
-	if params.VenueID != nil {
-		venueFilter = fmt.Sprintf(" AND venue_id = $%d", len(dateArgs)+2)
-		dateArgs = append(dateArgs, *params.VenueID)
-	}
+	venueFilter, venueArgs := r.buildVenueFilter(params, "venue_id", len(dateArgs)+2)
+	dateArgs = append(dateArgs, venueArgs...)
 
 	query := `
 		SELECT 

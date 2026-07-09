@@ -2,14 +2,15 @@ package analytics
 
 import (
 	"context"
+	"lapangango-api/internal/httputil"
 	"time"
 )
 
 type Service interface {
-	GetBookingsTrend(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (BookingsTrendResponse, error)
-	GetRevenueTrend(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (RevenueResponse, error)
-	GetStatusBreakdown(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (StatusResponse, error)
-	GetExpensesBreakdown(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (ExpensesResponse, error)
+	GetBookingsTrend(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (BookingsTrendResponse, error)
+	GetRevenueTrend(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (RevenueResponse, error)
+	GetStatusBreakdown(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (StatusResponse, error)
+	GetExpensesBreakdown(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (ExpensesResponse, error)
 }
 
 type service struct {
@@ -20,12 +21,24 @@ func NewService(repo Repository) Service {
 	return &service{repo: repo}
 }
 
-func (s *service) GetBookingsTrend(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (BookingsTrendResponse, error) {
+func (s *service) GetBookingsTrend(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (BookingsTrendResponse, error) {
+	if !ownerCtx.IsOwner {
+		if len(ownerCtx.AllowedVenueIDs) == 0 {
+			return BookingsTrendResponse{Trend: []BookingTrendItem{}}, nil
+		}
+		if venueID != nil && *venueID != "" {
+			if !containsID(ownerCtx.AllowedVenueIDs, *venueID) {
+				return BookingsTrendResponse{Trend: []BookingTrendItem{}}, nil
+			}
+		}
+	}
+
 	params := AnalyticsParams{
-		OwnerID:   ownerID,
-		VenueID:   venueID,
-		StartDate: startDate,
-		EndDate:   endDate,
+		OwnerID:         ownerCtx.EffectiveOwnerUserID,
+		VenueID:         venueID,
+		AllowedVenueIDs: ownerCtx.AllowedVenueIDs,
+		StartDate:       startDate,
+		EndDate:         endDate,
 	}
 	trend, err := s.repo.GetBookingsTrend(ctx, params)
 	if err != nil {
@@ -37,12 +50,24 @@ func (s *service) GetBookingsTrend(ctx context.Context, ownerID string, venueID 
 	return BookingsTrendResponse{Trend: trend}, nil
 }
 
-func (s *service) GetRevenueTrend(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (RevenueResponse, error) {
+func (s *service) GetRevenueTrend(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (RevenueResponse, error) {
+	if !ownerCtx.IsOwner {
+		if len(ownerCtx.AllowedVenueIDs) == 0 {
+			return RevenueResponse{Trend: []RevenueTrendItem{}, VenueBreakdown: []RevenueVenueItem{}}, nil
+		}
+		if venueID != nil && *venueID != "" {
+			if !containsID(ownerCtx.AllowedVenueIDs, *venueID) {
+				return RevenueResponse{Trend: []RevenueTrendItem{}, VenueBreakdown: []RevenueVenueItem{}}, nil
+			}
+		}
+	}
+
 	params := AnalyticsParams{
-		OwnerID:   ownerID,
-		VenueID:   venueID,
-		StartDate: startDate,
-		EndDate:   endDate,
+		OwnerID:         ownerCtx.EffectiveOwnerUserID,
+		VenueID:         venueID,
+		AllowedVenueIDs: ownerCtx.AllowedVenueIDs,
+		StartDate:       startDate,
+		EndDate:         endDate,
 	}
 	trend, err := s.repo.GetRevenueTrend(ctx, params)
 	if err != nil {
@@ -66,12 +91,24 @@ func (s *service) GetRevenueTrend(ctx context.Context, ownerID string, venueID *
 	}, nil
 }
 
-func (s *service) GetStatusBreakdown(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (StatusResponse, error) {
+func (s *service) GetStatusBreakdown(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (StatusResponse, error) {
+	if !ownerCtx.IsOwner {
+		if len(ownerCtx.AllowedVenueIDs) == 0 {
+			return StatusResponse{Breakdown: []StatusBreakdownItem{}}, nil
+		}
+		if venueID != nil && *venueID != "" {
+			if !containsID(ownerCtx.AllowedVenueIDs, *venueID) {
+				return StatusResponse{Breakdown: []StatusBreakdownItem{}}, nil
+			}
+		}
+	}
+
 	params := AnalyticsParams{
-		OwnerID:   ownerID,
-		VenueID:   venueID,
-		StartDate: startDate,
-		EndDate:   endDate,
+		OwnerID:         ownerCtx.EffectiveOwnerUserID,
+		VenueID:         venueID,
+		AllowedVenueIDs: ownerCtx.AllowedVenueIDs,
+		StartDate:       startDate,
+		EndDate:         endDate,
 	}
 	breakdown, err := s.repo.GetStatusBreakdown(ctx, params)
 	if err != nil {
@@ -83,12 +120,24 @@ func (s *service) GetStatusBreakdown(ctx context.Context, ownerID string, venueI
 	return StatusResponse{Breakdown: breakdown}, nil
 }
 
-func (s *service) GetExpensesBreakdown(ctx context.Context, ownerID string, venueID *string, startDate *time.Time, endDate *time.Time) (ExpensesResponse, error) {
+func (s *service) GetExpensesBreakdown(ctx context.Context, ownerCtx httputil.OwnerContext, venueID *string, startDate *time.Time, endDate *time.Time) (ExpensesResponse, error) {
+	if !ownerCtx.IsOwner {
+		if len(ownerCtx.AllowedVenueIDs) == 0 {
+			return ExpensesResponse{Breakdown: []ExpenseCategoryItem{}}, nil
+		}
+		if venueID != nil && *venueID != "" {
+			if !containsID(ownerCtx.AllowedVenueIDs, *venueID) {
+				return ExpensesResponse{Breakdown: []ExpenseCategoryItem{}}, nil
+			}
+		}
+	}
+
 	params := AnalyticsParams{
-		OwnerID:   ownerID,
-		VenueID:   venueID,
-		StartDate: startDate,
-		EndDate:   endDate,
+		OwnerID:         ownerCtx.EffectiveOwnerUserID,
+		VenueID:         venueID,
+		AllowedVenueIDs: ownerCtx.AllowedVenueIDs,
+		StartDate:       startDate,
+		EndDate:         endDate,
 	}
 	breakdown, err := s.repo.GetExpenseByCategory(ctx, params)
 	if err != nil {
@@ -98,4 +147,13 @@ func (s *service) GetExpensesBreakdown(ctx context.Context, ownerID string, venu
 		breakdown = []ExpenseCategoryItem{}
 	}
 	return ExpensesResponse{Breakdown: breakdown}, nil
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

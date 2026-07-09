@@ -2,6 +2,7 @@ package finance
 
 import (
 	"context"
+	"lapangango-api/internal/httputil"
 	"testing"
 )
 
@@ -13,6 +14,10 @@ func (m *mockRepository) VerifyVenueOwnership(ctx context.Context, venueID strin
 
 func (m *mockRepository) CreateTransaction(ctx context.Context, tx FinanceTransaction) (FinanceTransaction, error) {
 	return tx, nil
+}
+
+func (m *mockRepository) GetTransaction(ctx context.Context, id string, ownerID string) (FinanceTransaction, error) {
+	return FinanceTransaction{ID: id, OwnerID: ownerID, Source: "MANUAL"}, nil
 }
 
 func (m *mockRepository) UpdateTransaction(ctx context.Context, id string, ownerID string, req UpdateTransactionRequest) (FinanceTransaction, error) {
@@ -35,7 +40,12 @@ func (m *mockRepository) GetFinanceSummary(ctx context.Context, ownerID string, 
 
 func TestGetOwnerFinanceSummary(t *testing.T) {
 	svc := NewService(&mockRepository{})
-	res, err := svc.GetFinanceSummary(context.Background(), "user1", FinanceSummaryQuery{})
+	ownerCtx := httputil.OwnerContext{
+		ActorUserID:          "user1",
+		EffectiveOwnerUserID: "user1",
+		IsOwner:              true,
+	}
+	res, err := svc.GetFinanceSummary(context.Background(), ownerCtx, FinanceSummaryQuery{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

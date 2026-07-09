@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"lapangango-api/internal/httputil"
 	"lapangango-api/internal/notifications"
 )
 
@@ -28,9 +29,9 @@ var timeNow = time.Now
 type Service interface {
 	RequestBookingRefund(ctx context.Context, customerID, bookingID, reason string) (RefundRequestResponse, error)
 	GetRefundRequestByBooking(ctx context.Context, customerID, bookingID string) (*RefundRequestResponse, error)
-	ListOwnerRefundRequests(ctx context.Context, ownerID, status, venueID string, page, limit int) (PaginatedOwnerRefundRequests, error)
-	ApproveRefundRequest(ctx context.Context, ownerID, requestID, ownerNote string) (RefundRequestResponse, error)
-	RejectRefundRequest(ctx context.Context, ownerID, requestID, ownerNote string) (RefundRequestResponse, error)
+	ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status, venueID string, page, limit int) (PaginatedOwnerRefundRequests, error)
+	ApproveRefundRequest(ctx context.Context, ownerCtx httputil.OwnerContext, requestID, ownerNote string) (RefundRequestResponse, error)
+	RejectRefundRequest(ctx context.Context, ownerCtx httputil.OwnerContext, requestID, ownerNote string) (RefundRequestResponse, error)
 }
 
 type service struct {
@@ -144,7 +145,7 @@ func (s *service) GetRefundRequestByBooking(ctx context.Context, customerID, boo
 	return s.repo.GetLatestRefundRequestByBookingID(ctx, bookingID)
 }
 
-func (s *service) ListOwnerRefundRequests(ctx context.Context, ownerID, status, venueID string, page, limit int) (PaginatedOwnerRefundRequests, error) {
+func (s *service) ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status, venueID string, page, limit int) (PaginatedOwnerRefundRequests, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -152,7 +153,30 @@ func (s *service) ListOwnerRefundRequests(ctx context.Context, ownerID, status, 
 		limit = 10
 	}
 
-	items, total, err := s.repo.ListOwnerRefundRequests(ctx, ownerID, status, venueID, page, limit)
+	if !ownerCtx.IsOwner {
+		if len(ownerCtx.AllowedVenueIDs) == 0 {
+			return PaginatedOwnerRefundRequests{
+				Data:       []OwnerRefundRequestListItem{},
+				Total:      0,
+				Page:       page,
+				Limit:      limit,
+				TotalPages: 0,
+			}, nil
+		}
+		if venueID != "" {
+			if !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+				return PaginatedOwnerRefundRequests{
+					Data:       []OwnerRefundRequestListItem{},
+					Total:      0,
+					Page:       page,
+					Limit:      limit,
+					TotalPages: 0,
+				}, nil
+			}
+		}
+	}
+
+	items, total, err := s.repo.ListOwnerRefundRequests(ctx, ownerCtx, status, venueID, page, limit)
 	if err != nil {
 		return PaginatedOwnerRefundRequests{}, err
 	}
@@ -175,7 +199,7 @@ func (s *service) ListOwnerRefundRequests(ctx context.Context, ownerID, status, 
 	}, nil
 }
 
-func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, ownerNote string) (RefundRequestResponse, error) {
+func (s *service) ApproveRefundRequest(ctx context.Context, ownerCtx httputil.OwnerContext, requestID, ownerNote string) (RefundRequestResponse, error) {
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
 		return RefundRequestResponse{}, err
@@ -187,8 +211,17 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, 
 		return RefundRequestResponse{}, fmt.Errorf("%w: %v", ErrRefundRequestNotFound, err)
 	}
 
-	if req.OwnerID != ownerID {
+	if req.OwnerID != ownerCtx.EffectiveOwnerUserID {
 		return RefundRequestResponse{}, ErrForbidden
+	}
+
+	if !ownerCtx.IsOwner {
+		if req.VenueID == nil {
+			return RefundRequestResponse{}, ErrForbidden
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *req.VenueID) {
+			return RefundRequestResponse{}, ErrForbidden
+		}
 	}
 
 	if req.Status != "PENDING" {
@@ -233,11 +266,11 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, 
 		desc = fmt.Sprintf("Refund approved for booking %s: %s", req.BookingID, ownerNote)
 	}
 
-	if err := s.repo.InsertRefundLedger(ctx, tx, ownerID, venueID, req.BookingID, ownerID, b.TotalPrice, desc); err != nil {
+	if err := s.repo.InsertRefundLedger(ctx, tx, ownerCtx.EffectiveOwnerUserID, venueID, req.BookingID, ownerCtx.ActorUserID, b.TotalPrice, desc); err != nil {
 		return RefundRequestResponse{}, err
 	}
 
-	if err := s.repo.UpdateRefundRequest(ctx, tx, requestID, "APPROVED", ownerNote, ownerID); err != nil {
+	if err := s.repo.UpdateRefundRequest(ctx, tx, requestID, "APPROVED", ownerNote, ownerCtx.ActorUserID); err != nil {
 		return RefundRequestResponse{}, err
 	}
 
@@ -251,7 +284,7 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, 
 	}
 	now := timeNow()
 	req.ReviewedAt = &now
-	req.ReviewedByUserID = &ownerID
+	req.ReviewedByUserID = &ownerCtx.ActorUserID
 
 	if s.notifService != nil {
 		entityType := notifications.EntityRefund
@@ -271,7 +304,7 @@ func (s *service) ApproveRefundRequest(ctx context.Context, ownerID, requestID, 
 	return req, nil
 }
 
-func (s *service) RejectRefundRequest(ctx context.Context, ownerID, requestID, ownerNote string) (RefundRequestResponse, error) {
+func (s *service) RejectRefundRequest(ctx context.Context, ownerCtx httputil.OwnerContext, requestID, ownerNote string) (RefundRequestResponse, error) {
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
 		return RefundRequestResponse{}, err
@@ -283,15 +316,24 @@ func (s *service) RejectRefundRequest(ctx context.Context, ownerID, requestID, o
 		return RefundRequestResponse{}, fmt.Errorf("%w: %v", ErrRefundRequestNotFound, err)
 	}
 
-	if req.OwnerID != ownerID {
+	if req.OwnerID != ownerCtx.EffectiveOwnerUserID {
 		return RefundRequestResponse{}, ErrForbidden
+	}
+
+	if !ownerCtx.IsOwner {
+		if req.VenueID == nil {
+			return RefundRequestResponse{}, ErrForbidden
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, *req.VenueID) {
+			return RefundRequestResponse{}, ErrForbidden
+		}
 	}
 
 	if req.Status != "PENDING" {
 		return RefundRequestResponse{}, ErrRefundRequestAlreadyReviewed
 	}
 
-	if err := s.repo.UpdateRefundRequest(ctx, tx, requestID, "REJECTED", ownerNote, ownerID); err != nil {
+	if err := s.repo.UpdateRefundRequest(ctx, tx, requestID, "REJECTED", ownerNote, ownerCtx.ActorUserID); err != nil {
 		return RefundRequestResponse{}, err
 	}
 
@@ -305,7 +347,7 @@ func (s *service) RejectRefundRequest(ctx context.Context, ownerID, requestID, o
 	}
 	now := timeNow()
 	req.ReviewedAt = &now
-	req.ReviewedByUserID = &ownerID
+	req.ReviewedByUserID = &ownerCtx.ActorUserID
 
 	if s.notifService != nil {
 		entityType := notifications.EntityRefund
@@ -323,4 +365,13 @@ func (s *service) RejectRefundRequest(ctx context.Context, ownerID, requestID, o
 	}
 
 	return req, nil
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

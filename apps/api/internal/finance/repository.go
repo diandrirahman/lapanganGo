@@ -9,6 +9,7 @@ import (
 
 type Repository interface {
 	CreateTransaction(ctx context.Context, tx FinanceTransaction) (FinanceTransaction, error)
+	GetTransaction(ctx context.Context, id string, ownerID string) (FinanceTransaction, error)
 	UpdateTransaction(ctx context.Context, id string, ownerID string, req UpdateTransactionRequest) (FinanceTransaction, error)
 	DeleteTransaction(ctx context.Context, id string, ownerID string) error
 	GetTransactions(ctx context.Context, ownerID string, query TransactionQuery) ([]FinanceTransaction, int, error)
@@ -46,18 +47,36 @@ func (r *repository) VerifyVenueOwnership(ctx context.Context, venueID string, o
 func (r *repository) CreateTransaction(ctx context.Context, tx FinanceTransaction) (FinanceTransaction, error) {
 	query := `
 		INSERT INTO owner_finance_transactions 
-		(owner_id, venue_id, type, source, category, amount, transaction_date, payment_method, description)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		(owner_id, venue_id, created_by_user_id, type, source, category, amount, transaction_date, payment_method, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, updated_at
 	`
 	err := r.db.QueryRow(ctx, query,
-		tx.OwnerID, tx.VenueID, tx.Type, tx.Source, tx.Category,
+		tx.OwnerID, tx.VenueID, tx.CreatedByUserID, tx.Type, tx.Source, tx.Category,
 		tx.Amount, tx.TransactionDate, tx.PaymentMethod, tx.Description,
 	).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
 	if err != nil {
 		return tx, err
 	}
 	return tx, nil
+}
+
+func (r *repository) GetTransaction(ctx context.Context, id string, ownerID string) (FinanceTransaction, error) {
+	query := `
+		SELECT
+			id, owner_id, venue_id, booking_id, created_by_user_id,
+			type, source, category, amount, to_char(transaction_date, 'YYYY-MM-DD'),
+			payment_method, description, attachment_url, created_at, updated_at
+		FROM owner_finance_transactions
+		WHERE id = $1 AND owner_id = $2
+	`
+	var tx FinanceTransaction
+	err := r.db.QueryRow(ctx, query, id, ownerID).Scan(
+		&tx.ID, &tx.OwnerID, &tx.VenueID, &tx.BookingID, &tx.CreatedByUserID,
+		&tx.Type, &tx.Source, &tx.Category, &tx.Amount, &tx.TransactionDate,
+		&tx.PaymentMethod, &tx.Description, &tx.AttachmentURL, &tx.CreatedAt, &tx.UpdatedAt,
+	)
+	return tx, err
 }
 
 func (r *repository) UpdateTransaction(ctx context.Context, id string, ownerID string, req UpdateTransactionRequest) (FinanceTransaction, error) {
@@ -170,6 +189,12 @@ func (r *repository) GetTransactions(ctx context.Context, ownerID string, q Tran
 		argIdx++
 	}
 
+	if len(q.AllowedVenueIDs) > 0 {
+		baseQuery += fmt.Sprintf(" AND venue_id = ANY($%d::uuid[])", argIdx)
+		args = append(args, q.AllowedVenueIDs)
+		argIdx++
+	}
+
 	var total int
 	countQuery := "SELECT COUNT(id) " + baseQuery
 	err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total)
@@ -258,6 +283,12 @@ func (r *repository) GetFinanceSummary(ctx context.Context, ownerID string, q Fi
 	if q.VenueID != "" {
 		baseQuery += fmt.Sprintf(" AND venue_id = $%d", argIdx)
 		args = append(args, q.VenueID)
+		argIdx++
+	}
+
+	if len(q.AllowedVenueIDs) > 0 {
+		baseQuery += fmt.Sprintf(" AND venue_id = ANY($%d::uuid[])", argIdx)
+		args = append(args, q.AllowedVenueIDs)
 		argIdx++
 	}
 
@@ -357,6 +388,12 @@ func (r *repository) GetFinanceSummary(ctx context.Context, ownerID string, q Fi
 	if q.VenueID != "" {
 		venueQuery += fmt.Sprintf(" AND v.id = $%d", vArgIdx)
 		venueArgs = append(venueArgs, q.VenueID)
+		vArgIdx++
+	}
+
+	if len(q.AllowedVenueIDs) > 0 {
+		venueQuery += fmt.Sprintf(" AND v.id = ANY($%d::uuid[])", vArgIdx)
+		venueArgs = append(venueArgs, q.AllowedVenueIDs)
 		vArgIdx++
 	}
 

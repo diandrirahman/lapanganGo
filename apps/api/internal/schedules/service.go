@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"lapangango-api/internal/httputil"
 )
 
 var (
@@ -23,14 +25,14 @@ func NewService(repository *Repository) *Service {
 	return &Service{repository: repository}
 }
 
-func (s *Service) GetOperatingHours(ctx context.Context, userID, courtID string) ([]OperatingHourResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) GetOperatingHours(ctx context.Context, ownerCtx httputil.OwnerContext, courtID string) ([]OperatingHourResponse, error) {
+	court, err := s.getOwnedCourt(ctx, courtID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := s.getOwnedCourt(ctx, courtID, ownerProfile.ID); err != nil {
-		return nil, err
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return nil, ErrCourtNotFound
 	}
 
 	operatingHours, err := s.repository.ListOperatingHoursByCourtID(ctx, courtID)
@@ -41,14 +43,14 @@ func (s *Service) GetOperatingHours(ctx context.Context, userID, courtID string)
 	return toOperatingHourResponses(operatingHours), nil
 }
 
-func (s *Service) ReplaceOperatingHours(ctx context.Context, userID, courtID string, req ReplaceOperatingHoursRequest) ([]OperatingHourResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) ReplaceOperatingHours(ctx context.Context, ownerCtx httputil.OwnerContext, courtID string, req ReplaceOperatingHoursRequest) ([]OperatingHourResponse, error) {
+	court, err := s.getOwnedCourt(ctx, courtID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := s.getOwnedCourt(ctx, courtID, ownerProfile.ID); err != nil {
-		return nil, err
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return nil, ErrCourtNotFound
 	}
 
 	params, err := buildOperatingHourParams(req)
@@ -64,17 +66,7 @@ func (s *Service) ReplaceOperatingHours(ctx context.Context, userID, courtID str
 	return toOperatingHourResponses(operatingHours), nil
 }
 
-func (s *Service) getOwnerProfile(ctx context.Context, userID string) (OwnerProfile, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, userID)
-	if IsNotFound(err) {
-		return OwnerProfile{}, ErrOwnerProfileNotFound
-	}
-	if err != nil {
-		return OwnerProfile{}, err
-	}
 
-	return profile, nil
-}
 
 func (s *Service) getOwnedCourt(ctx context.Context, courtID, ownerProfileID string) (Court, error) {
 	court, err := s.repository.FindCourtByIDAndOwnerProfileID(ctx, courtID, ownerProfileID)
@@ -212,4 +204,13 @@ func toOperatingHourResponses(operatingHours []OperatingHour) []OperatingHourRes
 	}
 
 	return responses
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

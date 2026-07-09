@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"lapangango-api/internal/analytics"
+	"lapangango-api/internal/audit"
 	"lapangango-api/internal/auth"
 	"lapangango-api/internal/availability"
 	"lapangango-api/internal/blockedslots"
@@ -21,10 +22,12 @@ import (
 	"lapangango-api/internal/mabar"
 	"lapangango-api/internal/middleware"
 	"lapangango-api/internal/notifications"
+	"lapangango-api/internal/owneraccess"
 	"lapangango-api/internal/owners"
 	"lapangango-api/internal/promos"
 	"lapangango-api/internal/refunds"
 	"lapangango-api/internal/schedules"
+	"lapangango-api/internal/staff"
 	"lapangango-api/internal/venues"
 
 	"github.com/gin-gonic/gin"
@@ -96,30 +99,42 @@ func main() {
 	availabilityHandler := availability.NewHandler(availabilityService)
 	availabilityHandler.RegisterRoutes(r)
 
+	ownerAccessRepo := owneraccess.NewRepository(dbPool)
+	ownerWorkspaceMiddleware := middleware.OwnerWorkspaceAccess(ownerAccessRepo)
+	requireActualOwner := middleware.RequireActualOwner()
+
 	ownerRepository := owners.NewRepository(dbPool)
 	ownerService := owners.NewService(ownerRepository)
 	ownerHandler := owners.NewHandler(ownerService)
-	ownerHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	ownerHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
+
+	auditRepository := audit.NewRepository(dbPool)
+	auditService := audit.NewService(auditRepository)
+
+	staffRepository := staff.NewRepository(dbPool)
+	staffService := staff.NewService(staffRepository)
+	staffHandler := staff.NewHandler(staffService, auditService)
+	staffHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
 
 	venueRepository := venues.NewRepository(dbPool)
 	venueService := venues.NewService(venueRepository)
 	venueHandler := venues.NewHandler(venueService)
-	venueHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	venueHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	courtRepository := courts.NewRepository(dbPool)
 	courtService := courts.NewService(courtRepository)
 	courtHandler := courts.NewHandler(courtService)
-	courtHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	courtHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	scheduleRepository := schedules.NewRepository(dbPool)
 	scheduleService := schedules.NewService(scheduleRepository)
 	scheduleHandler := schedules.NewHandler(scheduleService)
-	scheduleHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	scheduleHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	financeRepository := finance.NewRepository(dbPool)
 	financeService := finance.NewService(financeRepository)
-	financeHandler := finance.NewHandler(financeService)
-	financeHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	financeHandler := finance.NewHandler(financeService, auditService)
+	financeHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	notificationsRepository := notifications.NewRepository(dbPool)
 	notificationsService := notifications.NewService(notificationsRepository)
@@ -132,14 +147,14 @@ func main() {
 	promosRepository := promos.NewRepository(dbPool)
 	promosService := promos.NewService(promosRepository)
 	promosHandler := promos.NewHandler(promosService)
-	promosHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	promosHandler.RegisterOwnerRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 	promosHandler.RegisterCustomerRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
 
 	bookingsRepository := bookings.NewRepository(dbPool)
 	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService, promosRepository)
-	bookingsHandler := bookings.NewHandler(bookingsService)
+	bookingsHandler := bookings.NewHandler(bookingsService, auditService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
-	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -149,7 +164,7 @@ func main() {
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
 	blockedSlotHandler := blockedslots.NewHandler(blockedSlotService)
-	blockedSlotHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("OWNER"))
+	blockedSlotHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
 
 	mabarRepository := mabar.NewRepository(dbPool)
 	mabarService := mabar.NewService(mabarRepository)
@@ -158,10 +173,13 @@ func main() {
 
 	refundsRepository := refunds.NewRepository(dbPool)
 	refundsService := refunds.NewService(refundsRepository, notificationsService)
-	refundsHandler := refunds.NewHandler(refundsService)
-	refundsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"), middleware.RequireRole("OWNER"))
+	refundsHandler := refunds.NewHandler(refundsService, auditService)
+	refundsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"), ownerWorkspaceMiddleware)
 
-	analytics.RegisterRoutes(r, dbPool, authMiddleware, middleware.RequireRole("OWNER"))
+	auditHandler := audit.NewHandler(auditService)
+	auditHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+
+	analytics.RegisterRoutes(r, dbPool, authMiddleware, ownerWorkspaceMiddleware)
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
 		Handler: r,

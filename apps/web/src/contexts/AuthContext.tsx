@@ -9,6 +9,9 @@ interface AuthContextType {
   isLoading: boolean;
   login: (token: string, user: User) => void;
   logout: () => void;
+  isActualOwner: () => boolean;
+  hasOwnerPermission: (permission: string) => boolean;
+  isWorkspaceUser: () => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -77,8 +80,28 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setUser(null);
   };
 
+  const isActualOwner = (): boolean => {
+    return (user?.role === 'OWNER' && !!user?.owner_profile) || false;
+  };
+
+  const isWorkspaceUser = (): boolean => {
+    return isActualOwner() || ((user?.staff_memberships?.length ?? 0) > 0);
+  };
+
+  const hasOwnerPermission = (permission: string) => {
+    if (!user) return false;
+    if (isActualOwner()) return true; // Actual owner has all permissions
+    if (user.staff_memberships && user.staff_memberships.length > 0) {
+      return user.staff_memberships[0].permissions.includes(permission);
+    }
+    return false;
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, isAuthenticated: !!user, isLoading, login, logout }}>
+    <AuthContext.Provider value={{
+      user, token, isAuthenticated: !!user, isLoading,
+      login, logout, isActualOwner, hasOwnerPermission, isWorkspaceUser
+    }}>
       {children}
     </AuthContext.Provider>
   );

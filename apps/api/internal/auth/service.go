@@ -88,12 +88,27 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResponse, e
 		return LoginResponse{}, err
 	}
 
+	if user.Status != "ACTIVE" {
+		return LoginResponse{}, ErrInvalidCredential
+	}
+
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
 	if err != nil {
 		return LoginResponse{}, ErrInvalidCredential
 	}
 
 	userResponse := toUserResponse(user)
+
+	ownerProfile, err := s.repository.GetOwnerProfile(ctx, user.ID)
+	if err == nil && ownerProfile != nil {
+		userResponse.OwnerProfile = ownerProfile
+	}
+
+	staffMemberships, err := s.repository.GetStaffMemberships(ctx, user.ID)
+	if err == nil && len(staffMemberships) > 0 {
+		userResponse.StaffMemberships = staffMemberships
+	}
+
 	token, err := s.token.Generate(userResponse)
 	if err != nil {
 		return LoginResponse{}, err
@@ -112,7 +127,19 @@ func (s *Service) GetUserByEmail(ctx context.Context, email string) (UserRespons
 		return UserResponse{}, err
 	}
 
-	return toUserResponse(user), nil
+	userResponse := toUserResponse(user)
+
+	ownerProfile, err := s.repository.GetOwnerProfile(ctx, user.ID)
+	if err == nil && ownerProfile != nil {
+		userResponse.OwnerProfile = ownerProfile
+	}
+
+	staffMemberships, err := s.repository.GetStaffMemberships(ctx, user.ID)
+	if err == nil && len(staffMemberships) > 0 {
+		userResponse.StaffMemberships = staffMemberships
+	}
+
+	return userResponse, nil
 }
 
 func normalizeEmail(email string) string {

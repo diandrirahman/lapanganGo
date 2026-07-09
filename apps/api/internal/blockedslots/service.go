@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"lapangango-api/internal/httputil"
 )
 
 var (
@@ -23,14 +25,14 @@ func NewService(repository *Repository) *Service {
 	return &Service{repository: repository}
 }
 
-func (s *Service) CreateBlockedSlot(ctx context.Context, userID, courtID string, req CreateBlockedSlotRequest) (BlockedSlotResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) CreateBlockedSlot(ctx context.Context, ownerCtx httputil.OwnerContext, courtID string, req CreateBlockedSlotRequest) (BlockedSlotResponse, error) {
+	court, err := s.getOwnedCourt(ctx, courtID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return BlockedSlotResponse{}, err
 	}
 
-	if _, err := s.getOwnedCourt(ctx, courtID, ownerProfile.ID); err != nil {
-		return BlockedSlotResponse{}, err
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return BlockedSlotResponse{}, ErrCourtNotFound
 	}
 
 	params, err := buildBlockedSlotParams(courtID, req)
@@ -46,14 +48,14 @@ func (s *Service) CreateBlockedSlot(ctx context.Context, userID, courtID string,
 	return toBlockedSlotResponse(blockedSlot), nil
 }
 
-func (s *Service) ListBlockedSlots(ctx context.Context, userID, courtID, fromValue, toValue string) ([]BlockedSlotResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) ListBlockedSlots(ctx context.Context, ownerCtx httputil.OwnerContext, courtID, fromValue, toValue string) ([]BlockedSlotResponse, error) {
+	court, err := s.getOwnedCourt(ctx, courtID, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := s.getOwnedCourt(ctx, courtID, ownerProfile.ID); err != nil {
-		return nil, err
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+		return []BlockedSlotResponse{}, nil
 	}
 
 	from, to, err := buildListRange(fromValue, toValue)
@@ -69,13 +71,26 @@ func (s *Service) ListBlockedSlots(ctx context.Context, userID, courtID, fromVal
 	return toBlockedSlotResponses(blockedSlots), nil
 }
 
-func (s *Service) DeleteBlockedSlot(ctx context.Context, userID, blockedSlotID string) (BlockedSlotResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) DeleteBlockedSlot(ctx context.Context, ownerCtx httputil.OwnerContext, blockedSlotID string) (BlockedSlotResponse, error) {
+	blockedSlot, err := s.repository.FindByIDAndOwnerProfileID(ctx, blockedSlotID, ownerCtx.OwnerProfileID)
+	if IsNotFound(err) {
+		return BlockedSlotResponse{}, ErrBlockedSlotNotFound
+	}
 	if err != nil {
 		return BlockedSlotResponse{}, err
 	}
 
-	blockedSlot, err := s.repository.DeleteByIDAndOwnerProfileID(ctx, blockedSlotID, ownerProfile.ID)
+	if !ownerCtx.IsOwner {
+		court, err := s.getOwnedCourt(ctx, blockedSlot.CourtID, ownerCtx.OwnerProfileID)
+		if err != nil {
+			return BlockedSlotResponse{}, err
+		}
+		if !containsID(ownerCtx.AllowedVenueIDs, court.VenueID) {
+			return BlockedSlotResponse{}, ErrBlockedSlotNotFound
+		}
+	}
+
+	blockedSlot, err = s.repository.DeleteByIDAndOwnerProfileID(ctx, blockedSlotID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return BlockedSlotResponse{}, ErrBlockedSlotNotFound
 	}
@@ -86,17 +101,7 @@ func (s *Service) DeleteBlockedSlot(ctx context.Context, userID, blockedSlotID s
 	return toBlockedSlotResponse(blockedSlot), nil
 }
 
-func (s *Service) getOwnerProfile(ctx context.Context, userID string) (OwnerProfile, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, userID)
-	if IsNotFound(err) {
-		return OwnerProfile{}, ErrOwnerProfileNotFound
-	}
-	if err != nil {
-		return OwnerProfile{}, err
-	}
 
-	return profile, nil
-}
 
 func (s *Service) getOwnedCourt(ctx context.Context, courtID, ownerProfileID string) (Court, error) {
 	court, err := s.repository.FindCourtByIDAndOwnerProfileID(ctx, courtID, ownerProfileID)
@@ -202,4 +207,13 @@ func toBlockedSlotResponse(blockedSlot BlockedSlot) BlockedSlotResponse {
 		CreatedAt: blockedSlot.CreatedAt,
 		UpdatedAt: blockedSlot.UpdatedAt,
 	}
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
 }

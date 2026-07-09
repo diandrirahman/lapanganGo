@@ -7,28 +7,31 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/audit"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
-	service Service
+	service      Service
+	auditService audit.Service
 }
 
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service Service, auditService audit.Service) *Handler {
+	return &Handler{service: service, auditService: auditService}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerMiddleware gin.HandlerFunc, ownerMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	customerGroup := router.Group("/bookings")
 	customerGroup.Use(authMiddleware, customerMiddleware)
 	customerGroup.POST("/:id/refund-request", h.RequestBookingRefund)
 	customerGroup.GET("/:id/refund-request", h.GetRefundRequestByBooking)
 
 	ownerGroup := router.Group("/owner/refund-requests")
-	ownerGroup.Use(authMiddleware, ownerMiddleware)
-	ownerGroup.GET("", h.ListOwnerRefundRequests)
-	ownerGroup.PATCH("/:id/approve", h.ApproveRefundRequest)
-	ownerGroup.PATCH("/:id/reject", h.RejectRefundRequest)
+	ownerGroup.Use(authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.GET("", middleware.RequireOwnerPermission("REFUNDS_READ"), h.ListOwnerRefundRequests)
+	ownerGroup.PATCH("/:id/approve", middleware.RequireOwnerPermission("REFUNDS_WRITE"), h.ApproveRefundRequest)
+	ownerGroup.PATCH("/:id/reject", middleware.RequireOwnerPermission("REFUNDS_WRITE"), h.RejectRefundRequest)
 }
 
 func (h *Handler) RequestBookingRefund(c *gin.Context) {
@@ -107,7 +110,7 @@ func (h *Handler) GetRefundRequestByBooking(c *gin.Context) {
 }
 
 func (h *Handler) ListOwnerRefundRequests(c *gin.Context) {
-	ownerID, exists := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, exists := httputil.GetOwnerContext(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "unauthorized"})
 		return
@@ -118,7 +121,7 @@ func (h *Handler) ListOwnerRefundRequests(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 
-	res, err := h.service.ListOwnerRefundRequests(c.Request.Context(), ownerID, status, venueID, page, limit)
+	res, err := h.service.ListOwnerRefundRequests(c.Request.Context(), ownerCtx, status, venueID, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -128,7 +131,7 @@ func (h *Handler) ListOwnerRefundRequests(c *gin.Context) {
 }
 
 func (h *Handler) ApproveRefundRequest(c *gin.Context) {
-	ownerID, exists := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, exists := httputil.GetOwnerContext(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "unauthorized"})
 		return
@@ -145,7 +148,7 @@ func (h *Handler) ApproveRefundRequest(c *gin.Context) {
 		// Allow empty body
 	}
 
-	res, err := h.service.ApproveRefundRequest(c.Request.Context(), ownerID, requestID, req.OwnerNote)
+	res, err := h.service.ApproveRefundRequest(c.Request.Context(), ownerCtx, requestID, req.OwnerNote)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrForbidden):
@@ -160,6 +163,24 @@ func (h *Handler) ApproveRefundRequest(c *gin.Context) {
 		return
 	}
 
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         audit.ActionRefundApproved,
+		EntityType:     audit.EntityRefund,
+		EntityID:       &res.ID,
+		Metadata: map[string]any{
+			"refund_request_id": res.ID,
+			"booking_id":        res.BookingID,
+			"owner_note":        req.OwnerNote,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":        "Refund request approved successfully",
 		"refund_request": res,
@@ -171,7 +192,7 @@ func (h *Handler) ApproveRefundRequest(c *gin.Context) {
 }
 
 func (h *Handler) RejectRefundRequest(c *gin.Context) {
-	ownerID, exists := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, exists := httputil.GetOwnerContext(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "unauthorized"})
 		return
@@ -188,7 +209,7 @@ func (h *Handler) RejectRefundRequest(c *gin.Context) {
 		// Allow empty body
 	}
 
-	res, err := h.service.RejectRefundRequest(c.Request.Context(), ownerID, requestID, req.OwnerNote)
+	res, err := h.service.RejectRefundRequest(c.Request.Context(), ownerCtx, requestID, req.OwnerNote)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrForbidden):
@@ -202,6 +223,24 @@ func (h *Handler) RejectRefundRequest(c *gin.Context) {
 		}
 		return
 	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         audit.ActionRefundRejected,
+		EntityType:     audit.EntityRefund,
+		EntityID:       &res.ID,
+		Metadata: map[string]any{
+			"refund_request_id": res.ID,
+			"booking_id":        res.BookingID,
+			"owner_note":        req.OwnerNote,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":        "Refund request rejected successfully",

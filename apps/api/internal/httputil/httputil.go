@@ -99,3 +99,78 @@ func NewPaginatedResponse(data any, total, page, limit int) PaginatedResponse {
 		TotalPages: totalPages,
 	}
 }
+
+// GetActorUserID gets the user ID of the person making the request.
+func GetActorUserID(c *gin.Context) string {
+	return c.GetString("auth_actor_user_id")
+}
+
+// GetEffectiveOwnerUserID gets the owner user ID. For OWNER this is their own user ID, for STAFF this is their boss's user ID.
+func GetEffectiveOwnerUserID(c *gin.Context) string {
+	return c.GetString("auth_effective_owner_user_id")
+}
+
+// GetOwnerProfileID gets the owner profile ID context.
+func GetOwnerProfileID(c *gin.Context) string {
+	return c.GetString("auth_owner_profile_id")
+}
+
+// GetStaffVenueIDs gets the venue IDs that the staff is allowed to access.
+func GetStaffVenueIDs(c *gin.Context) []string {
+	if val, ok := c.Get("auth_staff_venue_ids"); ok {
+		if ids, ok := val.([]string); ok {
+			return ids
+		}
+	}
+	return nil
+}
+
+// IsWorkspaceOwner returns true if the actor is the OWNER.
+func IsWorkspaceOwner(c *gin.Context) bool {
+	return c.GetBool("auth_is_owner")
+}
+
+// GetActorRole gets the actor role (OWNER or STAFF).
+func GetActorRole(c *gin.Context) string {
+	if IsWorkspaceOwner(c) {
+		return "OWNER"
+	}
+	return "STAFF"
+}
+
+// GetStaffPermissions gets the permissions the staff has.
+func GetStaffPermissions(c *gin.Context) []string {
+	if val, ok := c.Get("auth_staff_permissions"); ok {
+		if perms, ok := val.([]string); ok {
+			return perms
+		}
+	}
+	return nil
+}
+
+// OwnerContext groups all owner workspace related context variables.
+type OwnerContext struct {
+	ActorUserID          string
+	ActorRole            string
+	EffectiveOwnerUserID string
+	OwnerProfileID       string
+	IsOwner              bool
+	AllowedVenueIDs      []string
+}
+
+// GetOwnerContext retrieves the unified owner workspace context.
+func GetOwnerContext(c *gin.Context) (OwnerContext, bool) {
+	actorID := GetActorUserID(c)
+	if actorID == "" {
+		return OwnerContext{}, false
+	}
+
+	return OwnerContext{
+		ActorUserID:          actorID,
+		ActorRole:            GetActorRole(c),
+		EffectiveOwnerUserID: GetEffectiveOwnerUserID(c),
+		OwnerProfileID:       GetOwnerProfileID(c),
+		IsOwner:              IsWorkspaceOwner(c),
+		AllowedVenueIDs:      GetStaffVenueIDs(c),
+	}, true
+}

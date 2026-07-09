@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+
+	"lapangango-api/internal/httputil"
 )
 
 var (
@@ -55,10 +57,9 @@ func (s *Service) GetFacilities(ctx context.Context) ([]FacilityResponse, error)
 	return res, nil
 }
 
-func (s *Service) CreateVenue(ctx context.Context, userID string, req CreateVenueRequest) (VenueResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenueResponse{}, err
+func (s *Service) CreateVenue(ctx context.Context, ownerCtx httputil.OwnerContext, req CreateVenueRequest) (VenueResponse, error) {
+	if !ownerCtx.IsOwner {
+		return VenueResponse{}, errors.New("only owners can create venues")
 	}
 
 	facilityIDs := normalizeIDs(req.FacilityIDs)
@@ -67,7 +68,7 @@ func (s *Service) CreateVenue(ctx context.Context, userID string, req CreateVenu
 		return VenueResponse{}, err
 	}
 
-	params, err := buildCreateVenueParams(ownerProfile.ID, req)
+	params, err := buildCreateVenueParams(ownerCtx.OwnerProfileID, req)
 	if err != nil {
 		return VenueResponse{}, err
 	}
@@ -190,13 +191,16 @@ func (s *Service) GetPublicVenue(ctx context.Context, venueID string, playDate s
 	}, nil
 }
 
-func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
+func (s *Service) ListVenues(ctx context.Context, ownerCtx httputil.OwnerContext) ([]VenueResponse, error) {
+	venues, err := s.repository.ListByOwnerProfileID(ctx, ownerCtx.OwnerProfileID)
 	if err != nil {
 		return nil, err
 	}
 
-	venues, err := s.repository.ListByOwnerProfileID(ctx, ownerProfile.ID)
+	// Filter for staff
+	if !ownerCtx.IsOwner {
+		venues = filterVenues(venues, ownerCtx.AllowedVenueIDs)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -232,13 +236,12 @@ func (s *Service) ListVenues(ctx context.Context, userID string) ([]VenueRespons
 	return responses, nil
 }
 
-func (s *Service) GetVenue(ctx context.Context, userID, venueID string) (VenueResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenueResponse{}, err
+func (s *Service) GetVenue(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string) (VenueResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return VenueResponse{}, ErrVenueNotFound
 	}
 
-	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return VenueResponse{}, ErrVenueNotFound
 	}
@@ -259,10 +262,9 @@ func (s *Service) GetVenue(ctx context.Context, userID, venueID string) (VenueRe
 	return toVenueResponse(venue, facilities, photos), nil
 }
 
-func (s *Service) UpdateVenue(ctx context.Context, userID, venueID string, req UpdateVenueRequest) (VenueResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenueResponse{}, err
+func (s *Service) UpdateVenue(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string, req UpdateVenueRequest) (VenueResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return VenueResponse{}, ErrVenueNotFound
 	}
 
 	facilityIDs := normalizeIDs(req.FacilityIDs)
@@ -271,7 +273,7 @@ func (s *Service) UpdateVenue(ctx context.Context, userID, venueID string, req U
 		return VenueResponse{}, err
 	}
 
-	params, err := buildUpdateVenueParams(ownerProfile.ID, req)
+	params, err := buildUpdateVenueParams(ownerCtx.OwnerProfileID, req)
 	if err != nil {
 		return VenueResponse{}, err
 	}
@@ -295,10 +297,9 @@ func (s *Service) UpdateVenue(ctx context.Context, userID, venueID string, req U
 	return toVenueResponse(venue, facilities, photos), nil
 }
 
-func (s *Service) UpdateVenueStatus(ctx context.Context, userID, venueID, status string) (VenueResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenueResponse{}, err
+func (s *Service) UpdateVenueStatus(ctx context.Context, ownerCtx httputil.OwnerContext, venueID, status string) (VenueResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return VenueResponse{}, ErrVenueNotFound
 	}
 
 	status = strings.TrimSpace(status)
@@ -306,7 +307,7 @@ func (s *Service) UpdateVenueStatus(ctx context.Context, userID, venueID, status
 		return VenueResponse{}, ErrInvalidVenueStatus
 	}
 
-	venue, err := s.repository.UpdateStatusByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID, status)
+	venue, err := s.repository.UpdateStatusByIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID, status)
 	if IsNotFound(err) {
 		return VenueResponse{}, ErrVenueNotFound
 	}
@@ -327,17 +328,7 @@ func (s *Service) UpdateVenueStatus(ctx context.Context, userID, venueID, status
 	return toVenueResponse(venue, facilities, photos), nil
 }
 
-func (s *Service) getOwnerProfile(ctx context.Context, userID string) (OwnerProfile, error) {
-	profile, err := s.repository.FindOwnerProfileByUserID(ctx, userID)
-	if IsNotFound(err) {
-		return OwnerProfile{}, ErrOwnerProfileNotFound
-	}
-	if err != nil {
-		return OwnerProfile{}, err
-	}
 
-	return profile, nil
-}
 
 func (s *Service) validateFacilities(ctx context.Context, facilityIDs []string) ([]Facility, error) {
 	if len(facilityIDs) == 0 {
@@ -566,13 +557,12 @@ func toPublicCourtResponses(courts []Court) []PublicCourtResponse {
 	return responses
 }
 
-func (s *Service) AddVenuePhoto(ctx context.Context, userID, venueID string, req CreateVenuePhotoRequest) (VenuePhotoResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenuePhotoResponse{}, err
+func (s *Service) AddVenuePhoto(ctx context.Context, ownerCtx httputil.OwnerContext, venueID string, req CreateVenuePhotoRequest) (VenuePhotoResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return VenuePhotoResponse{}, ErrVenueNotFound
 	}
 
-	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return VenuePhotoResponse{}, ErrVenueNotFound
 	}
@@ -619,13 +609,12 @@ func (s *Service) AddVenuePhoto(ctx context.Context, userID, venueID string, req
 	}, nil
 }
 
-func (s *Service) UpdateVenuePhoto(ctx context.Context, userID, venueID, photoID string, req UpdateVenuePhotoRequest) (VenuePhotoResponse, error) {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return VenuePhotoResponse{}, err
+func (s *Service) UpdateVenuePhoto(ctx context.Context, ownerCtx httputil.OwnerContext, venueID, photoID string, req UpdateVenuePhotoRequest) (VenuePhotoResponse, error) {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return VenuePhotoResponse{}, ErrVenueNotFound
 	}
 
-	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return VenuePhotoResponse{}, ErrVenueNotFound
 	}
@@ -670,13 +659,12 @@ func (s *Service) UpdateVenuePhoto(ctx context.Context, userID, venueID, photoID
 	}, nil
 }
 
-func (s *Service) DeleteVenuePhoto(ctx context.Context, userID, venueID, photoID string) error {
-	ownerProfile, err := s.getOwnerProfile(ctx, userID)
-	if err != nil {
-		return err
+func (s *Service) DeleteVenuePhoto(ctx context.Context, ownerCtx httputil.OwnerContext, venueID, photoID string) error {
+	if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, venueID) {
+		return ErrVenueNotFound
 	}
 
-	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerProfile.ID)
+	venue, err := s.repository.FindByIDAndOwnerProfileID(ctx, venueID, ownerCtx.OwnerProfileID)
 	if IsNotFound(err) {
 		return ErrVenueNotFound
 	}
@@ -704,4 +692,26 @@ func validateImageURL(u string) error {
 		return errors.New("image URL must use http or https scheme")
 	}
 	return nil
+}
+
+func containsID(ids []string, id string) bool {
+	for _, val := range ids {
+		if val == id {
+			return true
+		}
+	}
+	return false
+}
+
+func filterVenues(venues []Venue, allowedIDs []string) []Venue {
+	var filtered []Venue
+	for _, v := range venues {
+		if containsID(allowedIDs, v.ID) {
+			filtered = append(filtered, v)
+		}
+	}
+	if filtered == nil {
+		filtered = []Venue{}
+	}
+	return filtered
 }

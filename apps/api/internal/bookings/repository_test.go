@@ -64,11 +64,12 @@ func TestInsertOfflineBookingTx_SnapshotHarga(t *testing.T) {
 	}
 
 	var ownerProfileID string
+	businessName := fmt.Sprintf("Test Business %d", uniqueSuffix)
 	err = tx.QueryRow(ctx, `
-		INSERT INTO owner_profiles (user_id) 
-		VALUES ($1) 
+		INSERT INTO owner_profiles (user_id, business_name)
+		VALUES ($1, $2)
 		RETURNING id::text
-	`, ownerUserID).Scan(&ownerProfileID)
+	`, ownerUserID, businessName).Scan(&ownerProfileID)
 	if err != nil {
 		t.Fatalf("Failed to insert owner profile: %v", err)
 	}
@@ -85,8 +86,8 @@ func TestInsertOfflineBookingTx_SnapshotHarga(t *testing.T) {
 
 	var courtID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO courts (venue_id, sport_id, name, price_per_hour, status) 
-		VALUES ($1, $2, 'Test Court', 150000, 'ACTIVE') 
+		INSERT INTO courts (venue_id, sport_id, name, price_per_hour, status, location_type)
+		VALUES ($1, $2, 'Test Court', 150000, 'ACTIVE', 'INDOOR')
 		RETURNING id::text
 	`, venueID, sportID).Scan(&courtID)
 	if err != nil {
@@ -111,6 +112,7 @@ func TestInsertOfflineBookingTx_SnapshotHarga(t *testing.T) {
 			FinalPrice:          150000,
 			Status:              "PAID",
 			OwnerUserID:         ownerUserID,
+			CreatedByUserID:     ownerUserID,
 			CustomerName:        "Test Customer",
 			CustomerPhone:       func(s string) *string { return &s }("0812345678"),
 			CustomerEmail:       nil,
@@ -195,6 +197,7 @@ func TestInsertOfflineBookingTx_SnapshotHarga(t *testing.T) {
 			FinalPrice:          100000,
 			Status:              "PAID",
 			OwnerUserID:         ownerUserID,
+			CreatedByUserID:     ownerUserID,
 			CustomerName:        "Test Customer",
 			CustomerPhone:       func(s string) *string { return &s }("0812345678"),
 			CustomerEmail:       nil,

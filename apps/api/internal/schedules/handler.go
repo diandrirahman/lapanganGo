@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
@@ -16,14 +17,14 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	ownerGroup.GET("/courts/:id/operating-hours", h.GetOperatingHours)
-	ownerGroup.PUT("/courts/:id/operating-hours", h.ReplaceOperatingHours)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.GET("/courts/:id/operating-hours", middleware.RequireOwnerPermission("SCHEDULE_READ"), h.GetOperatingHours)
+	ownerGroup.PUT("/courts/:id/operating-hours", middleware.RequireOwnerPermission("SCHEDULE_WRITE"), h.ReplaceOperatingHours)
 }
 
 func (h *Handler) GetOperatingHours(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -36,7 +37,7 @@ func (h *Handler) GetOperatingHours(c *gin.Context) {
 		return
 	}
 
-	operatingHours, err := h.service.GetOperatingHours(c.Request.Context(), userID, courtID)
+	operatingHours, err := h.service.GetOperatingHours(c.Request.Context(), ownerCtx, courtID)
 	if err != nil {
 		respondScheduleError(c, err, "Failed to get operating hours")
 		return
@@ -48,7 +49,7 @@ func (h *Handler) GetOperatingHours(c *gin.Context) {
 }
 
 func (h *Handler) ReplaceOperatingHours(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"message": "Unauthorized",
@@ -70,7 +71,7 @@ func (h *Handler) ReplaceOperatingHours(c *gin.Context) {
 		return
 	}
 
-	operatingHours, err := h.service.ReplaceOperatingHours(c.Request.Context(), userID, courtID, req)
+	operatingHours, err := h.service.ReplaceOperatingHours(c.Request.Context(), ownerCtx, courtID, req)
 	if err != nil {
 		respondScheduleError(c, err, "Failed to update operating hours")
 		return

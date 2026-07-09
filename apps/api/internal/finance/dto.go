@@ -7,7 +7,8 @@ import (
 type FinanceSummaryQuery struct {
 	StartDate string `form:"start_date" binding:"omitempty,datetime=2006-01-02"`
 	EndDate   string `form:"end_date" binding:"omitempty,datetime=2006-01-02"`
-	VenueID   string `form:"venue_id" binding:"omitempty,uuid"`
+	VenueID         string   `form:"venue_id" binding:"omitempty,uuid"`
+	AllowedVenueIDs []string `json:"-"`
 }
 
 type TransactionQuery struct {
@@ -16,8 +17,9 @@ type TransactionQuery struct {
 	VenueID   string `form:"venue_id" binding:"omitempty,uuid"`
 	Type      string `form:"type" binding:"omitempty,oneof=INCOME EXPENSE"`
 	Category  string `form:"category" binding:"omitempty"`
-	Page      int    `form:"page" binding:"omitempty,min=1"`
-	Limit     int    `form:"limit" binding:"omitempty,min=1,max=100"`
+	Page            int      `form:"page" binding:"omitempty,min=1"`
+	Limit           int      `form:"limit" binding:"omitempty,min=1,max=100"`
+	AllowedVenueIDs []string `json:"-"`
 }
 
 type CreateTransactionRequest struct {

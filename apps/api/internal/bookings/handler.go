@@ -5,15 +5,18 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"lapangango-api/internal/audit"
 	"lapangango-api/internal/httputil"
+	"lapangango-api/internal/middleware"
 )
 
 type Handler struct {
-	service *Service
+	service      *Service
+	auditService audit.Service
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, auditService audit.Service) *Handler {
+	return &Handler{service: service, auditService: auditService}
 }
 
 func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
@@ -26,16 +29,16 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	group.POST("/:id/payment-proof", h.SubmitPaymentProof)
 }
 
-func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerRoleMiddleware gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerRoleMiddleware)
-	ownerGroup.GET("/bookings", h.ListOwnerBookings)
-	ownerGroup.GET("/venues/:id/bookings", h.ListOwnerVenueBookings)
-	ownerGroup.PATCH("/bookings/:id/verify-payment", h.VerifyPayment)
-	ownerGroup.PATCH("/bookings/:id/mark-paid", h.MarkBookingPaid)
-	ownerGroup.PATCH("/bookings/:id/complete", h.CompleteBooking)
-	ownerGroup.PATCH("/bookings/:id/cancel-refund", h.CancelPaidBookingWithRefund)
-	ownerGroup.POST("/bookings/offline", h.OwnerCreateOfflineBooking)
-	ownerGroup.GET("/metrics", h.GetOwnerMetrics)
+func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.GET("/bookings", middleware.RequireOwnerPermission("BOOKINGS_READ"), h.ListOwnerBookings)
+	ownerGroup.GET("/venues/:id/bookings", middleware.RequireOwnerPermission("BOOKINGS_READ"), h.ListOwnerVenueBookings)
+	ownerGroup.PATCH("/bookings/:id/verify-payment", middleware.RequireOwnerPermission("PAYMENT_VERIFY"), h.VerifyPayment)
+	ownerGroup.PATCH("/bookings/:id/mark-paid", middleware.RequireOwnerPermission("PAYMENT_VERIFY"), h.MarkBookingPaid)
+	ownerGroup.PATCH("/bookings/:id/complete", middleware.RequireOwnerPermission("BOOKINGS_WRITE"), h.CompleteBooking)
+	ownerGroup.PATCH("/bookings/:id/cancel-refund", middleware.RequireOwnerPermission("BOOKINGS_WRITE"), h.CancelPaidBookingWithRefund)
+	ownerGroup.POST("/bookings/offline", middleware.RequireOwnerPermission("OFFLINE_BOOKINGS_CREATE"), h.OwnerCreateOfflineBooking)
+	ownerGroup.GET("/metrics", middleware.RequireOwnerPermission("BOOKINGS_READ"), h.GetOwnerMetrics)
 }
 
 func (h *Handler) CreateBooking(c *gin.Context) {
@@ -113,7 +116,7 @@ func (h *Handler) GetBooking(c *gin.Context) {
 }
 
 func (h *Handler) GetOwnerMetrics(c *gin.Context) {
-	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -125,7 +128,7 @@ func (h *Handler) GetOwnerMetrics(c *gin.Context) {
 		return
 	}
 
-	metrics, err := h.service.GetOwnerMetrics(c.Request.Context(), ownerUserID, req)
+	metrics, err := h.service.GetOwnerMetrics(c.Request.Context(), ownerCtx, req)
 	if err != nil {
 		respondBookingError(c, err, "Failed to get owner metrics")
 		return
@@ -162,7 +165,7 @@ func (h *Handler) ConfirmBookingPayment(c *gin.Context) {
 }
 
 func (h *Handler) ListOwnerVenueBookings(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -187,7 +190,7 @@ func (h *Handler) ListOwnerVenueBookings(c *gin.Context) {
 	req.Page = pageParams.Page
 	req.Limit = pageParams.Limit
 
-	bookings, total, err := h.service.ListOwnerVenueBookings(c.Request.Context(), userID, venueID, req)
+	bookings, total, err := h.service.ListOwnerVenueBookings(c.Request.Context(), ownerCtx, venueID, req)
 	if err != nil {
 		respondBookingError(c, err, "Failed to list owner venue bookings")
 		return
@@ -256,7 +259,7 @@ func (h *Handler) SubmitPaymentProof(c *gin.Context) {
 }
 
 func (h *Handler) VerifyPayment(c *gin.Context) {
-	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -277,11 +280,34 @@ func (h *Handler) VerifyPayment(c *gin.Context) {
 		return
 	}
 
-	booking, err := h.service.VerifyPayment(c.Request.Context(), ownerUserID, bookingID, req.IsApproved)
+	booking, err := h.service.VerifyPayment(c.Request.Context(), ownerCtx, bookingID, req.IsApproved)
 	if err != nil {
 		respondBookingError(c, err, "Failed to verify payment")
 		return
 	}
+
+	action := audit.ActionBookingPaymentRejected
+	if req.IsApproved {
+		action = audit.ActionBookingPaymentVerified
+	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         action,
+		EntityType:     audit.EntityBooking,
+		EntityID:       &booking.ID,
+		Metadata: map[string]any{
+			"booking_id":  booking.ID,
+			"is_approved": req.IsApproved,
+			"new_status":  booking.Status,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Payment verified successfully",
@@ -290,7 +316,7 @@ func (h *Handler) VerifyPayment(c *gin.Context) {
 }
 
 func (h *Handler) MarkBookingPaid(c *gin.Context) {
-	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -302,11 +328,28 @@ func (h *Handler) MarkBookingPaid(c *gin.Context) {
 		return
 	}
 
-	booking, err := h.service.MarkBookingPaid(c.Request.Context(), ownerUserID, bookingID)
+	booking, err := h.service.MarkBookingPaid(c.Request.Context(), ownerCtx, bookingID)
 	if err != nil {
 		respondBookingError(c, err, "Failed to mark booking as paid")
 		return
 	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         audit.ActionBookingMarkedPaid,
+		EntityType:     audit.EntityBooking,
+		EntityID:       &booking.ID,
+		Metadata: map[string]any{
+			"booking_id": booking.ID,
+			"new_status": booking.Status,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Booking marked as paid successfully",
@@ -315,7 +358,7 @@ func (h *Handler) MarkBookingPaid(c *gin.Context) {
 }
 
 func (h *Handler) CompleteBooking(c *gin.Context) {
-	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -327,11 +370,28 @@ func (h *Handler) CompleteBooking(c *gin.Context) {
 		return
 	}
 
-	booking, err := h.service.CompleteBooking(c.Request.Context(), ownerUserID, bookingID)
+	booking, err := h.service.CompleteBooking(c.Request.Context(), ownerCtx, bookingID)
 	if err != nil {
 		respondBookingError(c, err, "Failed to complete booking")
 		return
 	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         audit.ActionBookingCompleted,
+		EntityType:     audit.EntityBooking,
+		EntityID:       &booking.ID,
+		Metadata: map[string]any{
+			"booking_id": booking.ID,
+			"new_status": booking.Status,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Booking completed successfully",
@@ -381,7 +441,7 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 }
 
 func (h *Handler) OwnerCreateOfflineBooking(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -393,7 +453,7 @@ func (h *Handler) OwnerCreateOfflineBooking(c *gin.Context) {
 		return
 	}
 
-	res, err := h.service.OwnerCreateOfflineBooking(c.Request.Context(), userID, req)
+	res, err := h.service.OwnerCreateOfflineBooking(c.Request.Context(), ownerCtx, req)
 	if err != nil {
 		respondBookingError(c, err, "Failed to create offline booking")
 		return
@@ -403,7 +463,7 @@ func (h *Handler) OwnerCreateOfflineBooking(c *gin.Context) {
 }
 
 func (h *Handler) ListOwnerBookings(c *gin.Context) {
-	userID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -415,7 +475,7 @@ func (h *Handler) ListOwnerBookings(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.ListOwnerBookings(c.Request.Context(), userID, req)
+	result, err := h.service.ListOwnerBookings(c.Request.Context(), ownerCtx, req)
 	if err != nil {
 		if errors.Is(err, ErrOwnerProfileNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
@@ -429,7 +489,7 @@ func (h *Handler) ListOwnerBookings(c *gin.Context) {
 }
 
 func (h *Handler) CancelPaidBookingWithRefund(c *gin.Context) {
-	ownerUserID, ok := httputil.GetAuthenticatedUserID(c)
+	ownerCtx, ok := httputil.GetOwnerContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
@@ -450,11 +510,30 @@ func (h *Handler) CancelPaidBookingWithRefund(c *gin.Context) {
 		return
 	}
 
-	booking, err := h.service.CancelPaidBookingWithRefund(c.Request.Context(), ownerUserID, bookingID, req.Reason)
+	booking, err := h.service.CancelPaidBookingWithRefund(c.Request.Context(), ownerCtx, bookingID, req.Reason)
 	if err != nil {
 		respondBookingError(c, err, "Failed to cancel and refund booking")
 		return
 	}
+
+	ip := c.ClientIP()
+	ua := c.Request.UserAgent()
+	h.auditService.Record(c.Request.Context(), audit.CreateAuditLogParams{
+		OwnerProfileID: ownerCtx.OwnerProfileID,
+		ActorUserID:    ownerCtx.ActorUserID,
+		ActorRole:      ownerCtx.ActorRole,
+		Action:         audit.ActionBookingCancelRefund,
+		EntityType:     audit.EntityBooking,
+		EntityID:       &booking.ID,
+		Metadata: map[string]any{
+			"booking_id": booking.ID,
+			"reason":     req.Reason,
+			"amount":     booking.TotalPrice,
+			"venue_id":   booking.Venue.ID,
+		},
+		IPAddress: &ip,
+		UserAgent: &ua,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Booking cancelled and refund recorded successfully",

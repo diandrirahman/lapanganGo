@@ -64,12 +64,13 @@ type OwnerBookingsQuery struct {
 	VenueID   string `form:"venue_id" binding:"omitempty,uuid"`
 	Status    string `form:"status" binding:"omitempty,oneof=PENDING_PAYMENT WAITING_VERIFICATION PAID CONFIRMED COMPLETED CANCELLED"`
 	Scope     string `form:"scope" binding:"omitempty,oneof=upcoming"`
-	StartDate string `form:"start_date" binding:"omitempty,datetime=2006-01-02"`
-	EndDate   string `form:"end_date" binding:"omitempty,datetime=2006-01-02"`
-	Q         string `form:"q" binding:"omitempty"`
-	Sort      string `form:"sort" binding:"omitempty,oneof=newest oldest date_asc date_desc"`
-	Limit     int    `form:"limit" binding:"omitempty,min=1,max=100"`
-	Page      int    `form:"page" binding:"omitempty,min=1"`
+	StartDate       string `form:"start_date" binding:"omitempty,datetime=2006-01-02"`
+	EndDate         string `form:"end_date" binding:"omitempty,datetime=2006-01-02"`
+	Q               string `form:"q" binding:"omitempty"`
+	Sort            string `form:"sort" binding:"omitempty,oneof=newest oldest date_asc date_desc"`
+	Limit           int    `form:"limit" binding:"omitempty,min=1,max=100"`
+	Page            int    `form:"page" binding:"omitempty,min=1"`
+	AllowedVenueIDs []string
 }
 
 type OwnerBookingsResult struct {

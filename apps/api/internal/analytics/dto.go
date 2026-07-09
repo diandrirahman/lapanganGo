@@ -49,8 +49,9 @@ type ExpensesResponse struct {
 }
 
 type AnalyticsParams struct {
-	OwnerID   string
-	VenueID   *string
-	StartDate *time.Time
-	EndDate   *time.Time
+	OwnerID         string
+	VenueID         *string
+	AllowedVenueIDs []string
+	StartDate       *time.Time
+	EndDate         *time.Time
 }

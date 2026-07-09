@@ -2,10 +2,12 @@ package refunds
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"lapangango-api/internal/httputil"
 )
 
 type BookingForRefund struct {
@@ -25,7 +27,7 @@ type Repository interface {
 	GetActiveRefundRequestByBookingID(ctx context.Context, bookingID string) (*RefundRequestResponse, error)
 	GetLatestRefundRequestByBookingID(ctx context.Context, bookingID string) (*RefundRequestResponse, error)
 	GetRefundRequestByID(ctx context.Context, id string) (RefundRequestResponse, error)
-	ListOwnerRefundRequests(ctx context.Context, ownerID string, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error)
+	ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error)
 
 	// Transactional methods
 	BeginTx(ctx context.Context) (pgx.Tx, error)
@@ -137,8 +139,19 @@ func (r *repository) GetRefundRequestByID(ctx context.Context, id string) (Refun
 	return req, err
 }
 
-func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error) {
+func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerCtx httputil.OwnerContext, status string, venueID string, page, limit int) ([]OwnerRefundRequestListItem, int, error) {
 	offset := (page - 1) * limit
+
+	var args []interface{}
+	args = append(args, ownerCtx.EffectiveOwnerUserID, status, venueID)
+	argIdx := 4
+
+	venueFilter := ""
+	if len(ownerCtx.AllowedVenueIDs) > 0 {
+		venueFilter = fmt.Sprintf(" AND br.venue_id = ANY($%d::uuid[])", argIdx)
+		args = append(args, ownerCtx.AllowedVenueIDs)
+		argIdx++
+	}
 
 	countQuery := `
 		SELECT COUNT(*)
@@ -146,9 +159,10 @@ func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string
 		WHERE br.owner_id = $1
 		AND ($2 = '' OR br.status = $2)
 		AND ($3 = '' OR br.venue_id::text = $3)
-	`
+	` + venueFilter
+
 	var total int
-	if err := r.db.QueryRow(ctx, countQuery, ownerID, status, venueID).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -168,11 +182,11 @@ func (r *repository) ListOwnerRefundRequests(ctx context.Context, ownerID string
 		WHERE br.owner_id = $1
 		AND ($2 = '' OR br.status = $2)
 		AND ($3 = '' OR br.venue_id::text = $3)
-		ORDER BY br.requested_at DESC
-		LIMIT $4 OFFSET $5
-	`
+		` + venueFilter + fmt.Sprintf(" ORDER BY br.requested_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 
-	rows, err := r.db.Query(ctx, query, ownerID, status, venueID, limit, offset)
+	args = append(args, limit, offset)
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}

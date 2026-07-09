@@ -113,3 +113,53 @@ func UniqueViolationConstraint(err error) string {
 
 	return pgErr.ConstraintName
 }
+
+func (r *Repository) GetOwnerProfile(ctx context.Context, userID string) (*OwnerProfileResponse, error) {
+	query := `SELECT id::text, business_name FROM owner_profiles WHERE user_id = $1 LIMIT 1`
+	var profile OwnerProfileResponse
+	err := r.db.QueryRow(ctx, query, userID).Scan(&profile.ID, &profile.Name)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &profile, nil
+}
+
+func (r *Repository) GetStaffMemberships(ctx context.Context, userID string) ([]StaffMembershipResponse, error) {
+	query := `
+		SELECT
+			m.id::text,
+			p.id::text,
+			p.business_name,
+			m.role::text,
+			m.permissions::text[]
+		FROM owner_staff_members m
+		JOIN owner_profiles p ON m.owner_profile_id = p.id
+		WHERE m.user_id = $1 AND m.status = 'ACTIVE'
+	`
+	rows, err := r.db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var memberships []StaffMembershipResponse
+	for rows.Next() {
+		var m StaffMembershipResponse
+		var perms []string
+		if err := rows.Scan(&m.ID, &m.OwnerProfileID, &m.OwnerName, &m.Role, &perms); err != nil {
+			return nil, err
+		}
+		if perms == nil {
+			perms = []string{}
+		}
+		m.Permissions = perms
+		memberships = append(memberships, m)
+	}
+	if memberships == nil {
+		memberships = []StaffMembershipResponse{}
+	}
+	return memberships, nil
+}
