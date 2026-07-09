@@ -16,8 +16,8 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc, requireActualOwner gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc, requireActualOwner gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware, requireActualOwner)
 	ownerGroup.POST("/profile", h.CreateProfile)
 	ownerGroup.GET("/profile", h.GetProfile)
 	ownerGroup.PUT("/profile", h.UpdateProfile)

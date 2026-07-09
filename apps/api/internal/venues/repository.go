@@ -545,6 +545,7 @@ func (r *Repository) UpdateByIDAndOwnerProfileID(ctx context.Context, id string,
 			updated_at = now()
 		WHERE id = $1
 			AND owner_profile_id = $2
+			AND status != 'SUSPENDED'
 		RETURNING
 			id::text,
 			owner_profile_id::text,
@@ -615,6 +616,7 @@ func (r *Repository) UpdateStatusByIDAndOwnerProfileID(ctx context.Context, id, 
 			updated_at = now()
 		WHERE id = $1
 			AND owner_profile_id = $2
+			AND status != 'SUSPENDED'
 		RETURNING
 			id::text,
 			owner_profile_id::text,

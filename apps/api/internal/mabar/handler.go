@@ -17,13 +17,13 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
 	// Public routes
 	router.GET("/open-matches", h.ListOpenMatches)
 	router.GET("/open-matches/:id", h.GetOpenMatchDetail)
 
 	// Protected routes
-	protected := router.Group("", authMiddleware, customerRoleMiddleware)
+	protected := router.Group("", authMiddleware, requireActiveUser, customerRoleMiddleware)
 	protected.POST("/bookings/:id/open-matches", h.CreateOpenMatch)
 	protected.POST("/open-matches/:id/join", h.JoinOpenMatch)
 	protected.DELETE("/open-matches/:id/join", h.LeaveOpenMatch)

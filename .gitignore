@@ -10,5 +10,6 @@ apps/web/dist
 .gotmp
 outputs
 docs
+.agents/antigravity_v1_*.md
 report_step_15.md
 *.exe

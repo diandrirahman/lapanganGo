@@ -35,8 +35,8 @@ func frontendBaseURLFromRequest(c *gin.Context) string {
 	return strings.TrimRight(origin, "/")
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc, requireActualOwner gin.HandlerFunc) {
-	staffGroup := router.Group("/owner/staff", authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc, requireActualOwner gin.HandlerFunc) {
+	staffGroup := router.Group("/owner/staff", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware, requireActualOwner)
 	staffGroup.POST("", h.CreateStaff)
 	staffGroup.GET("", h.ListStaff)
 	staffGroup.GET("/:id", h.GetStaff)

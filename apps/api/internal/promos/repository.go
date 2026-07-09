@@ -201,7 +201,9 @@ func (r *repository) IsVenueOwnedByOwner(ctx context.Context, ownerUserID, venue
 			SELECT 1
 			FROM venues v
 			JOIN owner_profiles op ON op.id = v.owner_profile_id
-			WHERE v.id = $1 AND op.user_id = $2
+			WHERE v.id = $1
+			  AND op.user_id = $2
+			  AND v.status != 'SUSPENDED'
 		)
 	`
 	var exists bool

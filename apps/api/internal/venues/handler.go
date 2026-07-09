@@ -18,13 +18,13 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	router.GET("/venues", h.GetPublicVenues)
 	router.GET("/venues/:id", h.GetPublicVenue)
 	router.GET("/sports", h.GetSports)
 	router.GET("/facilities", h.GetFacilities)
 
-	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup := router.Group("/owner", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	ownerGroup.POST("/venues", middleware.RequireOwnerPermission("VENUES_WRITE"), h.CreateVenue)
 	ownerGroup.GET("/venues", middleware.RequireOwnerPermission("VENUES_READ"), h.ListVenues)
 	ownerGroup.GET("/venues/:id", middleware.RequireOwnerPermission("VENUES_READ"), h.GetVenue)

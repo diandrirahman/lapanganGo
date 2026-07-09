@@ -15,9 +15,9 @@ func NewHandler(service Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	// Only actual owner can access this endpoint
-	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware, h.RequireActualOwner())
+	ownerGroup := router.Group("/owner", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware, h.RequireActualOwner())
 	ownerGroup.GET("/audit-logs", h.ListAuditLogs)
 }
 

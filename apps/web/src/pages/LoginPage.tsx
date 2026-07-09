@@ -37,7 +37,13 @@ export const LoginPage: React.FC = () => {
           };
           login('mock-jwt-token', user);
           toast.success('Login berhasil!');
-          navigate(user.role === 'OWNER' || user.role === 'STAFF' ? '/owner/dashboard' : '/');
+          if (user.role === 'SUPER_ADMIN') {
+            navigate('/admin/dashboard');
+          } else if (user.role === 'OWNER' || user.role === 'STAFF') {
+            navigate('/owner/dashboard');
+          } else {
+            navigate('/');
+          }
         }, 1000);
         return;
       }
@@ -56,7 +62,13 @@ export const LoginPage: React.FC = () => {
 
       login(data.token, data.user);
       toast.success('Login berhasil!');
-      navigate(data.user.role === 'OWNER' || data.user.role === 'STAFF' ? '/owner/dashboard' : '/');
+      if (data.user.role === 'SUPER_ADMIN') {
+        navigate('/admin/dashboard');
+      } else if (data.user.role === 'OWNER' || data.user.role === 'STAFF') {
+        navigate('/owner/dashboard');
+      } else {
+        navigate('/');
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Terjadi kesalahan';
       setError(msg);

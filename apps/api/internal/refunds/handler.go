@@ -21,14 +21,14 @@ func NewHandler(service Service, auditService audit.Service) *Handler {
 	return &Handler{service: service, auditService: auditService}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, customerMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	customerGroup := router.Group("/bookings")
-	customerGroup.Use(authMiddleware, customerMiddleware)
+	customerGroup.Use(authMiddleware, requireActiveUser, customerMiddleware)
 	customerGroup.POST("/:id/refund-request", h.RequestBookingRefund)
 	customerGroup.GET("/:id/refund-request", h.GetRefundRequestByBooking)
 
 	ownerGroup := router.Group("/owner/refund-requests")
-	ownerGroup.Use(authMiddleware, ownerWorkspaceMiddleware)
+	ownerGroup.Use(authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	ownerGroup.GET("", middleware.RequireOwnerPermission("REFUNDS_READ"), h.ListOwnerRefundRequests)
 	ownerGroup.PATCH("/:id/approve", middleware.RequireOwnerPermission("REFUNDS_WRITE"), h.ApproveRefundRequest)
 	ownerGroup.PATCH("/:id/reject", middleware.RequireOwnerPermission("REFUNDS_WRITE"), h.RejectRefundRequest)

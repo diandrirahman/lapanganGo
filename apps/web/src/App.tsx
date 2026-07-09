@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { Toaster } from 'react-hot-toast';
 import { HomePage } from './pages/HomePage';
@@ -14,6 +14,14 @@ import { MabarDetailPage } from './pages/MabarDetailPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { StaffSetupPasswordPage } from './pages/StaffSetupPasswordPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { SuperAdminRoute } from './components/SuperAdminRoute';
+
+// Admin Pages
+import { AdminUsersPage } from './pages/admin/AdminUsersPage';
+import { AdminOwnersPage } from './pages/admin/AdminOwnersPage';
+import { AdminVenuesPage } from './pages/admin/AdminVenuesPage';
+import { AdminAuditLogsPage } from './pages/admin/AdminAuditLogsPage';
+import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 
 // Owner Pages
 import { OwnerDashboardPage } from './pages/owner/OwnerDashboardPage';
@@ -103,6 +111,16 @@ function App() {
               <Route path="/owner/staff" element={<OwnerStaffPage />} />
               <Route path="/owner/audit-logs" element={<OwnerAuditLogsPage />} />
             </Route>
+          </Route>
+
+          {/* Admin Routes */}
+          <Route element={<SuperAdminRoute />}>
+            <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
+            <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/owners" element={<AdminOwnersPage />} />
+            <Route path="/admin/venues" element={<AdminVenuesPage />} />
+            <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
           </Route>
 
           {/* Catch-All / 404 */}

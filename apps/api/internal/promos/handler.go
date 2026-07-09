@@ -17,8 +17,8 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
-	group := router.Group("/owner/promos", authMiddleware, ownerWorkspaceMiddleware)
+func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	group := router.Group("/owner/promos", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	group.POST("", middleware.RequireOwnerPermission("PROMOS_WRITE"), h.CreatePromo)
 	group.GET("", middleware.RequireOwnerPermission("PROMOS_READ"), h.ListPromos)
 	group.GET("/:id", middleware.RequireOwnerPermission("PROMOS_READ"), h.GetPromo)
@@ -117,8 +117,8 @@ func (h *Handler) TogglePromo(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
-func (h *Handler) RegisterCustomerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
-	group := router.Group("/promos", authMiddleware, customerRoleMiddleware)
+func (h *Handler) RegisterCustomerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
+	group := router.Group("/promos", authMiddleware, requireActiveUser, customerRoleMiddleware)
 	group.POST("/validate", h.ValidatePromo)
 }
 

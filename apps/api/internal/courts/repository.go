@@ -253,6 +253,7 @@ func (r *Repository) UpdateByIDAndOwnerProfileID(ctx context.Context, courtID, o
 			WHERE c.id = $1
 				AND c.venue_id = v.id
 				AND v.owner_profile_id = $2
+				AND v.status != 'SUSPENDED'
 			RETURNING
 				c.id,
 				c.venue_id,
@@ -305,6 +306,7 @@ func (r *Repository) UpdateStatusByIDAndOwnerProfileID(ctx context.Context, cour
 			WHERE c.id = $1
 				AND c.venue_id = v.id
 				AND v.owner_profile_id = $2
+				AND v.status != 'SUSPENDED'
 			RETURNING
 				c.id,
 				c.venue_id,

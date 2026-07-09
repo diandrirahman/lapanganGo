@@ -210,9 +210,9 @@ func (h *Handler) DeleteTransaction(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Transaction deleted successfully"})
 }
 
-func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	ownerFinance := r.Group("/owner/finance")
-	ownerFinance.Use(authMiddleware, ownerWorkspaceMiddleware)
+	ownerFinance.Use(authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	{
 		ownerFinance.GET("/summary", middleware.RequireOwnerPermission("FINANCE_READ"), h.GetFinanceSummary)
 		ownerFinance.GET("/transactions", middleware.RequireOwnerPermission("FINANCE_READ"), h.GetTransactions)

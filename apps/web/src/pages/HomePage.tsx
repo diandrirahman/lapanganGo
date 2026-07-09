@@ -19,6 +19,10 @@ export const HomePage: React.FC = () => {
     );
   }
 
+  if (user?.role === 'SUPER_ADMIN') {
+    return <Navigate to="/admin/dashboard" replace />;
+  }
+
   if (user?.role === 'OWNER' || user?.role === 'STAFF') {
     return <Navigate to="/owner/dashboard" replace />;
   }

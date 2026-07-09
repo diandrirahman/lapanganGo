@@ -15,11 +15,11 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, authRateLimiter gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, authRateLimiter gin.HandlerFunc) {
 	authGroup := router.Group("/auth")
 	authGroup.POST("/register", authRateLimiter, h.Register)
 	authGroup.POST("/login", authRateLimiter, h.Login)
-	authGroup.GET("/me", authMiddleware, h.Me)
+	authGroup.GET("/me", authMiddleware, requireActiveUser, h.Me)
 }
 
 func (h *Handler) Register(c *gin.Context) {

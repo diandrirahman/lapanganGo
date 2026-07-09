@@ -96,6 +96,16 @@ func (r *Repository) FindByEmail(ctx context.Context, email string) (User, error
 	return user, nil
 }
 
+func (r *Repository) GetUserStatus(ctx context.Context, userID string) (string, error) {
+	query := `SELECT status::text FROM users WHERE id = $1 LIMIT 1`
+	var status string
+	err := r.db.QueryRow(ctx, query, userID).Scan(&status)
+	if err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
 }

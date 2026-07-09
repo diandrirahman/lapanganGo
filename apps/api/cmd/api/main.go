@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"lapangango-api/internal/admin"
 	"lapangango-api/internal/analytics"
 	"lapangango-api/internal/audit"
 	"lapangango-api/internal/auth"
@@ -90,10 +91,11 @@ func main() {
 	authService := auth.NewService(authRepository, tokenService)
 	authHandler := auth.NewHandler(authService)
 	authMiddleware := middleware.Auth(tokenService)
+	requireActiveUser := middleware.RequireActiveUser(authRepository)
 
 	// Increased rate limit for local demo/QA to prevent lockouts
 	authRateLimiter := middleware.NewRateLimiter(cfg.RedisURL, "auth", cfg.AuthRateLimitPerMinute, time.Minute)
-	authHandler.RegisterRoutes(r, authMiddleware, authRateLimiter)
+	authHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, authRateLimiter)
 
 	availabilityRepository := availability.NewRepository(dbPool)
 	availabilityService := availability.NewService(availabilityRepository)
@@ -107,7 +109,7 @@ func main() {
 	ownerRepository := owners.NewRepository(dbPool)
 	ownerService := owners.NewService(ownerRepository)
 	ownerHandler := owners.NewHandler(ownerService)
-	ownerHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
+	ownerHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware, requireActualOwner)
 
 	auditRepository := audit.NewRepository(dbPool)
 	auditService := audit.NewService(auditRepository)
@@ -122,47 +124,47 @@ func main() {
 	staffRepository := staff.NewRepository(dbPool)
 	staffService := staff.NewService(staffRepository, emailService)
 	staffHandler := staff.NewHandler(staffService, auditService)
-	staffHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
+	staffHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware, requireActualOwner)
 
 	venueRepository := venues.NewRepository(dbPool)
 	venueService := venues.NewService(venueRepository)
 	venueHandler := venues.NewHandler(venueService)
-	venueHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	venueHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	courtRepository := courts.NewRepository(dbPool)
 	courtService := courts.NewService(courtRepository)
 	courtHandler := courts.NewHandler(courtService)
-	courtHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	courtHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	scheduleRepository := schedules.NewRepository(dbPool)
 	scheduleService := schedules.NewService(scheduleRepository)
 	scheduleHandler := schedules.NewHandler(scheduleService)
-	scheduleHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	scheduleHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	financeRepository := finance.NewRepository(dbPool)
 	financeService := finance.NewService(financeRepository)
 	financeHandler := finance.NewHandler(financeService, auditService)
-	financeHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	financeHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	notificationsRepository := notifications.NewRepository(dbPool)
 	notificationsService := notifications.NewService(notificationsRepository)
 	notificationsHandler := notifications.NewHandler(notificationsService)
 	// Notifications routes apply to all authenticated users
 	notificationsGroup := r.Group("/notifications")
-	notificationsGroup.Use(authMiddleware)
+	notificationsGroup.Use(authMiddleware, requireActiveUser)
 	notificationsHandler.RegisterRoutes(notificationsGroup)
 
 	promosRepository := promos.NewRepository(dbPool)
 	promosService := promos.NewService(promosRepository)
 	promosHandler := promos.NewHandler(promosService)
-	promosHandler.RegisterOwnerRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
-	promosHandler.RegisterCustomerRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
+	promosHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
+	promosHandler.RegisterCustomerRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 
 	bookingsRepository := bookings.NewRepository(dbPool)
 	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService, promosRepository)
 	bookingsHandler := bookings.NewHandler(bookingsService, auditService)
-	bookingsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
-	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	bookingsHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
+	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -172,22 +174,27 @@ func main() {
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
 	blockedSlotHandler := blockedslots.NewHandler(blockedSlotService)
-	blockedSlotHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	blockedSlotHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
 	mabarRepository := mabar.NewRepository(dbPool)
 	mabarService := mabar.NewService(mabarRepository)
 	mabarHandler := mabar.NewHandler(mabarService)
-	mabarHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"))
+	mabarHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 
 	refundsRepository := refunds.NewRepository(dbPool)
 	refundsService := refunds.NewService(refundsRepository, notificationsService)
 	refundsHandler := refunds.NewHandler(refundsService, auditService)
-	refundsHandler.RegisterRoutes(r, authMiddleware, middleware.RequireRole("CUSTOMER"), ownerWorkspaceMiddleware)
+	refundsHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"), ownerWorkspaceMiddleware)
 
 	auditHandler := audit.NewHandler(auditService)
-	auditHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware)
+	auditHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
-	analytics.RegisterRoutes(r, dbPool, authMiddleware, ownerWorkspaceMiddleware)
+	adminRepository := admin.NewRepository(dbPool)
+	adminService := admin.NewService(adminRepository, auditService)
+	adminHandler := admin.NewHandler(adminService)
+	adminHandler.RegisterRoutes(r, authMiddleware, requireActiveUser)
+
+	analytics.RegisterRoutes(r, dbPool, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
 		Handler: r,

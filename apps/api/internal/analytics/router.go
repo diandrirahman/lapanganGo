@@ -6,13 +6,13 @@ import (
 	"lapangango-api/internal/middleware"
 )
 
-func RegisterRoutes(r *gin.Engine, db *pgxpool.Pool, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+func RegisterRoutes(r *gin.Engine, db *pgxpool.Pool, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
 	repo := NewRepository(db)
 	svc := NewService(repo)
 	handler := NewHandler(svc)
 
 	ownerAnalytics := r.Group("/owner/analytics")
-	ownerAnalytics.Use(authMiddleware, ownerWorkspaceMiddleware)
+	ownerAnalytics.Use(authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	{
 		ownerAnalytics.GET("/bookings", middleware.RequireOwnerPermission("ANALYTICS_READ"), handler.GetBookingsTrend)
 		ownerAnalytics.GET("/revenue", middleware.RequireOwnerPermission("ANALYTICS_READ"), handler.GetRevenueTrend)

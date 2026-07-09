@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 
 	"lapangango-api/internal/httputil"
@@ -9,7 +10,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func OwnerWorkspaceAccess(repo *owneraccess.Repository) gin.HandlerFunc {
+type OwnerWorkspaceRepo interface {
+	GetOwnerContextByUserID(ctx context.Context, userID string) (owneraccess.OwnerContextInfo, error)
+	GetStaffContextByUserID(ctx context.Context, userID string) (owneraccess.StaffContextInfo, error)
+}
+
+func OwnerWorkspaceAccess(repo OwnerWorkspaceRepo) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		actorUserID, exists := httputil.GetAuthenticatedUserID(c)
 		if !exists {

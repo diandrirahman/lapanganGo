@@ -19,8 +19,8 @@ func NewHandler(service *Service, auditService audit.Service) *Handler {
 	return &Handler{service: service, auditService: auditService}
 }
 
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
-	group := router.Group("/bookings", authMiddleware, customerRoleMiddleware)
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, customerRoleMiddleware gin.HandlerFunc) {
+	group := router.Group("/bookings", authMiddleware, requireActiveUser, customerRoleMiddleware)
 	group.POST("", h.CreateBooking)
 	group.GET("", h.ListBookings)
 	group.GET("/:id", h.GetBooking)
@@ -29,8 +29,8 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	group.POST("/:id/payment-proof", h.SubmitPaymentProof)
 }
 
-func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
-	ownerGroup := router.Group("/owner", authMiddleware, ownerWorkspaceMiddleware)
+func (h *Handler) RegisterOwnerRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireActiveUser gin.HandlerFunc, ownerWorkspaceMiddleware gin.HandlerFunc) {
+	ownerGroup := router.Group("/owner", authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	ownerGroup.GET("/bookings", middleware.RequireOwnerPermission("BOOKINGS_READ"), h.ListOwnerBookings)
 	ownerGroup.GET("/venues/:id/bookings", middleware.RequireOwnerPermission("BOOKINGS_READ"), h.ListOwnerVenueBookings)
 	ownerGroup.PATCH("/bookings/:id/verify-payment", middleware.RequireOwnerPermission("PAYMENT_VERIFY"), h.VerifyPayment)

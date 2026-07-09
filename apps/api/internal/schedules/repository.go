@@ -74,6 +74,7 @@ func (r *Repository) FindCourtByIDAndOwnerProfileID(ctx context.Context, courtID
 		JOIN venues v ON v.id = c.venue_id
 		WHERE c.id = $1
 			AND v.owner_profile_id = $2
+			AND v.status != 'SUSPENDED'
 		LIMIT 1
 	`
 
