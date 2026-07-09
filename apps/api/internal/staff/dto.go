@@ -44,6 +44,13 @@ type StaffResponse struct {
 	InvitedAt        *time.Time `json:"invited_at,omitempty"`
 	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
 	InviteURL        *string    `json:"invite_url,omitempty"`
+	EmailDelivery    *EmailDeliveryStatus `json:"email_delivery,omitempty"`
+}
+
+type EmailDeliveryStatus struct {
+	Attempted bool   `json:"attempted"`
+	Sent      bool   `json:"sent"`
+	Message   string `json:"message"`
 }
 
 type SetupStaffPasswordRequest struct {
@@ -52,11 +59,13 @@ type SetupStaffPasswordRequest struct {
 }
 
 type RegenerateInviteResponse struct {
-	InviteURL string    `json:"invite_url"`
-	ExpiresAt time.Time `json:"expires_at"`
+	InviteURL     string              `json:"invite_url"`
+	ExpiresAt     time.Time           `json:"expires_at"`
+	EmailDelivery EmailDeliveryStatus `json:"email_delivery"`
 }
 
 type ResetStaffPasswordResponse struct {
-	ResetURL  string    `json:"reset_url"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ResetURL      string              `json:"reset_url"`
+	ExpiresAt     time.Time           `json:"expires_at"`
+	EmailDelivery EmailDeliveryStatus `json:"email_delivery"`
 }

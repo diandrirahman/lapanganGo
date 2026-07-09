@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+
+	"lapangango-api/internal/email"
 )
 
 var (
@@ -26,10 +28,14 @@ var (
 
 type Service struct {
 	repository *Repository
+	emailSvc   email.Service
 }
 
-func NewService(repository *Repository) *Service {
-	return &Service{repository: repository}
+func NewService(repository *Repository, emailSvc email.Service) *Service {
+	return &Service{
+		repository: repository,
+		emailSvc:   emailSvc,
+	}
 }
 
 func generateSecureToken() (string, string, error) {
@@ -106,6 +112,30 @@ func (s *Service) CreateStaff(ctx context.Context, ownerProfileID, actorUserID, 
 	setupURL := staffSetupPasswordURL(rawToken, frontendBaseURL)
 	staff.InviteURL = &setupURL
 
+	emailDelivery := EmailDeliveryStatus{
+		Attempted: false,
+		Sent:      false,
+		Message:   "email delivery disabled",
+	}
+
+	if s.emailSvc.Enabled() {
+		emailDelivery.Attempted = true
+		err = s.emailSvc.SendStaffInvite(ctx, email.InviteEmailParams{
+			ToEmail:   staff.Email,
+			StaffName: staff.Name,
+			InviteURL: setupURL,
+		})
+		if err != nil {
+			emailDelivery.Sent = false
+			emailDelivery.Message = err.Error()
+		} else {
+			emailDelivery.Sent = true
+			emailDelivery.Message = "Email sent"
+		}
+	}
+
+	staff.EmailDelivery = &emailDelivery
+
 	return staff, nil
 }
 
@@ -150,9 +180,34 @@ func (s *Service) RegenerateInvite(ctx context.Context, ownerProfileID, staffID,
 		return RegenerateInviteResponse{}, err
 	}
 
+	setupURL := staffSetupPasswordURL(rawToken, frontendBaseURL)
+
+	emailDelivery := EmailDeliveryStatus{
+		Attempted: false,
+		Sent:      false,
+		Message:   "email delivery disabled",
+	}
+
+	if s.emailSvc.Enabled() {
+		emailDelivery.Attempted = true
+		err = s.emailSvc.SendStaffInvite(ctx, email.InviteEmailParams{
+			ToEmail:   staff.Email,
+			StaffName: staff.Name,
+			InviteURL: setupURL,
+		})
+		if err != nil {
+			emailDelivery.Sent = false
+			emailDelivery.Message = err.Error()
+		} else {
+			emailDelivery.Sent = true
+			emailDelivery.Message = "Email sent"
+		}
+	}
+
 	return RegenerateInviteResponse{
-		InviteURL: staffSetupPasswordURL(rawToken, frontendBaseURL),
-		ExpiresAt: expiresAt,
+		InviteURL:     setupURL,
+		ExpiresAt:     expiresAt,
+		EmailDelivery: emailDelivery,
 	}, nil
 }
 
@@ -192,9 +247,34 @@ func (s *Service) ResetPasswordToken(ctx context.Context, ownerProfileID, staffI
 		return ResetStaffPasswordResponse{}, err
 	}
 
+	resetURL := staffSetupPasswordURL(rawToken, frontendBaseURL)
+
+	emailDelivery := EmailDeliveryStatus{
+		Attempted: false,
+		Sent:      false,
+		Message:   "email delivery disabled",
+	}
+
+	if s.emailSvc.Enabled() {
+		emailDelivery.Attempted = true
+		err = s.emailSvc.SendStaffPasswordReset(ctx, email.ResetEmailParams{
+			ToEmail:   staff.Email,
+			StaffName: staff.Name,
+			ResetURL:  resetURL,
+		})
+		if err != nil {
+			emailDelivery.Sent = false
+			emailDelivery.Message = err.Error()
+		} else {
+			emailDelivery.Sent = true
+			emailDelivery.Message = "Email sent"
+		}
+	}
+
 	return ResetStaffPasswordResponse{
-		ResetURL:  staffSetupPasswordURL(rawToken, frontendBaseURL),
-		ExpiresAt: expiresAt,
+		ResetURL:      resetURL,
+		ExpiresAt:     expiresAt,
+		EmailDelivery: emailDelivery,
 	}, nil
 }
 

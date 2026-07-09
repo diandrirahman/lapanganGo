@@ -19,6 +19,17 @@ type Config struct {
 	RedisURL                           string
 	GeneralRateLimitPerMinute          int
 	AuthRateLimitPerMinute             int
+
+	// Email Config
+	EmailDeliveryEnabled bool
+	SMTPHost             string
+	SMTPPort             int
+	SMTPUsername         string
+	SMTPPassword         string
+	SMTPFromName         string
+	SMTPFromEmail        string
+	SMTPUseTLS           bool
+	FrontendBaseURL      string
 }
 
 func Load() Config {
@@ -94,6 +105,41 @@ func Load() Config {
 		}
 	}
 
+	emailDeliveryEnabled := os.Getenv("EMAIL_DELIVERY_ENABLED") == "true"
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := 587
+	if value := os.Getenv("SMTP_PORT"); value != "" {
+		if parsedValue, err := strconv.Atoi(value); err == nil && parsedValue > 0 {
+			smtpPort = parsedValue
+		}
+	}
+	smtpUsername := os.Getenv("SMTP_USERNAME")
+	smtpPassword := os.Getenv("SMTP_PASSWORD")
+	
+	smtpFromName := os.Getenv("SMTP_FROM_NAME")
+	if smtpFromName == "" {
+		smtpFromName = "LapangGo"
+	}
+
+	smtpFromEmail := os.Getenv("SMTP_FROM_EMAIL")
+	if smtpFromEmail == "" {
+		smtpFromEmail = "no-reply@lapanggo.local"
+	}
+
+	smtpUseTLS := os.Getenv("SMTP_USE_TLS") == "true"
+	if os.Getenv("SMTP_USE_TLS") == "" {
+		smtpUseTLS = true // Default to true if not specified, except maybe for local mailpit.
+	}
+	
+	frontendBaseURL := os.Getenv("FRONTEND_BASE_URL")
+	if frontendBaseURL == "" {
+		frontendBaseURL = "http://localhost:3000"
+	}
+
+	if emailDeliveryEnabled && smtpHost == "" {
+		log.Fatal("SMTP_HOST is required when EMAIL_DELIVERY_ENABLED is true")
+	}
+
 	return Config{
 		AppPort:                            appPort,
 		DatabaseURL:                        databaseURL,
@@ -105,5 +151,14 @@ func Load() Config {
 		RedisURL:                           redisURL,
 		GeneralRateLimitPerMinute:          generalRateLimitPerMinute,
 		AuthRateLimitPerMinute:             authRateLimitPerMinute,
+		EmailDeliveryEnabled:               emailDeliveryEnabled,
+		SMTPHost:                           smtpHost,
+		SMTPPort:                           smtpPort,
+		SMTPUsername:                       smtpUsername,
+		SMTPPassword:                       smtpPassword,
+		SMTPFromName:                       smtpFromName,
+		SMTPFromEmail:                      smtpFromEmail,
+		SMTPUseTLS:                         smtpUseTLS,
+		FrontendBaseURL:                    frontendBaseURL,
 	}
 }

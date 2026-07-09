@@ -18,6 +18,7 @@ import (
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
+	"lapangango-api/internal/email"
 	"lapangango-api/internal/finance"
 	"lapangango-api/internal/mabar"
 	"lapangango-api/internal/middleware"
@@ -111,8 +112,15 @@ func main() {
 	auditRepository := audit.NewRepository(dbPool)
 	auditService := audit.NewService(auditRepository)
 
+	var emailService email.Service
+	if cfg.EmailDeliveryEnabled {
+		emailService = email.NewSMTPService(cfg)
+	} else {
+		emailService = email.NewNoopService()
+	}
+
 	staffRepository := staff.NewRepository(dbPool)
-	staffService := staff.NewService(staffRepository)
+	staffService := staff.NewService(staffRepository, emailService)
 	staffHandler := staff.NewHandler(staffService, auditService)
 	staffHandler.RegisterRoutes(r, authMiddleware, ownerWorkspaceMiddleware, requireActualOwner)
 

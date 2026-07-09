@@ -1,3 +1,9 @@
+export interface EmailDeliveryStatus {
+  attempted: boolean;
+  sent: boolean;
+  message: string;
+}
+
 export interface StaffMember {
   id: string;
   owner_profile_id: string;
@@ -12,6 +18,7 @@ export interface StaffMember {
   invited_at?: string;
   activated_at?: string;
   invite_url?: string;
+  email_delivery?: EmailDeliveryStatus;
   venue_ids: string[];
   created_at: string;
   updated_at: string;
@@ -62,9 +69,11 @@ export const STAFF_PERMISSIONS = [
 export interface RegenerateInviteResponse {
   invite_url: string;
   expires_at: string;
+  email_delivery: EmailDeliveryStatus;
 }
 
 export interface ResetStaffPasswordResponse {
   reset_url: string;
   expires_at: string;
+  email_delivery: EmailDeliveryStatus;
 }

@@ -63,7 +63,11 @@ export const OwnerStaffPage: React.FC = () => {
       const resData = await res.json();
       if (!res.ok) throw new Error(resData.message || 'Gagal menambah staff');
       
-      toast.success('Staff berhasil ditambahkan');
+      if (resData.email_delivery?.sent) {
+        toast.success('Staff berhasil ditambahkan dan undangan email telah dikirim');
+      } else {
+        toast('Staff berhasil dibuat, tetapi email gagal dikirim. Silakan salin link undangan secara manual.', { icon: '⚠️' });
+      }
       if (resData.invite_url) {
         setInviteUrlToShow(resData.invite_url);
       }
@@ -128,6 +132,11 @@ export const OwnerStaffPage: React.FC = () => {
       const resData = await res.json();
       if (!res.ok) throw new Error(resData.message || 'Gagal mengirim ulang invite');
       
+      if (resData.email_delivery?.sent) {
+        toast.success('Undangan email telah dikirim ulang');
+      } else {
+        toast('Gagal mengirim email undangan. Silakan salin link secara manual.', { icon: '⚠️' });
+      }
       setInviteUrlToShow(resData.invite_url);
       fetchData();
     } catch (error: any) {
@@ -147,6 +156,11 @@ export const OwnerStaffPage: React.FC = () => {
       const resData = await res.json();
       if (!res.ok) throw new Error(resData.message || 'Gagal mereset password');
       
+      if (resData.email_delivery?.sent) {
+        toast.success('Email reset password telah dikirim');
+      } else {
+        toast('Gagal mengirim email reset password. Silakan salin link secara manual.', { icon: '⚠️' });
+      }
       setInviteUrlToShow(resData.reset_url);
       fetchData();
     } catch (error: any) {

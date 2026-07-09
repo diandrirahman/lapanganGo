@@ -43,6 +43,12 @@ services:
       - FRONTEND_BASE_URL=http://localhost:3000
       - BOOKING_PAYMENT_TTL_MINUTES=10
       - BOOKING_EXPIRY_SWEEP_INTERVAL_SECONDS=10
+      - EMAIL_DELIVERY_ENABLED=true
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_USE_TLS=false
+      - SMTP_FROM_NAME=LapangGo
+      - SMTP_FROM_EMAIL=no-reply@lapanggo.local
     ports:
       - "8080:8080"
     depends_on:
@@ -63,10 +69,17 @@ services:
     container_name: lapangango_web
     restart: always
     ports:
-      - "5001:80"
+      - "3000:80"
     depends_on:
       api:
         condition: service_healthy
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: lapangango_mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
 
 volumes:
   lapangango_postgres_data:
