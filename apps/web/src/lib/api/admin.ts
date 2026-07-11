@@ -75,6 +75,17 @@ export interface PaginatedResponse<T> {
   limit: number;
 }
 
+export interface DashboardStatsResponse {
+  total_users: number;
+  total_owners: number;
+  total_venues: number;
+  total_bookings: number;
+}
+
+const ADMIN_REQUEST_TIMEOUT_MS = 10000;
+
+const mutationDeadline = (): string => String(Date.now() + ADMIN_REQUEST_TIMEOUT_MS);
+
 export const adminApi = {
   getUsers: async (params?: UserQuery): Promise<PaginatedResponse<UserResponse>> => {
     const query = new URLSearchParams(params as any).toString();
@@ -100,9 +111,11 @@ export const adminApi = {
     const token = localStorage.getItem('auth_token');
     const response = await apiFetch(`${API_BASE_URL}/admin/owners/${id}/status`, {
       method: 'PATCH',
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
       headers: { 
         'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Request-Deadline-Ms': mutationDeadline()
       },
       body: JSON.stringify({ status })
     });
@@ -123,9 +136,11 @@ export const adminApi = {
     const token = localStorage.getItem('auth_token');
     const response = await apiFetch(`${API_BASE_URL}/admin/venues/${id}/status`, {
       method: 'PATCH',
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
       headers: { 
         'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Request-Deadline-Ms': mutationDeadline()
       },
       body: JSON.stringify({ status })
     });
@@ -141,4 +156,16 @@ export const adminApi = {
     if (!response.ok) throw new Error('Failed to fetch audit logs');
     return response.json();
   },
+
+  getDashboardStats: async (): Promise<DashboardStatsResponse> => {
+    const token = localStorage.getItem('auth_token');
+    const response = await apiFetch(`${API_BASE_URL}/admin/dashboard`, {
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      throw new Error('Failed to fetch dashboard stats');
+    }
+    return response.json();
+  }
 };

@@ -33,6 +33,8 @@ const (
 	EntityRefund             = "REFUND"
 	EntityFinanceTransaction = "FINANCE_TRANSACTION"
 	EntityVenue              = "VENUE"
+	EntityOwnerProfile       = "OWNER_PROFILE"
+	EntityUser               = "USER"
 )
 
 type CreateAuditLogParams struct {

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { getRoleHomeRoute } from '../lib/roleRouting';
 import { PageShell } from '../components/layout/PageShell';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
@@ -37,13 +38,8 @@ export const LoginPage: React.FC = () => {
           };
           login('mock-jwt-token', user);
           toast.success('Login berhasil!');
-          if (user.role === 'SUPER_ADMIN') {
-            navigate('/admin/dashboard');
-          } else if (user.role === 'OWNER' || user.role === 'STAFF') {
-            navigate('/owner/dashboard');
-          } else {
-            navigate('/');
-          }
+          const route = getRoleHomeRoute(user.role);
+          navigate(route, { replace: true });
         }, 1000);
         return;
       }
@@ -62,13 +58,8 @@ export const LoginPage: React.FC = () => {
 
       login(data.token, data.user);
       toast.success('Login berhasil!');
-      if (data.user.role === 'SUPER_ADMIN') {
-        navigate('/admin/dashboard');
-      } else if (data.user.role === 'OWNER' || data.user.role === 'STAFF') {
-        navigate('/owner/dashboard');
-      } else {
-        navigate('/');
-      }
+      const route = getRoleHomeRoute(data.user.role);
+      navigate(route, { replace: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Terjadi kesalahan';
       setError(msg);

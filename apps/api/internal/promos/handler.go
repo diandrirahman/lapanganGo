@@ -149,8 +149,8 @@ func respondError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Promo not found"})
 	case errors.Is(err, ErrCodeExists):
 		c.JSON(http.StatusConflict, gin.H{"message": "Promo code already exists"})
-	case errors.Is(err, ErrPromoVenueForbidden):
-		c.JSON(http.StatusForbidden, gin.H{"message": "Venue does not belong to owner"})
+	case errors.Is(err, ErrPromoVenueForbidden), errors.Is(err, ErrVenueSuspended):
+		c.JSON(http.StatusForbidden, gin.H{"message": "Venue does not belong to owner or is suspended"})
 	case errors.Is(err, ErrInvalidBookingDate), errors.Is(err, ErrInvalidDiscount), errors.Is(err, ErrInvalidPeriod), errors.Is(err, ErrInvalidPromoCode):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrPromoNotActive), errors.Is(err, ErrPromoExpired), errors.Is(err, ErrPromoNotStarted), errors.Is(err, ErrPromoVenueMismatch), errors.Is(err, ErrInvalidPrice):

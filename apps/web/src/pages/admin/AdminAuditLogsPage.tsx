@@ -21,7 +21,7 @@ export const AdminAuditLogsPage: React.FC = () => {
       setLogs(res.data);
       setTotalPages(res.total_pages);
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to fetch audit logs');
+      toast.error(error.message || error.response?.data?.message || 'Failed to fetch audit logs');
     } finally {
       setLoading(false);
     }
@@ -34,6 +34,13 @@ export const AdminAuditLogsPage: React.FC = () => {
   const handleFilter = (e: React.FormEvent) => {
     e.preventDefault();
     setAppliedAction(action);
+    setPage(1);
+  };
+
+  const handleResetFilters = () => {
+    setAction('');
+    setAppliedAction('');
+    setEntityType('');
     setPage(1);
   };
 
@@ -67,7 +74,7 @@ export const AdminAuditLogsPage: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-4">
+        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-4 items-end">
           <div className="w-full sm:w-64">
             <select
               value={entityType}
@@ -75,29 +82,44 @@ export const AdminAuditLogsPage: React.FC = () => {
                 setEntityType(e.target.value);
                 setPage(1);
               }}
-              className="block w-full pl-3 pr-10 py-2 text-base border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm rounded-lg"
+              className="block w-full px-3 py-2 text-base border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm rounded-lg"
             >
               <option value="">All Entities</option>
-              <option value="owner_profile">Owner Profile</option>
-              <option value="venue">Venue</option>
-              <option value="user">User</option>
-              <option value="booking">Booking</option>
+              {[
+                { value: 'OWNER_PROFILE', label: 'Owner Profile' },
+                { value: 'VENUE', label: 'Venue' },
+                { value: 'USER', label: 'User' },
+                { value: 'BOOKING', label: 'Booking' },
+                { value: 'STAFF', label: 'Staff' },
+                { value: 'REFUND', label: 'Refund' },
+                { value: 'FINANCE_TRANSACTION', label: 'Finance Transaction' }
+              ].map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </div>
-          <div className="w-full sm:w-64">
-            <input
-              type="text"
-              placeholder="Filter by action (e.g. UPDATE_STATUS)"
-              value={action}
-              onChange={(e) => setAction(e.target.value)}
-              className="block w-full px-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm transition-colors"
-            />
-          </div>
+          <form onSubmit={handleFilter} className="flex-1 w-full">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Filter by action (e.g. UPDATE_STATUS)"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                className="block w-full px-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm transition-colors"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 whitespace-nowrap"
+              >
+                Apply
+              </button>
+            </div>
+          </form>
           <button
-            onClick={handleFilter}
-            className="inline-flex items-center justify-center px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors"
+            onClick={handleResetFilters}
+            className="inline-flex items-center justify-center px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
           >
-            Apply Filters
+            Reset
           </button>
         </div>
 

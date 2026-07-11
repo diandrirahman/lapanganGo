@@ -21,6 +21,7 @@ var (
 	ErrPromoNotStarted     = errors.New("promo has not started yet")
 	ErrPromoVenueMismatch  = errors.New("promo is not valid for this venue")
 	ErrPromoVenueForbidden = errors.New("venue does not belong to owner")
+	ErrVenueSuspended      = errors.New("venue is suspended")
 	ErrInvalidPrice        = errors.New("final price cannot be less than or equal to 0")
 	ErrInvalidBookingDate  = errors.New("invalid booking date")
 	ErrPromoAlreadyUsed    = errors.New("promo has already been used and cannot be deleted")
@@ -79,7 +80,7 @@ func (s *Service) CreatePromo(ctx context.Context, ownerCtx httputil.OwnerContex
 			return PromoResponse{}, err
 		}
 		if !isOwned {
-			return PromoResponse{}, ErrPromoVenueForbidden
+			return PromoResponse{}, ErrVenueSuspended
 		}
 		if !ownerCtx.IsOwner && !containsID(ownerCtx.AllowedVenueIDs, *req.VenueID) {
 			return PromoResponse{}, ErrPromoVenueForbidden
@@ -247,7 +248,7 @@ func (s *Service) UpdatePromo(ctx context.Context, id string, ownerCtx httputil.
 	_, err = s.repo.UpdatePromo(ctx, id, ownerCtx.EffectiveOwnerUserID, params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return PromoResponse{}, ErrPromoNotFound
+			return PromoResponse{}, ErrVenueSuspended
 		}
 		return PromoResponse{}, err
 	}
@@ -282,7 +283,7 @@ func (s *Service) TogglePromoStatus(ctx context.Context, id string, ownerCtx htt
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return PromoResponse{}, ErrPromoNotFound
+			return PromoResponse{}, ErrVenueSuspended
 		}
 		return PromoResponse{}, err
 	}
@@ -463,7 +464,7 @@ func (s *Service) DeletePromo(ctx context.Context, id string, ownerCtx httputil.
 
 	err = s.repo.DeletePromo(ctx, id, ownerCtx.EffectiveOwnerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrPromoNotFound
+		return ErrVenueSuspended
 	}
 	return err
 }

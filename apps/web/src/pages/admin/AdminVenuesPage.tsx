@@ -22,7 +22,7 @@ export const AdminVenuesPage: React.FC = () => {
       setVenues(res.data);
       setTotalPages(res.total_pages);
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to fetch venues');
+      toast.error(error.message || error.response?.data?.message || 'Failed to fetch venues');
     } finally {
       setLoading(false);
     }
@@ -32,9 +32,27 @@ export const AdminVenuesPage: React.FC = () => {
     fetchVenues();
   }, [fetchVenues]);
 
+  const applySearch = () => {
+    setAppliedSearch(search);
+    setPage(1);
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    setAppliedSearch(search);
+    applySearch();
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applySearch();
+    }
+  };
+
+  const handleResetFilters = () => {
+    setSearch('');
+    setAppliedSearch('');
+    setStatus('');
     setPage(1);
   };
 
@@ -49,7 +67,11 @@ export const AdminVenuesPage: React.FC = () => {
       toast.success(`Venue ${newStatus === 'SUSPENDED' ? 'suspended' : 'activated'} successfully`);
       fetchVenues();
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to update venue status');
+      if (error.message === 'Request timeout' || error.name === 'AbortError') {
+        toast.error('Status belum pasti (network timeout), mohon refresh halaman');
+      } else {
+        toast.error(error.message || error.response?.data?.message || 'Failed to update venue status');
+      }
     } finally {
       setProcessingId(null);
     }
@@ -72,29 +94,35 @@ export const AdminVenuesPage: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-4">
-          <form onSubmit={handleSearch} className="flex-1">
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-5 w-5 text-slate-400" />
-              </div>
+        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-4 items-end">
+          <form onSubmit={handleSearch} className="flex-1 w-full">
+            <div className="flex gap-2">
               <input
                 type="text"
                 placeholder="Search by venue name or city..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm transition-colors"
+                onKeyDown={handleSearchKeyDown}
+                className="block w-full px-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm transition-colors"
               />
+              <button
+                type="submit"
+                aria-label="Search"
+                title="Search"
+                className="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
+              >
+                <Search className="h-4 w-4" />
+              </button>
             </div>
           </form>
-          <div className="w-full sm:w-48">
+          <div className="w-full sm:w-40">
             <select
               value={status}
               onChange={(e) => {
                 setStatus(e.target.value);
                 setPage(1);
               }}
-              className="block w-full pl-3 pr-10 py-2 text-base border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm rounded-lg"
+              className="block w-full px-3 py-2 text-base border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm rounded-lg"
             >
               <option value="">All Status</option>
               <option value="DRAFT">Draft</option>
@@ -103,6 +131,12 @@ export const AdminVenuesPage: React.FC = () => {
               <option value="SUSPENDED">Suspended</option>
             </select>
           </div>
+          <button
+            onClick={handleResetFilters}
+            className="inline-flex items-center justify-center px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
+          >
+            Reset
+          </button>
         </div>
 
         <div className="overflow-x-auto">

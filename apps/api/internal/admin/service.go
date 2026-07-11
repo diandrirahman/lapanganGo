@@ -12,7 +12,9 @@ type Service interface {
 	UpdateOwnerStatus(ctx context.Context, ownerProfileID string, status string, actorID string) error
 	GetVenues(ctx context.Context, query VenueQuery) (PaginatedResponse, error)
 	UpdateVenueStatus(ctx context.Context, venueID string, status string, actorID string) error
+	GetVenueOwnerProfileID(ctx context.Context, venueID string) (string, error)
 	GetAuditLogs(ctx context.Context, query AuditLogQuery) (PaginatedResponse, error)
+	GetDashboardStats(ctx context.Context) (DashboardStatsResponse, error)
 }
 
 type service struct {
@@ -169,4 +171,12 @@ func (s *service) GetAuditLogs(ctx context.Context, query AuditLogQuery) (Pagina
 		Page:       page,
 		Limit:      limit,
 	}, nil
+}
+
+func (s *service) GetDashboardStats(ctx context.Context) (DashboardStatsResponse, error) {
+	return s.repo.GetDashboardStats(ctx)
+}
+
+func (s *service) GetVenueOwnerProfileID(ctx context.Context, venueID string) (string, error) {
+	return s.repo.GetVenueOwnerProfileID(ctx, venueID)
 }

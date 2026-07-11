@@ -6,6 +6,8 @@ import (
 	"lapangango-api/internal/httputil"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type mockRepo struct {
@@ -352,5 +354,100 @@ func TestTogglePromoStatusReturnsRefetchedUsageSummary(t *testing.T) {
 	}
 	if res.UsageCount != 3 || res.TotalDiscountAmount != 75000 || res.TotalFinalRevenue != 300000 || res.CanDelete {
 		t.Fatalf("expected refetched usage summary, got %+v", res)
+	}
+}
+
+func TestUpdatePromoRejectsSuspendedVenue(t *testing.T) {
+	repo := &mockRepo{
+		Promo:     Promo{ID: "promo-1", VenueID: func() *string { v := "venue-1"; return &v }()},
+		UpdateErr: pgx.ErrNoRows, // Simulated from UPDATE WHERE ... AND (venue_id IS NULL OR EXISTS (... status != 'SUSPENDED'))
+	}
+	service := NewService(repo)
+
+	_, err := service.UpdatePromo(context.Background(), "promo-1", testOwnerCtx, CreatePromoRequest{
+		StartsAt: time.Now().Add(-time.Hour).Format(time.RFC3339),
+		EndsAt:   time.Now().Add(time.Hour).Format(time.RFC3339),
+	})
+	if !errors.Is(err, ErrVenueSuspended) {
+		t.Fatalf("expected ErrVenueSuspended, got %v", err)
+	}
+}
+
+func TestTogglePromoStatusRejectsSuspendedVenue(t *testing.T) {
+	repo := &mockRepo{
+		Promo:     Promo{ID: "promo-1", Status: "ACTIVE", VenueID: func() *string { v := "venue-1"; return &v }()},
+		UpdateErr: pgx.ErrNoRows,
+	}
+	service := NewService(repo)
+
+	_, err := service.TogglePromoStatus(context.Background(), "promo-1", testOwnerCtx)
+	if !errors.Is(err, ErrVenueSuspended) {
+		t.Fatalf("expected ErrVenueSuspended, got %v", err)
+	}
+}
+
+func TestDeletePromoRejectsSuspendedVenue(t *testing.T) {
+	repo := &mockRepo{
+		Promo:     Promo{ID: "promo-1", VenueID: func() *string { v := "venue-1"; return &v }()},
+		DeleteErr: pgx.ErrNoRows,
+	}
+	service := NewService(repo)
+
+	err := service.DeletePromo(context.Background(), "promo-1", testOwnerCtx)
+	if !errors.Is(err, ErrVenueSuspended) {
+		t.Fatalf("expected ErrVenueSuspended, got %v", err)
+	}
+}
+
+func TestValidatePromoRejectsSuspendedVenue(t *testing.T) {
+	repo := &mockRepo{
+		CourtInfo: CourtValidationInfo{PricePerHour: 100000, VenueID: "venue-1", OwnerUserID: "owner-1"},
+		ActiveErr: pgx.ErrNoRows, // Simulated from FindActivePromoByCode
+	}
+	service := NewService(repo)
+
+	_, err := service.ValidatePromo(context.Background(), ValidatePromoRequest{
+		CourtID:     "court-1",
+		VenueID:     "venue-1",
+		PromoCode:   "PROMO10",
+		BookingDate: "2026-07-06",
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	})
+	if !errors.Is(err, ErrPromoNotFound) {
+		t.Fatalf("expected ErrPromoNotFound when venue is suspended or promo is hidden, got %v", err)
+	}
+}
+
+func TestValidatePromoGlobalDoesNotRejectWhenNoVenue(t *testing.T) {
+	// A global promo (VenueID == nil) is still valid for any venue of the owner.
+	repo := &mockRepo{
+		CourtInfo: CourtValidationInfo{PricePerHour: 100000, VenueID: "venue-1", OwnerUserID: "owner-1"},
+		ActivePromo: Promo{
+			ID:            "promo-1",
+			Code:          "GLOBAL10",
+			Status:        "ACTIVE",
+			VenueID:       nil,
+			StartsAt:      time.Now().Add(-24 * time.Hour),
+			EndsAt:        time.Now().Add(24 * time.Hour),
+			DiscountType:  "FIXED_AMOUNT",
+			DiscountValue: 10000,
+		},
+	}
+	service := NewService(repo)
+
+	res, err := service.ValidatePromo(context.Background(), ValidatePromoRequest{
+		CourtID:     "court-1",
+		VenueID:     "venue-1",
+		PromoCode:   "GLOBAL10",
+		BookingDate: time.Now().Format("2006-01-02"),
+		StartTime:   "10:00",
+		EndTime:     "12:00",
+	})
+	if err != nil {
+		t.Fatalf("expected no error for global promo validation, got %v", err)
+	}
+	if res.DiscountAmount != 10000 {
+		t.Fatalf("expected discount amount 10000, got %f", res.DiscountAmount)
 	}
 }

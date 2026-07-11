@@ -17,6 +17,7 @@ type Repository interface {
 	UpdateVenueStatus(ctx context.Context, venueID string, status string) error
 	GetVenueOwnerProfileID(ctx context.Context, venueID string) (string, error)
 	GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]AuditLogResponse, int, error)
+	GetDashboardStats(ctx context.Context) (DashboardStatsResponse, error)
 }
 
 type repository struct {
@@ -332,4 +333,26 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 	}
 
 	return logs, total, nil
+}
+
+func (r *repository) GetDashboardStats(ctx context.Context) (DashboardStatsResponse, error) {
+	var stats DashboardStatsResponse
+
+	query := `
+		SELECT
+			(SELECT count(*) FROM users) as total_users,
+			(SELECT count(*) FROM owner_profiles) as total_owners,
+			(SELECT count(*) FROM venues) as total_venues,
+			(SELECT count(*) FROM bookings) as total_bookings
+	`
+	err := r.db.QueryRow(ctx, query).Scan(
+		&stats.TotalUsers,
+		&stats.TotalOwners,
+		&stats.TotalVenues,
+		&stats.TotalBookings,
+	)
+	if err != nil {
+		return stats, err
+	}
+	return stats, nil
 }

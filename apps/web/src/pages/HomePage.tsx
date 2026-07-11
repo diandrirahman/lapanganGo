@@ -7,6 +7,7 @@ import { FinalCtaSection } from '../components/FinalCtaSection';
 import { PageShell } from '../components/layout/PageShell';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigate } from 'react-router-dom';
+import { getRoleHomeRoute } from '../lib/roleRouting';
 
 export const HomePage: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -19,12 +20,9 @@ export const HomePage: React.FC = () => {
     );
   }
 
-  if (user?.role === 'SUPER_ADMIN') {
-    return <Navigate to="/admin/dashboard" replace />;
-  }
-
-  if (user?.role === 'OWNER' || user?.role === 'STAFF') {
-    return <Navigate to="/owner/dashboard" replace />;
+  const homeRoute = getRoleHomeRoute(user?.role);
+  if (homeRoute !== '/') {
+    return <Navigate to={homeRoute} replace />;
   }
 
   return (

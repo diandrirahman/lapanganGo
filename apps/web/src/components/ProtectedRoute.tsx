@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { getRoleHomeRoute } from '../lib/roleRouting';
 import { PageShell } from './layout/PageShell';
 
 interface ProtectedRouteProps {
@@ -46,7 +47,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
       return <Navigate to="/owner/dashboard" replace />;
     }
   } else if (requiredRole && user?.role !== requiredRole) {
-    const redirectPath = isWorkspaceUser() ? '/owner/dashboard' : '/';
+    const redirectPath = getRoleHomeRoute(user?.role);
     return <Navigate to={redirectPath} replace />;
   }
 

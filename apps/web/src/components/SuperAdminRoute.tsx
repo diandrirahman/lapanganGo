@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { getRoleHomeRoute } from '../lib/roleRouting';
 import { AdminLayout } from './admin/AdminLayout';
 
 export const SuperAdminRoute: React.FC = () => {
@@ -18,7 +19,8 @@ export const SuperAdminRoute: React.FC = () => {
   }
 
   if (!user || user.role !== 'SUPER_ADMIN') {
-    return <Navigate to="/" replace />;
+    const redirectPath = getRoleHomeRoute(user?.role);
+    return <Navigate to={redirectPath} replace />;
   }
 
   return <AdminLayout />;

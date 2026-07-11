@@ -84,3 +84,10 @@ type PaginatedResponse struct {
 	Page       int `json:"page"`
 	Limit      int `json:"limit"`
 }
+
+type DashboardStatsResponse struct {
+	TotalUsers    int `json:"total_users"`
+	TotalOwners   int `json:"total_owners"`
+	TotalVenues   int `json:"total_venues"`
+	TotalBookings int `json:"total_bookings"`
+}

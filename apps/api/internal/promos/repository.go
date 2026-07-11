@@ -155,6 +155,9 @@ func (r *repository) UpdatePromo(ctx context.Context, id, ownerID string, params
 			status = COALESCE($7, status),
 			updated_at = NOW()
 		WHERE id = $8 AND owner_id = $9
+		  AND (venue_id IS NULL OR EXISTS (
+		      SELECT 1 FROM venues v WHERE v.id = owner_promos.venue_id AND v.status != 'SUSPENDED'
+		  ))
 		RETURNING id, owner_id, venue_id, code, name, description, discount_type, discount_value, starts_at, ends_at, status, created_at, updated_at
 	`
 	var p Promo
@@ -179,6 +182,9 @@ func (r *repository) FindActivePromoByCode(ctx context.Context, ownerID, code st
 		SELECT id, owner_id, venue_id, code, name, description, discount_type, discount_value, starts_at, ends_at, status, created_at, updated_at
 		FROM owner_promos
 		WHERE owner_id = $1 AND UPPER(code) = UPPER($2) AND status = 'ACTIVE'
+		  AND (venue_id IS NULL OR EXISTS (
+		      SELECT 1 FROM venues v WHERE v.id = owner_promos.venue_id AND v.status != 'SUSPENDED'
+		  ))
 	`
 	var p Promo
 	err := r.db.QueryRow(ctx, query, ownerID, code).Scan(
@@ -224,6 +230,7 @@ func (r *repository) GetCourtValidationInfo(ctx context.Context, courtID string)
 		JOIN venues v ON v.id = c.venue_id
 		JOIN owner_profiles op ON op.id = v.owner_profile_id
 		WHERE c.id = $1
+		  AND v.status != 'SUSPENDED'
 	`
 	var info CourtValidationInfo
 	err := r.db.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.OwnerUserID, &info.VenueID)
@@ -237,6 +244,9 @@ func (r *repository) DeletePromo(ctx context.Context, id, ownerID string) error 
 	query := `
 		DELETE FROM owner_promos
 		WHERE id = $1 AND owner_id = $2
+		  AND (venue_id IS NULL OR EXISTS (
+		      SELECT 1 FROM venues v WHERE v.id = owner_promos.venue_id AND v.status != 'SUSPENDED'
+		  ))
 	`
 	cmd, err := r.db.Exec(ctx, query, id, ownerID)
 	if err != nil {

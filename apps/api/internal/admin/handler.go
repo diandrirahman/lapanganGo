@@ -3,12 +3,18 @@ package admin
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
+	"lapangango-api/internal/audit"
 	"lapangango-api/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
+
+const requestDeadlineHeader = "X-Request-Deadline-Ms"
 
 type Handler struct {
 	service Service
@@ -23,6 +29,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	adminGroup.Use(authMiddleware, requireActiveUser, middleware.RequireRole("SUPER_ADMIN"))
 
 	adminGroup.GET("/users", h.GetUsers)
+	adminGroup.GET("/dashboard", h.GetDashboardStats)
 	adminGroup.GET("/owners", h.GetOwners)
 	adminGroup.PATCH("/owners/:id/status", h.UpdateOwnerStatus)
 	adminGroup.GET("/venues", h.GetVenues)
@@ -63,6 +70,10 @@ func (h *Handler) GetOwners(c *gin.Context) {
 }
 
 func (h *Handler) UpdateOwnerStatus(c *gin.Context) {
+	if rejectExpiredMutation(c) {
+		return
+	}
+
 	ownerProfileID := c.Param("id")
 	var req UpdateStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -102,6 +113,10 @@ func (h *Handler) GetVenues(c *gin.Context) {
 }
 
 func (h *Handler) UpdateVenueStatus(c *gin.Context) {
+	if rejectExpiredMutation(c) {
+		return
+	}
+
 	venueID := c.Param("id")
 	var req UpdateStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -131,6 +146,23 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 		return
 	}
 
+	if query.EntityType != "" {
+		query.EntityType = strings.ToUpper(strings.TrimSpace(query.EntityType))
+		validEntities := map[string]bool{
+			audit.EntityOwnerProfile:       true,
+			audit.EntityVenue:              true,
+			audit.EntityUser:               true,
+			audit.EntityBooking:            true,
+			audit.EntityStaff:              true,
+			audit.EntityRefund:             true,
+			audit.EntityFinanceTransaction: true,
+		}
+		if !validEntities[query.EntityType] {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity_type"})
+			return
+		}
+	}
+
 	res, err := h.service.GetAuditLogs(c.Request.Context(), query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch audit logs", "error": err.Error()})
@@ -138,4 +170,33 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) GetDashboardStats(c *gin.Context) {
+	res, err := h.service.GetDashboardStats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch dashboard stats", "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func rejectExpiredMutation(c *gin.Context) bool {
+	rawDeadline := strings.TrimSpace(c.GetHeader(requestDeadlineHeader))
+	if rawDeadline == "" {
+		return false
+	}
+
+	deadlineMillis, err := strconv.ParseInt(rawDeadline, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request deadline"})
+		return true
+	}
+
+	if time.Now().UnixMilli() >= deadlineMillis {
+		c.JSON(http.StatusRequestTimeout, gin.H{"message": "Request expired before processing"})
+		return true
+	}
+
+	return false
 }

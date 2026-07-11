@@ -9,15 +9,50 @@ import type { AuditLog, AuditLogQuery } from '../types/audit';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
-export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, init);
-  if (response.status === 401) {
-    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-      localStorage.removeItem('auth_token');
-      window.location.href = '/login';
+export interface ApiFetchInit extends RequestInit {
+  timeoutMs?: number;
+}
+
+export async function apiFetch(input: RequestInfo | URL, init?: ApiFetchInit): Promise<Response> {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const providedSignal = init?.signal;
+  const onAbort = () => controller.abort(providedSignal?.reason);
+
+  if (providedSignal) {
+    if (providedSignal.aborted) {
+      controller.abort(providedSignal.reason);
+    } else {
+      providedSignal.addEventListener('abort', onAbort);
     }
   }
-  return response;
+
+  if (init?.timeoutMs) {
+    timeoutId = setTimeout(() => {
+      controller.abort(new Error('Request timeout'));
+    }, init.timeoutMs);
+  }
+
+  try {
+    const fetchInit = { ...init, signal };
+    const response = await fetch(input, fetchInit);
+    if (response.status === 401) {
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login';
+      }
+    }
+    return response;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (providedSignal) {
+      providedSignal.removeEventListener('abort', onAbort);
+    }
+  }
 }
 
 export async function fetchOpenMatches(page: number = 1, limit: number = 10): Promise<PaginatedResponse<OpenMatch>> {
