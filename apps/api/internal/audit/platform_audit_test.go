@@ -199,7 +199,10 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 		}
 
 		var count int
-		pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE id = $1", domainID).Scan(&count)
+		err = pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE id = $1", domainID).Scan(&count)
+		if err != nil {
+			t.Fatalf("failed to query users after rollback: %v", err)
+		}
 		if count != 0 {
 			t.Fatalf("Domain write was not cancelled, found %d rows", count)
 		}
