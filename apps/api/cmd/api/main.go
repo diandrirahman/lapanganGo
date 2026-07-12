@@ -200,6 +200,9 @@ func main() {
 	pfService := platformfinance.NewService(pfRepo)
 	platformfinance.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, pfService)
 
+	platformAuditRepository := audit.NewPlatformRepository()
+	platformAuditService := audit.NewPlatformService(platformAuditRepository)
+
 	ctRepo := commercialterms.NewRepository(dbPool)
 	ctService := commercialterms.NewService(ctRepo, dbPool, platformAuditService)
 	commercialterms.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, ctService)

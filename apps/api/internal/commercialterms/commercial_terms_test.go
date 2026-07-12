@@ -232,7 +232,7 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	// Re-insert global seed if missing (safeguard)
 	_, err = pool.Exec(ctx, `
@@ -281,9 +281,16 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		t.Fatalf("err owner 2: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(ctx, "DELETE FROM platform_commercial_terms WHERE owner_profile_id IN ($1, $2)", ownerID1, ownerID2)
-		pool.Exec(ctx, "DELETE FROM owner_profiles WHERE id IN ($1, $2)", ownerID1, ownerID2)
-		pool.Exec(ctx, "DELETE FROM users WHERE id IN ($1, $2)", ownerID1, ownerID2)
+		cleanupCtx := context.Background()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM platform_commercial_terms WHERE owner_profile_id IN ($1, $2)", ownerID1, ownerID2); err != nil {
+			t.Errorf("failed to clean commercial term fixtures: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM owner_profiles WHERE id IN ($1, $2)", ownerID1, ownerID2); err != nil {
+			t.Errorf("failed to clean owner fixtures: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM users WHERE id IN ($1, $2)", ownerID1, ownerID2); err != nil {
+			t.Errorf("failed to clean user fixtures: %v", err)
+		}
 	})
 
 	now := time.Now()
@@ -324,7 +331,7 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	r := setupRouter(repo, pool, auditSvc)
 
 	t.Run("Get ALL terms (no filters)", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms", nil)
+		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms?limit=100", nil)
 		req.Header.Set("X-Mock-Role", "SUPER_ADMIN")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -336,12 +343,21 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		var res commercialterms.PaginatedTermsResponse
 		json.Unmarshal(w.Body.Bytes(), &res)
 
-		if res.TotalItems != 4 {
-			t.Fatalf("expected 4 total items, got %d", res.TotalItems)
+		if res.TotalItems < 4 {
+			t.Fatalf("expected at least 4 total items, got %d", res.TotalItems)
 		}
-		// Check sorting: scheduled (valid_from tomorrow) should be first
-		if res.Data[0].ID != owner1SchedID {
-			t.Fatalf("expected scheduled to be first due to valid_from desc")
+		positions := map[string]int{}
+		for i, item := range res.Data {
+			positions[item.ID] = i
+		}
+		scheduledPos, hasScheduled := positions[owner1SchedID]
+		currentPos, hasCurrent := positions[owner1CurrID]
+		historicalPos, hasHistorical := positions[owner1HistID]
+		if !hasScheduled || !hasCurrent || !hasHistorical {
+			t.Fatalf("fixture terms missing from ALL response")
+		}
+		if !(scheduledPos < currentPos && currentPos < historicalPos) {
+			t.Fatalf("fixture terms are not deterministically sorted by valid_from desc")
 		}
 	})
 
@@ -354,11 +370,15 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		var res commercialterms.PaginatedTermsResponse
 		json.Unmarshal(w.Body.Bytes(), &res)
 
-		if res.TotalItems != 1 || res.Data[0].ID != globalDefaultID {
-			t.Fatalf("expected 1 global item")
+		foundCurrentGlobal := false
+		for _, item := range res.Data {
+			if item.ID == globalDefaultID {
+				foundCurrentGlobal = item.Status == "CURRENT"
+				break
+			}
 		}
-		if res.Data[0].Status != "CURRENT" {
-			t.Fatalf("expected global to be CURRENT, got %s", res.Data[0].Status)
+		if !foundCurrentGlobal {
+			t.Fatalf("expected seeded global term to be present and CURRENT")
 		}
 	})
 
@@ -388,7 +408,7 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	})
 
 	t.Run("Filter by status CURRENT", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms?status=CURRENT", nil)
+		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms?scope=OWNER&owner_profile_id="+ownerID1+"&status=CURRENT", nil)
 		req.Header.Set("X-Mock-Role", "SUPER_ADMIN")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -396,9 +416,8 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		var res commercialterms.PaginatedTermsResponse
 		json.Unmarshal(w.Body.Bytes(), &res)
 
-		// Should find Global Default and Owner 1 Current
-		if res.TotalItems != 2 {
-			t.Fatalf("expected 2 current items, got %d", res.TotalItems)
+		if res.TotalItems != 1 {
+			t.Fatalf("expected 1 current item for fixture owner, got %d", res.TotalItems)
 		}
 		for _, item := range res.Data {
 			if item.Status != "CURRENT" {
@@ -436,8 +455,9 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		if len(res.Data) != 2 {
 			t.Fatalf("expected 2 items due to limit")
 		}
-		if res.TotalPages != 2 {
-			t.Fatalf("expected 2 pages for 4 items with limit 2")
+		expectedPages := (res.TotalItems + res.Limit - 1) / res.Limit
+		if res.TotalPages != expectedPages {
+			t.Fatalf("expected %d pages for %d items with limit %d, got %d", expectedPages, res.TotalItems, res.Limit, res.TotalPages)
 		}
 	})
 }

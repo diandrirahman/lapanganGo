@@ -3,6 +3,8 @@ package commercialterms_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,12 +22,15 @@ import (
 )
 
 func setupCreateRouter(pool *pgxpool.Pool, adminID string) *gin.Engine {
+	auditRepo := audit.NewPlatformRepository()
+	return setupCreateRouterWithAudit(pool, adminID, audit.NewPlatformService(auditRepo))
+}
+
+func setupCreateRouterWithAudit(pool *pgxpool.Pool, adminID string, auditSvc audit.PlatformService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 
 	repo := commercialterms.NewRepository(pool)
-	auditRepo := audit.NewPlatformRepository()
-	auditSvc := audit.NewPlatformService(auditRepo)
 	svc := commercialterms.NewService(repo, pool, auditSvc)
 
 	authMiddleware := func(c *gin.Context) {
@@ -43,6 +48,15 @@ func setupCreateRouter(pool *pgxpool.Pool, adminID string) *gin.Engine {
 	return r
 }
 
+type failingCreatedAuditService struct{}
+
+func (failingCreatedAuditService) Record(_ context.Context, _ audit.DBTX, params audit.CreatePlatformAuditLogParams) error {
+	if params.Action == audit.ActionPlatformCommercialTermCreated {
+		return errors.New("injected created audit failure")
+	}
+	return nil
+}
+
 func TestCommercialTermsCreate_Integration(t *testing.T) {
 	if os.Getenv("TEST_INTEGRATION") != "1" {
 		t.Skip("Skipping integration tests. Set TEST_INTEGRATION=1 to run.")
@@ -57,7 +71,14 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
+
+	cleanupExec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(context.Background(), query, args...); err != nil {
+			t.Errorf("test cleanup failed: %v", err)
+		}
+	}
 
 	adminID := uuid.New().String()
 	_, err = pool.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Admin Create', $2, 'hash', 'SUPER_ADMIN')", adminID, "admin."+adminID+"@test.local")
@@ -66,9 +87,9 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
-		pool.Exec(ctx, "DELETE FROM platform_commercial_terms WHERE created_by_user_id = $1", adminID)
-		pool.Exec(ctx, "DELETE FROM platform_audit_logs WHERE actor_user_id = $1", adminID)
-		pool.Exec(ctx, "DELETE FROM users WHERE id = $1", adminID)
+		cleanupExec("DELETE FROM platform_commercial_terms WHERE created_by_user_id = $1", adminID)
+		cleanupExec("DELETE FROM platform_audit_logs WHERE actor_user_id = $1", adminID)
+		cleanupExec("DELETE FROM users WHERE id = $1", adminID)
 	})
 
 	r := setupCreateRouter(pool, adminID)
@@ -84,9 +105,9 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 			t.Fatalf("failed to insert owner profile: %v", err)
 		}
 		t.Cleanup(func() {
-			pool.Exec(ctx, "DELETE FROM platform_commercial_terms WHERE owner_profile_id = $1", newOwnerID)
-			pool.Exec(ctx, "DELETE FROM owner_profiles WHERE id = $1", newOwnerID)
-			pool.Exec(ctx, "DELETE FROM users WHERE id = $1", newOwnerID)
+			cleanupExec("DELETE FROM platform_commercial_terms WHERE owner_profile_id = $1", newOwnerID)
+			cleanupExec("DELETE FROM owner_profiles WHERE id = $1", newOwnerID)
+			cleanupExec("DELETE FROM users WHERE id = $1", newOwnerID)
 		})
 		return newOwnerID
 	}
@@ -215,18 +236,18 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		wg.Wait()
 		close(codes)
 
-		has201 := false
-		hasError := false
+		createdCount := 0
+		conflictCount := 0
 		for c := range codes {
 			if c == http.StatusCreated {
-				has201 = true
+				createdCount++
 			}
-			if c == http.StatusConflict || c == http.StatusBadRequest {
-				hasError = true
+			if c == http.StatusConflict {
+				conflictCount++
 			}
 		}
-		if !has201 || !hasError {
-			t.Errorf("expected exactly one 201 and one 409/400, got codes. has201=%v hasError=%v", has201, hasError)
+		if createdCount != 1 || conflictCount != 1 {
+			t.Errorf("expected exactly one 201 and one 409, got created=%d conflict=%d", createdCount, conflictCount)
 		}
 	})
 
@@ -295,7 +316,12 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 
 	t.Run("Global Create", func(t *testing.T) {
 		ik := uuid.New().String()
-		reqBody := `{"label": "Promo Global", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano) + `"}`
+		label := "Promo Global " + uuid.NewString()
+		var previousGlobalID string
+		if err := pool.QueryRow(ctx, "SELECT id FROM platform_commercial_terms WHERE owner_profile_id IS NULL AND valid_until IS NULL").Scan(&previousGlobalID); err != nil {
+			t.Fatalf("failed to locate current global term: %v", err)
+		}
+		reqBody := `{"label": "` + label + `", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano) + `"}`
 
 		req, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
 		req.Header.Set("Idempotency-Key", ik)
@@ -304,10 +330,14 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		if w.Code != http.StatusCreated {
 			t.Fatalf("expected 201 for global create, got %d", w.Code)
 		}
+		var created commercialterms.CommercialTerm
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+			t.Fatalf("failed to decode global create response: %v", err)
+		}
 
 		t.Cleanup(func() {
-			pool.Exec(ctx, "DELETE FROM platform_commercial_terms WHERE label = 'Promo Global'")
-			pool.Exec(ctx, "UPDATE platform_commercial_terms SET valid_until = NULL WHERE owner_profile_id IS NULL AND label != 'Promo Global'")
+			cleanupExec("DELETE FROM platform_commercial_terms WHERE id = $1", created.ID)
+			cleanupExec("UPDATE platform_commercial_terms SET valid_until = NULL WHERE id = $1", previousGlobalID)
 		})
 	})
 
@@ -399,11 +429,24 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("Correct supersession & adjacent boundaries", func(t *testing.T) {
+	t.Run("Correct supersession, adjacent boundaries, and historical immutability", func(t *testing.T) {
 		oid := createTestOwner()
+		historicalID := uuid.NewString()
+		historicalFrom := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Microsecond)
+		historicalUntil := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+		_, err := pool.Exec(ctx, `
+			INSERT INTO platform_commercial_terms (
+				id, owner_profile_id, label, phase, finance_mode, collection_method,
+				commission_bps, valid_from, valid_until, created_by_user_id
+			) VALUES ($1, $2, 'Immutable Historical', 'TRIAL', 'SIMULATION', 'NONE', 50, $3, $4, $5)
+		`, historicalID, oid, historicalFrom, historicalUntil, adminID)
+		if err != nil {
+			t.Fatalf("failed to insert historical fixture: %v", err)
+		}
+
 		ik1 := uuid.New().String()
-		validFrom1 := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
-		reqBody1 := `{"owner_profile_id": "` + oid + `", "label": "Term 1", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 100, "valid_from": "` + validFrom1 + `"}`
+		validFrom1 := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
+		reqBody1 := `{"owner_profile_id": "` + oid + `", "label": "Term 1", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 100, "valid_from": "` + validFrom1.Format(time.RFC3339Nano) + `"}`
 		req1, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody1))
 		req1.Header.Set("Idempotency-Key", ik1)
 		w1 := httptest.NewRecorder()
@@ -411,10 +454,14 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		if w1.Code != http.StatusCreated {
 			t.Fatalf("failed to create term 1: %d", w1.Code)
 		}
+		var term1 commercialterms.CommercialTerm
+		if err := json.Unmarshal(w1.Body.Bytes(), &term1); err != nil {
+			t.Fatalf("failed to decode term 1: %v", err)
+		}
 
 		ik2 := uuid.New().String()
-		validFrom2 := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339Nano)
-		reqBody2 := `{"owner_profile_id": "` + oid + `", "label": "Term 2", "phase": "STANDARD", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 200, "valid_from": "` + validFrom2 + `"}`
+		validFrom2 := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Microsecond)
+		reqBody2 := `{"owner_profile_id": "` + oid + `", "label": "Term 2", "phase": "STANDARD", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 200, "valid_from": "` + validFrom2.Format(time.RFC3339Nano) + `"}`
 		req2, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody2))
 		req2.Header.Set("Idempotency-Key", ik2)
 		w2 := httptest.NewRecorder()
@@ -422,12 +469,41 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		if w2.Code != http.StatusCreated {
 			t.Fatalf("failed to supersede with term 2: %d", w2.Code)
 		}
+		var term2 commercialterms.CommercialTerm
+		if err := json.Unmarshal(w2.Body.Bytes(), &term2); err != nil {
+			t.Fatalf("failed to decode term 2: %v", err)
+		}
 
-		// Verify supersession boundary
-		var count int
-		pool.QueryRow(ctx, "SELECT count(*) FROM platform_commercial_terms WHERE owner_profile_id = $1 AND supersedes_id IS NOT NULL", oid).Scan(&count)
-		if count != 1 {
-			t.Fatalf("expected exactly 1 superseded term, got %d", count)
+		var oldValidUntil time.Time
+		if err := pool.QueryRow(ctx, "SELECT valid_until FROM platform_commercial_terms WHERE id = $1", term1.ID).Scan(&oldValidUntil); err != nil {
+			t.Fatalf("failed to read superseded term: %v", err)
+		}
+		if !oldValidUntil.Equal(validFrom2) {
+			t.Fatalf("old.valid_until=%s, expected %s", oldValidUntil, validFrom2)
+		}
+		if term2.SupersedesID == nil || *term2.SupersedesID != term1.ID {
+			t.Fatalf("new.supersedes_id does not reference old term")
+		}
+
+		var supersededAuditCount, createdAuditCount int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = 'PLATFORM_COMMERCIAL_TERM_SUPERSEDED'", ik2).Scan(&supersededAuditCount); err != nil {
+			t.Fatalf("failed to count superseded audit: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = 'PLATFORM_COMMERCIAL_TERM_CREATED'", ik2).Scan(&createdAuditCount); err != nil {
+			t.Fatalf("failed to count created audit: %v", err)
+		}
+		if supersededAuditCount != 1 || createdAuditCount != 1 {
+			t.Fatalf("expected one superseded and one created audit, got %d and %d", supersededAuditCount, createdAuditCount)
+		}
+
+		var historicalLabel string
+		var historicalBps int
+		var historicalFromAfter, historicalUntilAfter time.Time
+		if err := pool.QueryRow(ctx, "SELECT label, commission_bps, valid_from, valid_until FROM platform_commercial_terms WHERE id = $1", historicalID).Scan(&historicalLabel, &historicalBps, &historicalFromAfter, &historicalUntilAfter); err != nil {
+			t.Fatalf("failed to read historical fixture: %v", err)
+		}
+		if historicalLabel != "Immutable Historical" || historicalBps != 50 || !historicalFromAfter.Equal(historicalFrom) || !historicalUntilAfter.Equal(historicalUntil) {
+			t.Fatalf("historical term changed during supersession")
 		}
 	})
 	t.Run("Missing Idempotency Key", func(t *testing.T) {
@@ -454,9 +530,13 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 
 	t.Run("Duplicate Audit Marker Fail-Closed", func(t *testing.T) {
 		ik := uuid.New().String()
-		pool.Exec(ctx, "INSERT INTO platform_audit_logs (id, actor_user_id, actor_role, action, entity_type, correlation_id) VALUES ($1, $2, 'SUPER_ADMIN', 'PLATFORM_COMMERCIAL_TERM_CREATED', 'PLATFORM_COMMERCIAL_TERM', $3)", uuid.NewString(), adminID, ik)
-		pool.Exec(ctx, "INSERT INTO platform_audit_logs (id, actor_user_id, actor_role, action, entity_type, correlation_id) VALUES ($1, $2, 'SUPER_ADMIN', 'PLATFORM_COMMERCIAL_TERM_CREATED', 'PLATFORM_COMMERCIAL_TERM', $3)", uuid.NewString(), adminID, ik)
-		
+		if _, err := pool.Exec(ctx, "INSERT INTO platform_audit_logs (id, actor_user_id, actor_role, action, entity_type, correlation_id) VALUES ($1, $2, 'SUPER_ADMIN', 'PLATFORM_COMMERCIAL_TERM_CREATED', 'PLATFORM_COMMERCIAL_TERM', $3)", uuid.NewString(), adminID, ik); err != nil {
+			t.Fatalf("failed to insert first duplicate marker fixture: %v", err)
+		}
+		if _, err := pool.Exec(ctx, "INSERT INTO platform_audit_logs (id, actor_user_id, actor_role, action, entity_type, correlation_id) VALUES ($1, $2, 'SUPER_ADMIN', 'PLATFORM_COMMERCIAL_TERM_CREATED', 'PLATFORM_COMMERCIAL_TERM', $3)", uuid.NewString(), adminID, ik); err != nil {
+			t.Fatalf("failed to insert second duplicate marker fixture: %v", err)
+		}
+
 		reqBody := `{"label": "Promo", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano) + `"}`
 		req, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
 		req.Header.Set("Idempotency-Key", ik)
@@ -471,7 +551,7 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		ik := uuid.New().String()
 		oid := createTestOwner()
 		reqBody := `{"owner_profile_id": "` + oid + `", "label": "Replay Audit", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 100, "valid_from": "` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano) + `"}`
-		
+
 		req1, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
 		req1.Header.Set("Idempotency-Key", ik)
 		w1 := httptest.NewRecorder()
@@ -481,7 +561,9 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		}
 
 		var countBefore int
-		pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs").Scan(&countBefore)
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", ik).Scan(&countBefore); err != nil {
+			t.Fatalf("failed to count audit logs before replay: %v", err)
+		}
 
 		req2, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
 		req2.Header.Set("Idempotency-Key", ik)
@@ -492,17 +574,62 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		}
 
 		var countAfter int
-		pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs").Scan(&countAfter)
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", ik).Scan(&countAfter); err != nil {
+			t.Fatalf("failed to count audit logs after replay: %v", err)
+		}
 
 		if countBefore != countAfter {
 			t.Fatalf("expected %d audit logs, got %d after replay", countBefore, countAfter)
 		}
 	})
 
-	t.Run("Historical row strictly unchanged and rollback audit on failure", func(t *testing.T) {
+	t.Run("Timeout after commit replays after valid_from passed", func(t *testing.T) {
+		ik := uuid.NewString()
+		oid := createTestOwner()
+		validFrom := time.Now().Add(2 * time.Second).UTC().Truncate(time.Microsecond)
+		reqBody := `{"owner_profile_id": "` + oid + `", "label": "Timeout Replay", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 100, "valid_from": "` + validFrom.Format(time.RFC3339Nano) + `"}`
+
+		req1, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
+		req1.Header.Set("Idempotency-Key", ik)
+		w1 := httptest.NewRecorder()
+		r.ServeHTTP(w1, req1)
+		if w1.Code != http.StatusCreated {
+			t.Fatalf("expected initial 201, got %d: %s", w1.Code, w1.Body.String())
+		}
+		var first commercialterms.CommercialTerm
+		if err := json.Unmarshal(w1.Body.Bytes(), &first); err != nil {
+			t.Fatalf("failed to decode initial response: %v", err)
+		}
+
+		time.Sleep(3 * time.Second)
+
+		req2, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody))
+		req2.Header.Set("Idempotency-Key", ik)
+		w2 := httptest.NewRecorder()
+		r.ServeHTTP(w2, req2)
+		if w2.Code != http.StatusCreated {
+			t.Fatalf("expected replay 201 after valid_from passed, got %d: %s", w2.Code, w2.Body.String())
+		}
+		var replay commercialterms.CommercialTerm
+		if err := json.Unmarshal(w2.Body.Bytes(), &replay); err != nil {
+			t.Fatalf("failed to decode replay response: %v", err)
+		}
+		if replay.ID != first.ID || replay.Label != first.Label || replay.Status != first.Status || !replay.ValidFrom.Equal(first.ValidFrom) {
+			t.Fatalf("replay response differs from original: first=%+v replay=%+v", first, replay)
+		}
+		var auditCount int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", ik).Scan(&auditCount); err != nil {
+			t.Fatalf("failed to count timeout replay audits: %v", err)
+		}
+		if auditCount != 1 {
+			t.Fatalf("expected one audit after timeout replay, got %d", auditCount)
+		}
+	})
+
+	t.Run("Audit failure rolls back supersession and insert", func(t *testing.T) {
 		ik1 := uuid.New().String()
 		oid := createTestOwner()
-		validFrom1 := time.Now().Add(24*time.Hour).UTC().Truncate(time.Microsecond)
+		validFrom1 := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
 		reqBody1 := `{"owner_profile_id": "` + oid + `", "label": "First Term", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 100, "valid_from": "` + validFrom1.Format(time.RFC3339Nano) + `"}`
 		req1, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody1))
 		req1.Header.Set("Idempotency-Key", ik1)
@@ -512,45 +639,40 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 			t.Fatalf("expected 201, got %d", w1.Code)
 		}
 
-		// Ensure first term is there
-		var term1ID, term1Label string
-		var term1ValidUntil *time.Time
-		err := pool.QueryRow(ctx, "SELECT id, label, valid_until FROM platform_commercial_terms WHERE owner_profile_id = $1 AND label = 'First Term'", oid).Scan(&term1ID, &term1Label, &term1ValidUntil)
-		if err != nil {
-			t.Fatalf("failed to query first term: %v", err)
+		var first commercialterms.CommercialTerm
+		if err := json.Unmarshal(w1.Body.Bytes(), &first); err != nil {
+			t.Fatalf("failed to decode first term response: %v", err)
 		}
 
-		// Trigger failure (invalid valid_from <= old.valid_from)
 		ik2 := uuid.New().String()
-		validFrom2 := validFrom1.Add(-1 * time.Hour) // Past!
+		validFrom2 := validFrom1.Add(24 * time.Hour)
 		reqBody2 := `{"owner_profile_id": "` + oid + `", "label": "Second Term", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 200, "valid_from": "` + validFrom2.Format(time.RFC3339Nano) + `"}`
 		req2, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(reqBody2))
 		req2.Header.Set("Idempotency-Key", ik2)
 		w2 := httptest.NewRecorder()
-		r.ServeHTTP(w2, req2)
-		if w2.Code != http.StatusConflict {
-			t.Fatalf("expected 409 conflict, got %d", w2.Code)
+		failingRouter := setupCreateRouterWithAudit(pool, adminID, failingCreatedAuditService{})
+		failingRouter.ServeHTTP(w2, req2)
+		if w2.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 from injected audit failure, got %d", w2.Code)
 		}
 
-		// Verify historical row unchanged
-		var term1ValidUntilAfter *time.Time
-		var term1LabelAfter string
-		err = pool.QueryRow(ctx, "SELECT label, valid_until FROM platform_commercial_terms WHERE id = $1", term1ID).Scan(&term1LabelAfter, &term1ValidUntilAfter)
-		if err != nil {
-			t.Fatalf("failed to query first term after failure: %v", err)
+		var oldValidUntil *time.Time
+		if err := pool.QueryRow(ctx, "SELECT valid_until FROM platform_commercial_terms WHERE id = $1", first.ID).Scan(&oldValidUntil); err != nil {
+			t.Fatalf("failed to query old term after audit failure: %v", err)
 		}
-		if term1LabelAfter != term1Label {
-			t.Fatalf("historical label changed")
-		}
-		if term1ValidUntilAfter != nil {
-			t.Fatalf("historical valid_until changed to %v, expected nil", term1ValidUntilAfter)
+		if oldValidUntil != nil {
+			t.Fatalf("old term valid_until survived rollback: %v", oldValidUntil)
 		}
 
-		// Verify no audit log for failed tx
-		var count int
-		pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", ik2).Scan(&count)
-		if count > 0 {
-			t.Fatalf("expected 0 audit logs for failed tx, got %d", count)
+		var newTermCount, auditCount int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_commercial_terms WHERE owner_profile_id = $1 AND label = 'Second Term'", oid).Scan(&newTermCount); err != nil {
+			t.Fatalf("failed to count rolled-back new terms: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", ik2).Scan(&auditCount); err != nil {
+			t.Fatalf("failed to count rolled-back audits: %v", err)
+		}
+		if newTermCount != 0 || auditCount != 0 {
+			t.Fatalf("audit failure left partial writes: terms=%d audits=%d", newTermCount, auditCount)
 		}
 	})
 }
