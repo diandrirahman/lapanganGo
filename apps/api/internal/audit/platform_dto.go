@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"encoding/hex"
 	"errors"
 	"strings"
 
@@ -37,7 +38,8 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"new_term_id":        true,
 	},
 	ActionPlatformCommercialTermLiveRejected: {
-		"reason": true,
+		"reason":              true,
+		"request_fingerprint": true,
 	},
 }
 
@@ -130,6 +132,14 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				// Strict enum for reason
 				if v != "LIVE_NOT_ALLOWED" && v != "BPS_OUT_OF_BOUNDS" && v != "OVERLAP" && v != "INVALID_TIME" && v != "VALIDATION_ERROR" {
 					return errors.New("reason must be an allowed code")
+				}
+			case "request_fingerprint":
+				v, ok := val.(string)
+				if !ok || len(v) != 64 {
+					return errors.New("request_fingerprint must be a 64-character SHA-256 hex string")
+				}
+				if _, err := hex.DecodeString(v); err != nil {
+					return errors.New("request_fingerprint must be valid hexadecimal")
 				}
 			}
 		}

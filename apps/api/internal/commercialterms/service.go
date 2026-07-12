@@ -2,6 +2,9 @@ package commercialterms
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -65,12 +68,39 @@ type ErrForbidden struct{ error }
 type ErrNotFound struct{ error }
 type ErrConflict struct{ error }
 
+func createRequestFingerprint(req CreateTermRequest) string {
+	ownerScope := "GLOBAL"
+	if req.OwnerProfileID != nil {
+		ownerScope = *req.OwnerProfileID
+	}
+	payload, _ := json.Marshal(struct {
+		OwnerScope       string `json:"owner_scope"`
+		Label            string `json:"label"`
+		Phase            string `json:"phase"`
+		FinanceMode      string `json:"finance_mode"`
+		CollectionMethod string `json:"collection_method"`
+		CommissionBps    int    `json:"commission_bps"`
+		ValidFrom        string `json:"valid_from"`
+	}{
+		OwnerScope:       ownerScope,
+		Label:            req.Label,
+		Phase:            req.Phase,
+		FinanceMode:      req.FinanceMode,
+		CollectionMethod: req.CollectionMethod,
+		CommissionBps:    *req.CommissionBps,
+		ValidFrom:        req.ValidFrom.Format(time.RFC3339Nano),
+	})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *service) CreateTerm(ctx context.Context, req CreateTermRequest, idempotencyKey string, adminID string, ipAddress, userAgent string) (*CommercialTerm, error) {
 	if err := req.Validate(); err != nil {
 		return nil, ErrValidationError{err}
 	}
 
 	req.ValidFrom = req.ValidFrom.UTC().Truncate(time.Microsecond)
+	requestFingerprint := createRequestFingerprint(req)
 
 	scopeKey := "GLOBAL"
 	if req.OwnerProfileID != nil && *req.OwnerProfileID != "" {
@@ -87,35 +117,51 @@ func (s *service) CreateTerm(ctx context.Context, req CreateTermRequest, idempot
 		return nil, err
 	}
 
-	if scopeKey != "GLOBAL" {
-		if err := s.repo.GetOwnerForShare(ctx, tx, scopeKey); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, ErrNotFound{errors.New("owner not found")}
-			}
-			return nil, err
-		}
+	idempotencyRecord, err := s.repo.GetIdempotencyAudit(ctx, tx, idempotencyKey)
+	if err != nil {
+		return nil, err
 	}
 
 	if req.FinanceMode == "LIVE" {
-		metadata, _, err := s.repo.GetAuditByCorrelationID(ctx, tx, idempotencyKey, audit.ActionPlatformCommercialTermLiveRejected)
-		if err != nil {
-			return nil, err
+		if idempotencyRecord != nil {
+			if idempotencyRecord.Action == audit.ActionPlatformCommercialTermLiveRejected {
+				storedFingerprint, ok := idempotencyRecord.Metadata["request_fingerprint"].(string)
+				if !ok {
+					return nil, errors.New("integrity error: live-rejected audit is missing request fingerprint")
+				}
+				if storedFingerprint != requestFingerprint {
+					return nil, ErrConflict{errors.New("idempotency key conflict with different payload")}
+				}
+				return nil, ErrForbidden{errors.New("LIVE finance_mode is not allowed")}
+			}
+			return nil, ErrConflict{errors.New("idempotency key conflict with different payload")}
 		}
-		if metadata == nil {
-			err = s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
-				ActorUserID:    &adminID,
-				ActorRole:      "SUPER_ADMIN",
-				Action:         audit.ActionPlatformCommercialTermLiveRejected,
-				EntityType:     audit.EntityPlatformCommercialTerm,
-				CorrelationID:  &idempotencyKey,
-				Metadata:       map[string]any{"reason": "LIVE_NOT_ALLOWED"},
-				OwnerProfileID: req.OwnerProfileID,
-				IPAddress:      &ipAddress,
-				UserAgent:      &userAgent,
-			})
-			if err != nil {
+
+		if scopeKey != "GLOBAL" {
+			if err := s.repo.GetOwnerForShare(ctx, tx, scopeKey); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil, ErrNotFound{errors.New("owner not found")}
+				}
 				return nil, err
 			}
+		}
+
+		err = s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+			ActorUserID:   &adminID,
+			ActorRole:     "SUPER_ADMIN",
+			Action:        audit.ActionPlatformCommercialTermLiveRejected,
+			EntityType:    audit.EntityPlatformCommercialTerm,
+			CorrelationID: &idempotencyKey,
+			Metadata: map[string]any{
+				"reason":              "LIVE_NOT_ALLOWED",
+				"request_fingerprint": requestFingerprint,
+			},
+			OwnerProfileID: req.OwnerProfileID,
+			IPAddress:      &ipAddress,
+			UserAgent:      &userAgent,
+		})
+		if err != nil {
+			return nil, err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -123,12 +169,12 @@ func (s *service) CreateTerm(ctx context.Context, req CreateTermRequest, idempot
 		return nil, ErrForbidden{errors.New("LIVE finance_mode is not allowed")}
 	}
 
-	_, existingEntityID, err := s.repo.GetAuditByCorrelationID(ctx, tx, idempotencyKey, audit.ActionPlatformCommercialTermCreated)
-	if err != nil {
-		return nil, err
-	}
-	if existingEntityID != "" {
-		term, err := s.repo.GetTermByID(ctx, tx, existingEntityID)
+	if idempotencyRecord != nil {
+		if idempotencyRecord.Action == audit.ActionPlatformCommercialTermLiveRejected {
+			return nil, ErrConflict{errors.New("idempotency key conflict with different payload")}
+		}
+
+		term, err := s.repo.GetTermByID(ctx, tx, *idempotencyRecord.EntityID)
 		if err != nil {
 			return nil, err
 		}
@@ -150,6 +196,15 @@ func (s *service) CreateTerm(ctx context.Context, req CreateTermRequest, idempot
 			return &term, nil
 		}
 		return nil, ErrConflict{errors.New("idempotency key conflict with different payload")}
+	}
+
+	if scopeKey != "GLOBAL" {
+		if err := s.repo.GetOwnerForShare(ctx, tx, scopeKey); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound{errors.New("owner not found")}
+			}
+			return nil, err
+		}
 	}
 
 	ts, err := s.repo.GetTransactionTimestamp(ctx, tx)

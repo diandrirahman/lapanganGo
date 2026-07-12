@@ -314,6 +314,106 @@ func TestCommercialTermsCreate_Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("LIVE replay with different payload conflicts", func(t *testing.T) {
+		ik := uuid.New().String()
+		oid := createTestOwner()
+		validFrom := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
+		firstBody := `{"owner_profile_id": "` + oid + `", "label": "Promo LIVE", "phase": "TRIAL", "finance_mode": "LIVE", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+		secondBody := `{"owner_profile_id": "` + oid + `", "label": "Different LIVE", "phase": "TRIAL", "finance_mode": "LIVE", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+
+		first, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(firstBody))
+		first.Header.Set("Idempotency-Key", ik)
+		firstResponse := httptest.NewRecorder()
+		r.ServeHTTP(firstResponse, first)
+		if firstResponse.Code != http.StatusForbidden {
+			t.Fatalf("expected initial LIVE request to return 403, got %d", firstResponse.Code)
+		}
+
+		second, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(secondBody))
+		second.Header.Set("Idempotency-Key", ik)
+		secondResponse := httptest.NewRecorder()
+		r.ServeHTTP(secondResponse, second)
+		if secondResponse.Code != http.StatusConflict {
+			t.Fatalf("expected changed LIVE replay to return 409, got %d", secondResponse.Code)
+		}
+	})
+
+	t.Run("Idempotency key cannot cross from LIVE to SIMULATION", func(t *testing.T) {
+		ik := uuid.New().String()
+		oid := createTestOwner()
+		validFrom := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
+		liveBody := `{"owner_profile_id": "` + oid + `", "label": "Cross Outcome", "phase": "TRIAL", "finance_mode": "LIVE", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+		simulationBody := `{"owner_profile_id": "` + oid + `", "label": "Cross Outcome", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+
+		live, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(liveBody))
+		live.Header.Set("Idempotency-Key", ik)
+		liveResponse := httptest.NewRecorder()
+		r.ServeHTTP(liveResponse, live)
+		if liveResponse.Code != http.StatusForbidden {
+			t.Fatalf("expected LIVE request to return 403, got %d", liveResponse.Code)
+		}
+
+		simulation, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(simulationBody))
+		simulation.Header.Set("Idempotency-Key", ik)
+		simulationResponse := httptest.NewRecorder()
+		r.ServeHTTP(simulationResponse, simulation)
+		if simulationResponse.Code != http.StatusConflict {
+			t.Fatalf("expected cross-outcome replay to return 409, got %d", simulationResponse.Code)
+		}
+
+		var terms, rejectedAudits, createdAudits int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_commercial_terms WHERE owner_profile_id = $1", oid).Scan(&terms); err != nil {
+			t.Fatalf("failed to count terms: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = $2", ik, audit.ActionPlatformCommercialTermLiveRejected).Scan(&rejectedAudits); err != nil {
+			t.Fatalf("failed to count rejected audits: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = $2", ik, audit.ActionPlatformCommercialTermCreated).Scan(&createdAudits); err != nil {
+			t.Fatalf("failed to count created audits: %v", err)
+		}
+		if terms != 0 || rejectedAudits != 1 || createdAudits != 0 {
+			t.Fatalf("unexpected cross-outcome state: terms=%d rejected_audits=%d created_audits=%d", terms, rejectedAudits, createdAudits)
+		}
+	})
+
+	t.Run("Idempotency key cannot cross from SIMULATION to LIVE", func(t *testing.T) {
+		ik := uuid.New().String()
+		oid := createTestOwner()
+		validFrom := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
+		simulationBody := `{"owner_profile_id": "` + oid + `", "label": "Cross Outcome", "phase": "TRIAL", "finance_mode": "SIMULATION", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+		liveBody := `{"owner_profile_id": "` + oid + `", "label": "Cross Outcome", "phase": "TRIAL", "finance_mode": "LIVE", "collection_method": "NONE", "commission_bps": 500, "valid_from": "` + validFrom + `"}`
+
+		simulation, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(simulationBody))
+		simulation.Header.Set("Idempotency-Key", ik)
+		simulationResponse := httptest.NewRecorder()
+		r.ServeHTTP(simulationResponse, simulation)
+		if simulationResponse.Code != http.StatusCreated {
+			t.Fatalf("expected SIMULATION request to return 201, got %d: %s", simulationResponse.Code, simulationResponse.Body.String())
+		}
+
+		live, _ := http.NewRequest(http.MethodPost, "/admin/commercial-terms", bytes.NewBufferString(liveBody))
+		live.Header.Set("Idempotency-Key", ik)
+		liveResponse := httptest.NewRecorder()
+		r.ServeHTTP(liveResponse, live)
+		if liveResponse.Code != http.StatusConflict {
+			t.Fatalf("expected cross-outcome replay to return 409, got %d", liveResponse.Code)
+		}
+
+		var terms, rejectedAudits, createdAudits int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_commercial_terms WHERE owner_profile_id = $1", oid).Scan(&terms); err != nil {
+			t.Fatalf("failed to count terms: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = $2", ik, audit.ActionPlatformCommercialTermLiveRejected).Scan(&rejectedAudits); err != nil {
+			t.Fatalf("failed to count rejected audits: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND action = $2", ik, audit.ActionPlatformCommercialTermCreated).Scan(&createdAudits); err != nil {
+			t.Fatalf("failed to count created audits: %v", err)
+		}
+		if terms != 1 || rejectedAudits != 0 || createdAudits != 1 {
+			t.Fatalf("unexpected cross-outcome state: terms=%d rejected_audits=%d created_audits=%d", terms, rejectedAudits, createdAudits)
+		}
+	})
+
 	t.Run("Global Create", func(t *testing.T) {
 		ik := uuid.New().String()
 		label := "Promo Global " + uuid.NewString()

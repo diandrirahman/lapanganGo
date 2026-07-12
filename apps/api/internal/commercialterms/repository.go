@@ -19,9 +19,15 @@ type DBTX interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+type IdempotencyAuditRecord struct {
+	Action   string
+	Metadata map[string]any
+	EntityID *string
+}
+
 type Repository interface {
 	GetTerms(ctx context.Context, query GetTermsQuery) (PaginatedTermsResponse, error)
-	GetAuditByCorrelationID(ctx context.Context, db DBTX, correlationID string, action string) (map[string]any, string, error)
+	GetIdempotencyAudit(ctx context.Context, db DBTX, correlationID string) (*IdempotencyAuditRecord, error)
 	GetOpenEndedTermByScope(ctx context.Context, db DBTX, scopeKey string) (*CommercialTerm, error)
 	GetOwnerForShare(ctx context.Context, db DBTX, ownerID string) error
 	SupersedeTerm(ctx context.Context, db DBTX, id string, validUntil time.Time) error
@@ -47,7 +53,7 @@ func (r *repository) GetTerms(ctx context.Context, query GetTermsQuery) (Paginat
 	}
 	limit := query.Limit
 	if limit < 1 {
-		limit = 10
+		limit = 20
 	}
 	offset := (page - 1) * limit
 
@@ -167,13 +173,20 @@ func (r *repository) GetTerms(ctx context.Context, query GetTermsQuery) (Paginat
 	}, nil
 }
 
-func (r *repository) GetAuditByCorrelationID(ctx context.Context, db DBTX, correlationID string, action string) (map[string]any, string, error) {
-	rows, err := db.Query(ctx, "SELECT metadata, entity_id FROM platform_audit_logs WHERE correlation_id = $1 AND action = $2 AND entity_type = 'PLATFORM_COMMERCIAL_TERM'", correlationID, action)
+func (r *repository) GetIdempotencyAudit(ctx context.Context, db DBTX, correlationID string) (*IdempotencyAuditRecord, error) {
+	rows, err := db.Query(ctx, `
+		SELECT action, metadata, entity_id
+		FROM platform_audit_logs
+		WHERE correlation_id = $1
+		  AND entity_type = $2
+		  AND action IN ($3, $4)
+	`, correlationID, audit.EntityPlatformCommercialTerm, audit.ActionPlatformCommercialTermCreated, audit.ActionPlatformCommercialTermLiveRejected)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer rows.Close()
 
+	var action string
 	var metadataJSON []byte
 	var entityID *string
 	count := 0
@@ -181,38 +194,38 @@ func (r *repository) GetAuditByCorrelationID(ctx context.Context, db DBTX, corre
 	for rows.Next() {
 		count++
 		if count > 1 {
-			return nil, "", errors.New("integrity error: multiple audit logs found for the same idempotency key")
+			return nil, errors.New("integrity error: multiple audit logs found for the same idempotency key")
 		}
-		if err := rows.Scan(&metadataJSON, &entityID); err != nil {
-			return nil, "", err
+		if err := rows.Scan(&action, &metadataJSON, &entityID); err != nil {
+			return nil, err
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	if count == 0 {
-		return nil, "", nil
+		return nil, nil
 	}
 
-	if entityID == nil {
-		if action == audit.ActionPlatformCommercialTermLiveRejected {
-			var metadata map[string]any
-			if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
-				return nil, "", err
-			}
-			return metadata, "", nil
-		}
-		return nil, "", errors.New("integrity error: audit log found but entity ID is null")
+	if action == audit.ActionPlatformCommercialTermCreated && entityID == nil {
+		return nil, errors.New("integrity error: created audit log found but entity ID is null")
+	}
+	if action == audit.ActionPlatformCommercialTermLiveRejected && entityID != nil {
+		return nil, errors.New("integrity error: live-rejected audit log unexpectedly has an entity ID")
 	}
 
 	var metadata map[string]any
 	if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	return metadata, *entityID, nil
+	return &IdempotencyAuditRecord{
+		Action:   action,
+		Metadata: metadata,
+		EntityID: entityID,
+	}, nil
 }
 
 func (r *repository) GetOpenEndedTermByScope(ctx context.Context, db DBTX, scopeKey string) (*CommercialTerm, error) {

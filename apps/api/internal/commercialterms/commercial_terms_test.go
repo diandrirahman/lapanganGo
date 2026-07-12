@@ -234,21 +234,36 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	// Re-insert global seed if missing (safeguard)
-	_, err = pool.Exec(ctx, `
-		INSERT INTO platform_commercial_terms (
-			id, owner_profile_id, label, phase,
-			finance_mode, collection_method, commission_bps,
-			valid_from, valid_until, supersedes_id, created_by_user_id
-		) VALUES (
-			'00000000-0000-0000-0000-000000000000',
-			NULL, 'Platform Frozen 500 bps (Mock)', 'TRIAL',
-			'SIMULATION', 'NONE', 500,
-			'2025-01-01T00:00:00Z', NULL, NULL, NULL
-		) ON CONFLICT (id) DO UPDATE SET valid_until = NULL, supersedes_id = NULL
-	`)
+	var globalDefaultID, globalLabel, globalPhase, globalFinanceMode, globalCollectionMethod string
+	var globalCommissionBps, globalCount int
+	err = pool.QueryRow(ctx, `
+		SELECT count(*), min(id::text), min(label), min(phase), min(finance_mode),
+		       min(collection_method), min(commission_bps)
+		FROM platform_commercial_terms
+		WHERE owner_profile_id IS NULL AND valid_until IS NULL
+	`).Scan(
+		&globalCount,
+		&globalDefaultID,
+		&globalLabel,
+		&globalPhase,
+		&globalFinanceMode,
+		&globalCollectionMethod,
+		&globalCommissionBps,
+	)
 	if err != nil {
-		t.Fatalf("Failed to re-insert global seed: %v", err)
+		t.Fatalf("failed to inspect frozen global seed: %v", err)
+	}
+	if globalCount != 1 || globalLabel != "Global Default Term" || globalPhase != "STANDARD" ||
+		globalFinanceMode != "SIMULATION" || globalCollectionMethod != "NONE" || globalCommissionBps != 700 {
+		t.Fatalf(
+			"unexpected frozen global seed: count=%d label=%q phase=%q finance_mode=%q collection_method=%q commission_bps=%d",
+			globalCount,
+			globalLabel,
+			globalPhase,
+			globalFinanceMode,
+			globalCollectionMethod,
+			globalCommissionBps,
+		)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -296,13 +311,6 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	now := time.Now()
 	yesterday := now.Add(-24 * time.Hour)
 	tomorrow := now.Add(24 * time.Hour)
-
-	// Global default is already seeded by migration 019
-	var globalDefaultID string
-	err = tx.QueryRow(ctx, "SELECT id FROM platform_commercial_terms WHERE owner_profile_id IS NULL AND valid_until IS NULL").Scan(&globalDefaultID)
-	if err != nil {
-		t.Fatalf("err querying seeded global: %v", err)
-	}
 
 	// Owner 1 historical
 	owner1HistID := uuid.New().String()
@@ -458,6 +466,24 @@ func TestCommercialTermsIntegration(t *testing.T) {
 		expectedPages := (res.TotalItems + res.Limit - 1) / res.Limit
 		if res.TotalPages != expectedPages {
 			t.Fatalf("expected %d pages for %d items with limit %d, got %d", expectedPages, res.TotalItems, res.Limit, res.TotalPages)
+		}
+	})
+
+	t.Run("Default pagination limit is 20", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms", nil)
+		req.Header.Set("X-Mock-Role", "SUPER_ADMIN")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var res commercialterms.PaginatedTermsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if res.Page != 1 || res.Limit != 20 {
+			t.Fatalf("expected default page=1 and limit=20, got page=%d limit=%d", res.Page, res.Limit)
 		}
 	})
 }
