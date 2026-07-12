@@ -16,6 +16,7 @@ import (
 	"lapangango-api/internal/availability"
 	"lapangango-api/internal/blockedslots"
 	"lapangango-api/internal/bookings"
+	"lapangango-api/internal/commercialterms"
 	"lapangango-api/internal/config"
 	"lapangango-api/internal/courts"
 	"lapangango-api/internal/database"
@@ -198,6 +199,10 @@ func main() {
 	pfRepo := platformfinance.NewRepository(dbPool)
 	pfService := platformfinance.NewService(pfRepo)
 	platformfinance.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, pfService)
+
+	ctRepo := commercialterms.NewRepository(dbPool)
+	ctService := commercialterms.NewService(ctRepo)
+	commercialterms.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, ctService)
 
 	analytics.RegisterRoutes(r, dbPool, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	srv := &http.Server{
