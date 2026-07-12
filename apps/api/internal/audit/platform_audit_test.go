@@ -179,7 +179,7 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 
 		correlationID := uuid.New().String()
 		domainID := uuid.New().String()
-		
+
 		_, err = tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Fail Test', $2, 'hash', 'CUSTOMER')", domainID, "failtest-"+domainID+"@test.local")
 		if err != nil {
 			t.Fatalf("failed domain write: %v", err)
@@ -210,7 +210,7 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to begin tx: %v", err)
 		}
-		
+
 		correlationID := uuid.New().String()
 		err = service.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
 			ActorRole:     "SUPER_ADMIN",
@@ -224,27 +224,33 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 				"valid_from":     "2026-08-01T00:00:00Z",
 			},
 		})
-        
+
 		if err != nil {
 			t.Fatalf("failed to record audit: %v", err)
 		}
-        
-        var count int
-        tx.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
-        if count != 1 {
-            t.Fatalf("expected 1 log in tx")
-        }
 
-        err = tx.Rollback(ctx)
+		var count int
+		err = tx.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
+		if err != nil {
+			t.Fatalf("failed to query count in tx: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("expected 1 log in tx, got %d", count)
+		}
+
+		err = tx.Rollback(ctx)
 		if err != nil {
 			t.Fatalf("failed to rollback tx: %v", err)
 		}
-        
-        pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
-        if count != 0 {
-            t.Fatalf("Audit survived domain rollback!")
-        }
-    })
+
+		err = pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
+		if err != nil {
+			t.Fatalf("failed to query count after rollback: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("Audit survived domain rollback! count=%d", count)
+		}
+	})
 
 	t.Run("Ownerless event valid", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
@@ -267,7 +273,7 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to record ownerless audit: %v", err)
 		}
-		
+
 		var count int
 		err = tx.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1 AND owner_profile_id IS NULL AND actor_user_id IS NULL", correlationID).Scan(&count)
 		if err != nil || count != 1 {

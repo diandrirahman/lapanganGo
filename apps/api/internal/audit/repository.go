@@ -37,7 +37,7 @@ func (r *repository) Create(ctx context.Context, params CreateAuditLogParams) er
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9);
 	`
-	
+
 	metadataJSON, err := json.Marshal(params.Metadata)
 	if err != nil {
 		return err
@@ -148,7 +148,7 @@ func (r *repository) ListByOwner(ctx context.Context, ownerProfileID string, que
 		var metadataJSON []byte
 		var actorID, actorName, actorEmail *string
 		var entityID *string
-		
+
 		err := rows.Scan(
 			&log.ID,
 			&actorID,
