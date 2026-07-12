@@ -12,16 +12,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"lapangango-api/internal/audit"
 	"lapangango-api/internal/commercialterms"
 	"lapangango-api/internal/database"
 )
 
-func setupRouter(repo commercialterms.Repository) *gin.Engine {
+func setupRouter(repo commercialterms.Repository, dbPool *pgxpool.Pool, auditSvc audit.PlatformService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 
-	svc := commercialterms.NewService(repo)
+	svc := commercialterms.NewService(repo, dbPool, auditSvc)
 
 	// Mock auth middlewares
 	authMiddleware := func(c *gin.Context) {
@@ -60,7 +62,7 @@ func setupRouter(repo commercialterms.Repository) *gin.Engine {
 
 func TestCommercialTermsPreview(t *testing.T) {
 	// Preview doesn't need DB, we can unit test it right here.
-	r := setupRouter(nil)
+	r := setupRouter(nil, nil, nil)
 
 	t.Run("Valid preview 700 bps", func(t *testing.T) {
 		reqBody := `{"commission_bps": 700, "finance_mode": "SIMULATION", "collection_method": "NONE", "valid_from": "2026-08-01T00:00:00Z"}`
@@ -179,7 +181,7 @@ func TestCommercialTermsPreview(t *testing.T) {
 }
 
 func TestCommercialTermsAuthMatrix(t *testing.T) {
-	r := setupRouter(nil)
+	r := setupRouter(nil, nil, nil)
 
 	tests := []struct {
 		name       string
@@ -232,6 +234,23 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
+	// Re-insert global seed if missing (safeguard)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO platform_commercial_terms (
+			id, owner_profile_id, label, phase,
+			finance_mode, collection_method, commission_bps,
+			valid_from, valid_until, supersedes_id, created_by_user_id
+		) VALUES (
+			'00000000-0000-0000-0000-000000000000',
+			NULL, 'Platform Frozen 500 bps (Mock)', 'TRIAL',
+			'SIMULATION', 'NONE', 500,
+			'2025-01-01T00:00:00Z', NULL, NULL, NULL
+		) ON CONFLICT (id) DO UPDATE SET valid_until = NULL, supersedes_id = NULL
+	`)
+	if err != nil {
+		t.Fatalf("Failed to re-insert global seed: %v", err)
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
@@ -240,10 +259,10 @@ func TestCommercialTermsIntegration(t *testing.T) {
 
 	// Insert test data
 	adminID := uuid.New().String()
-	tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Admin', 'admin@test.local', 'hash', 'SUPER_ADMIN')", adminID)
+	tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Admin', $2, 'hash', 'SUPER_ADMIN')", adminID, "admin."+adminID+"@test.local")
 
 	ownerID1 := uuid.New().String()
-	_, err = tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Owner 1', 'owner1@test.local', 'hash', 'OWNER')", ownerID1)
+	_, err = tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Owner 1', $2, 'hash', 'OWNER')", ownerID1, "owner1."+ownerID1+"@test.local")
 	if err != nil {
 		t.Fatalf("err user 1: %v", err)
 	}
@@ -253,7 +272,7 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	}
 
 	ownerID2 := uuid.New().String()
-	_, err = tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Owner 2', 'owner2@test.local', 'hash', 'OWNER')", ownerID2)
+	_, err = tx.Exec(ctx, "INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, 'Owner 2', $2, 'hash', 'OWNER')", ownerID2, "owner2."+ownerID2+"@test.local")
 	if err != nil {
 		t.Fatalf("err user 2: %v", err)
 	}
@@ -261,6 +280,12 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err owner 2: %v", err)
 	}
+	t.Cleanup(func() {
+		pool.Exec(ctx, "DELETE FROM platform_commercial_terms WHERE owner_profile_id IN ($1, $2)", ownerID1, ownerID2)
+		pool.Exec(ctx, "DELETE FROM owner_profiles WHERE id IN ($1, $2)", ownerID1, ownerID2)
+		pool.Exec(ctx, "DELETE FROM users WHERE id IN ($1, $2)", ownerID1, ownerID2)
+	})
+
 	now := time.Now()
 	yesterday := now.Add(-24 * time.Hour)
 	tomorrow := now.Add(24 * time.Hour)
@@ -294,7 +319,9 @@ func TestCommercialTermsIntegration(t *testing.T) {
 	}
 
 	repo := commercialterms.NewRepository(tx)
-	r := setupRouter(repo)
+	auditRepo := audit.NewPlatformRepository()
+	auditSvc := audit.NewPlatformService(auditRepo)
+	r := setupRouter(repo, pool, auditSvc)
 
 	t.Run("Get ALL terms (no filters)", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, "/admin/commercial-terms", nil)

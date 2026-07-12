@@ -2,6 +2,7 @@ package commercialterms
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -73,4 +74,46 @@ type PreviewResponse struct {
 	FinanceMode      string            `json:"finance_mode"`
 	CollectionMethod string            `json:"collection_method"`
 	Scenarios        []PreviewScenario `json:"scenarios"`
+}
+
+type CreateTermRequest struct {
+	OwnerProfileID   *string   `json:"owner_profile_id" binding:"omitempty,uuid"`
+	Label            string    `json:"label" binding:"required"`
+	Phase            string    `json:"phase" binding:"required"`
+	FinanceMode      string    `json:"finance_mode" binding:"required"`
+	CollectionMethod string    `json:"collection_method" binding:"required"`
+	CommissionBps    *int      `json:"commission_bps" binding:"required"`
+	ValidFrom        time.Time `json:"valid_from" binding:"required"`
+}
+
+func (r *CreateTermRequest) Validate() error {
+	r.Label = strings.TrimSpace(r.Label)
+	if r.Label == "" {
+		return errors.New("label cannot be empty")
+	}
+	if len(r.Label) > 120 {
+		return errors.New("label cannot exceed 120 characters")
+	}
+
+	if r.Phase != "TRIAL" && r.Phase != "INTRODUCTORY" && r.Phase != "STANDARD" && r.Phase != "CUSTOM" {
+		return errors.New("invalid phase")
+	}
+
+	if r.FinanceMode != "SIMULATION" && r.FinanceMode != "LIVE" {
+		return errors.New("finance_mode must be SIMULATION or LIVE")
+	}
+
+	if r.CollectionMethod != "NONE" {
+		return errors.New("collection_method must be NONE")
+	}
+
+	if r.CommissionBps == nil {
+		return errors.New("commission_bps is required")
+	}
+
+	if *r.CommissionBps < 0 || *r.CommissionBps > 3000 {
+		return errors.New("commission_bps must be between 0 and 3000")
+	}
+
+	return nil
 }
