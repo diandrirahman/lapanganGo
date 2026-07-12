@@ -205,6 +205,47 @@ func TestPlatformAuditService_RecordTx(t *testing.T) {
 		}
 	})
 
+	t.Run("Domain rollback removes successful audit", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("failed to begin tx: %v", err)
+		}
+		
+		correlationID := uuid.New().String()
+		err = service.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+			ActorRole:     "SUPER_ADMIN",
+			Action:        audit.ActionPlatformCommercialTermCreated,
+			EntityType:    audit.EntityPlatformCommercialTerm,
+			CorrelationID: &correlationID,
+			Metadata: map[string]any{
+				"commission_bps": 1500,
+				"label":          "Valid Term",
+				"phase":          "STANDARD",
+				"valid_from":     "2026-08-01T00:00:00Z",
+			},
+		})
+        
+		if err != nil {
+			t.Fatalf("failed to record audit: %v", err)
+		}
+        
+        var count int
+        tx.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
+        if count != 1 {
+            t.Fatalf("expected 1 log in tx")
+        }
+
+        err = tx.Rollback(ctx)
+		if err != nil {
+			t.Fatalf("failed to rollback tx: %v", err)
+		}
+        
+        pool.QueryRow(ctx, "SELECT count(*) FROM platform_audit_logs WHERE correlation_id = $1", correlationID).Scan(&count)
+        if count != 0 {
+            t.Fatalf("Audit survived domain rollback!")
+        }
+    })
+
 	t.Run("Ownerless event valid", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {

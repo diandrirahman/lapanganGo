@@ -111,7 +111,7 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				}
 			case "phase":
 				v, ok := val.(string)
-				if !ok || (v != "TRIAL" && v != "PRODUCTION") {
+				if !ok || (v != "TRIAL" && v != "INTRODUCTORY" && v != "STANDARD" && v != "CUSTOM") {
 					return errors.New("phase must be valid enum")
 				}
 			case "superseded_term_id", "new_term_id":
