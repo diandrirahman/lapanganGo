@@ -200,6 +200,11 @@ func (r *repository) GetVenues(ctx context.Context, query VenueQuery) ([]VenueRe
 		args = append(args, query.Status)
 		argID++
 	}
+	if query.OwnerProfileID != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("owner_profile_id = $%d", argID))
+		args = append(args, query.OwnerProfileID)
+		argID++
+	}
 
 	whereClause := strings.Join(whereClauses, " AND ")
 	countQuery := "SELECT count(*) FROM venues WHERE " + whereClause

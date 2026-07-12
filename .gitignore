@@ -9,7 +9,8 @@ apps/web/dist
 .gocache
 .gotmp
 outputs
-docs
+docs/*
+!docs/version_1_7_platform_finance_implementation_plan.md
 .agents/antigravity_v1_*.md
 report_step_15.md
 *.exe

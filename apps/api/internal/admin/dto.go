@@ -40,8 +40,9 @@ type OwnerResponse struct {
 
 type VenueQuery struct {
 	PaginationQuery
-	Search string `form:"search"`
-	Status string `form:"status"`
+	Search         string `form:"search"`
+	Status         string `form:"status"`
+	OwnerProfileID string `form:"owner_profile_id" binding:"omitempty,uuid"`
 }
 
 type VenueResponse struct {

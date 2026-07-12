@@ -26,6 +26,7 @@ import (
 	"lapangango-api/internal/notifications"
 	"lapangango-api/internal/owneraccess"
 	"lapangango-api/internal/owners"
+	"lapangango-api/internal/platformfinance"
 	"lapangango-api/internal/promos"
 	"lapangango-api/internal/refunds"
 	"lapangango-api/internal/schedules"
@@ -193,6 +194,10 @@ func main() {
 	adminService := admin.NewService(adminRepository, auditService)
 	adminHandler := admin.NewHandler(adminService)
 	adminHandler.RegisterRoutes(r, authMiddleware, requireActiveUser)
+
+	pfRepo := platformfinance.NewRepository(dbPool)
+	pfService := platformfinance.NewService(pfRepo)
+	platformfinance.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, pfService)
 
 	analytics.RegisterRoutes(r, dbPool, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	srv := &http.Server{
