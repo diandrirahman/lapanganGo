@@ -11,6 +11,7 @@ apps/web/dist
 outputs
 docs/*
 !docs/version_1_7_platform_finance_implementation_plan.md
+!docs/LapangGo_Phase_2B_to_Phase_7_Antigravity_Task_Cards.md
 .agents/antigravity_v1_*.md
 report_step_15.md
 *.exe

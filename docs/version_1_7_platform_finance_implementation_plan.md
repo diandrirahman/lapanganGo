@@ -1,6 +1,6 @@
 # LapangGo Platform Finance & Admin Analytics Implementation Plan
 
-Status dokumen: **approved business direction, planning only**
+Status dokumen: **approved business direction; Phase 0–2A completed, Phase 2B–7 planning only**
 
 Target awal: **v1.7 Platform Finance Foundation**
 
@@ -12,13 +12,18 @@ Mata uang MVP: **`IDR`**
 
 Dokumen ini adalah source of truth untuk pengerjaan bertahap oleh Antigravity. Dokumen ini tidak memberi izin untuk langsung mengaktifkan komisi nyata, menahan dana customer, atau melakukan payout otomatis. Setiap phase harus dikerjakan, diuji, dan direview secara terpisah.
 
+Execution breakdown setelah Phase 2A:
+
+- `docs/LapangGo_Phase_2B_to_Phase_7_Antigravity_Task_Cards.md`
+
 Cara memakai dokumen:
 
-1. Mulai dari **Prompt 0** di Section 25.
-2. Berikan Antigravity hanya satu prompt/subphase per task.
-3. Minta evidence acceptance criteria dan verification, lalu lakukan review manusia.
-4. Catat keputusan GO/NO-GO; jangan lanjut otomatis.
-5. Phase 7 tidak boleh mengubah production tanpa persetujuan eksplisit manusia.
+1. Phase 0–2A sudah selesai dan tidak perlu diulang.
+2. Mulai dari **Task 2B-00** pada task-card document di atas.
+3. Berikan Antigravity hanya satu task card per percakapan.
+4. Minta evidence acceptance criteria dan verification, lalu lakukan review manusia.
+5. Catat keputusan GO/NO-GO; jangan lanjut otomatis.
+6. Phase 7 tidak boleh mengubah production tanpa persetujuan eksplisit manusia.
 
 ---
 
@@ -2360,6 +2365,8 @@ Setiap item tersebut membutuhkan plan terpisah.
 
 Gunakan prompt di bawah satu per satu. Jangan menggabungkan beberapa prompt menjadi satu pekerjaan besar.
 
+> Catatan status: prompt Phase 0–2A dipertahankan sebagai histori/source contract. Untuk eksekusi aktif setelah Phase 2A, gunakan breakdown task-level pada `docs/LapangGo_Phase_2B_to_Phase_7_Antigravity_Task_Cards.md`; prompt subphase di section ini tidak boleh diberikan sebagai satu giant task.
+
 Di Antigravity gunakan `/planning` (bukan `/plan`) untuk breakdown phase, lalu `/build` hanya setelah phase plan disetujui. Gunakan `/test` dan `/review` sebelum meminta GO phase berikutnya.
 
 ### Prompt 0 — Baseline dan Audit
@@ -2649,4 +2656,4 @@ Phase 7A Human-reviewed readiness
 Phase 7B Human-activated controlled 0% → 5% → 7% calendar rollout
 ```
 
-Rekomendasi pekerjaan Antigravity pertama adalah **Prompt 0**, bukan langsung membuat halaman atau migration.
+Rekomendasi pekerjaan Antigravity berikutnya adalah **Task 2B-00**, bukan langsung membuat migration snapshot atau mengerjakan seluruh Prompt 2B1 sekaligus.
