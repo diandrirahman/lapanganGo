@@ -51,9 +51,9 @@ func insertTerm(t *testing.T, ctx context.Context, tx pgx.Tx, termID string, own
 	require.NoError(t, err)
 }
 
-func countTerms(t *testing.T, ctx context.Context, tx pgx.Tx) int {
+func countTermsForOwner(t *testing.T, ctx context.Context, tx pgx.Tx, ownerID string) int {
 	var count int
-	err := tx.QueryRow(ctx, `SELECT count(*) FROM platform_commercial_terms`).Scan(&count)
+	err := tx.QueryRow(ctx, `SELECT count(*) FROM platform_commercial_terms WHERE owner_profile_id = $1`, ownerID).Scan(&count)
 	require.NoError(t, err)
 	return count
 }
@@ -317,13 +317,13 @@ func TestResolveEffectiveTerm(t *testing.T) {
 		ownerID := uuid.New().String()
 		insertTestOwner(t, ctx, tx, ownerID)
 
-		countBefore := countTerms(t, ctx, tx)
+		countBefore := countTermsForOwner(t, ctx, tx, ownerID)
 
 		resolver := NewCommercialTermResolver(tx)
 		_, err = resolver.ResolveEffectiveTerm(ctx, ownerID, time.Now())
 		require.NoError(t, err)
 
-		countAfter := countTerms(t, ctx, tx)
+		countAfter := countTermsForOwner(t, ctx, tx, ownerID)
 		assert.Equal(t, countBefore, countAfter)
 	})
 }
