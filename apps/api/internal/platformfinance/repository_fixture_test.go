@@ -26,7 +26,11 @@ func TestRepositoryControlledFinanceFixtures(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	pool, err := database.NewPostgresPool(ctx, "postgres://lapangango_user:lapangango_password@localhost:5432/lapangango_db?sslmode=disable")
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://lapangango_user:lapangango_password@localhost:5432/lapangango_db?sslmode=disable"
+	}
+	pool, err := database.NewPostgresPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
