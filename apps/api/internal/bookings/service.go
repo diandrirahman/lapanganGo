@@ -8,42 +8,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"lapangango-api/internal/httputil"
 	"lapangango-api/internal/notifications"
+	"lapangango-api/internal/platformfinance"
 	"lapangango-api/internal/promos"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrPastDate                    = errors.New("booking date cannot be in the past")
-	ErrInvalidTimeRange            = errors.New("start time must be before end time")
-	ErrCourtInactive               = errors.New("court is not active")
-	ErrVenueInactive               = errors.New("venue is not active")
-	ErrOutsideOpHours              = errors.New("booking time is outside court operating hours")
-	ErrOverlapBlockedSlot          = errors.New("court is blocked/maintenance during the requested time")
-	ErrOverlapBooking              = errors.New("court is already booked for the requested time")
-	ErrBookingNotFound             = errors.New("booking not found")
-	ErrBookingAlreadyCancelled     = errors.New("booking already cancelled")
-	ErrBookingCannotBeCancelled    = errors.New("booking cannot be cancelled in current status")
-	ErrBookingAlreadyConfirmed     = errors.New("booking already confirmed")
-	ErrBookingCannotBeConfirmed    = errors.New("booking cannot be confirmed in current status")
-	ErrOwnerProfileNotFound        = errors.New("owner profile not found")
-	ErrVenueNotFound               = errors.New("venue not found")
-	ErrForbidden                   = errors.New("forbidden: you do not own this booking's venue")
-	ErrBookingCannotBeMarkedPaid   = errors.New("Booking tidak dapat ditandai lunas pada status ini")
-	ErrBookingCannotBeCompleted    = errors.New("Gagal menyelesaikan booking. Pastikan jadwal main telah terlewati dan status sudah Lunas.")
-	ErrBookingCannotBeRefunded     = errors.New("booking cannot be cancelled/refunded in current status")
-	ErrBookingRefundAlreadyExists  = errors.New("refund already recorded for this booking")
-	ErrBookingIncomeLedgerNotFound = errors.New("booking income ledger not found; backfill ledger before refund")
-	ErrPromoNotActive              = errors.New("promo is not active")
-	ErrPromoExpired                = errors.New("promo has expired")
-	ErrPromoNotStarted             = errors.New("promo has not started yet")
-	ErrPromoVenueMismatch          = errors.New("promo is not valid for this venue")
-	ErrPromoNotFound               = errors.New("promo not found")
-	ErrInvalidPromoPrice           = errors.New("final price after promo cannot be less than or equal to 0")
-	ErrInvalidPrice                = errors.New("final price must be greater than zero")
-	ErrPriceOverrideReasonRequired = errors.New("price override reason is required when final price differs from system price")
-	ErrPriceOverrideReasonTooLong  = errors.New("price override reason must be at most 500 characters")
+	ErrPastDate                        = errors.New("booking date cannot be in the past")
+	ErrInvalidTimeRange                = errors.New("start time must be before end time")
+	ErrCourtInactive                   = errors.New("court is not active")
+	ErrVenueInactive                   = errors.New("venue is not active")
+	ErrOutsideOpHours                  = errors.New("booking time is outside court operating hours")
+	ErrOverlapBlockedSlot              = errors.New("court is blocked/maintenance during the requested time")
+	ErrOverlapBooking                  = errors.New("court is already booked for the requested time")
+	ErrBookingNotFound                 = errors.New("booking not found")
+	ErrBookingAlreadyCancelled         = errors.New("booking already cancelled")
+	ErrBookingCannotBeCancelled        = errors.New("booking cannot be cancelled in current status")
+	ErrBookingAlreadyConfirmed         = errors.New("booking already confirmed")
+	ErrBookingCannotBeConfirmed        = errors.New("booking cannot be confirmed in current status")
+	ErrOwnerProfileNotFound            = errors.New("owner profile not found")
+	ErrVenueNotFound                   = errors.New("venue not found")
+	ErrForbidden                       = errors.New("forbidden: you do not own this booking's venue")
+	ErrBookingCannotBeMarkedPaid       = errors.New("Booking tidak dapat ditandai lunas pada status ini")
+	ErrBookingCannotBeCompleted        = errors.New("Gagal menyelesaikan booking. Pastikan jadwal main telah terlewati dan status sudah Lunas.")
+	ErrBookingCannotBeRefunded         = errors.New("booking cannot be cancelled/refunded in current status")
+	ErrBookingRefundAlreadyExists      = errors.New("refund already recorded for this booking")
+	ErrBookingIncomeLedgerNotFound     = errors.New("booking income ledger not found; backfill ledger before refund")
+	ErrPromoNotActive                  = errors.New("promo is not active")
+	ErrPromoExpired                    = errors.New("promo has expired")
+	ErrPromoNotStarted                 = errors.New("promo has not started yet")
+	ErrPromoVenueMismatch              = errors.New("promo is not valid for this venue")
+	ErrPromoNotFound                   = errors.New("promo not found")
+	ErrInvalidPromoCode                = errors.New("promo code is invalid")
+	ErrInvalidPromoPrice               = errors.New("final price after promo cannot be less than or equal to 0")
+	ErrSnapshotOrchestratorUnavailable = errors.New("booking finance snapshot service is unavailable")
+	ErrInvalidPrice                    = errors.New("final price must be greater than zero")
+	ErrPriceOverrideReasonRequired     = errors.New("price override reason is required when final price differs from system price")
+	ErrPriceOverrideReasonTooLong      = errors.New("price override reason must be at most 500 characters")
 )
 
 type BookingRepository interface {
@@ -86,18 +90,24 @@ type Service struct {
 	ttlMinutes   int
 	notifService notifications.Service
 	promosRepo   promos.Repository
+	orchestrator SnapshotOrchestrator
 }
 
-func NewService(repository BookingRepository, ttlMinutes int, notifService notifications.Service, promosRepo promos.Repository) *Service {
+func NewService(repository BookingRepository, ttlMinutes int, notifService notifications.Service, promosRepo promos.Repository, orchestrator SnapshotOrchestrator) *Service {
 	return &Service{
 		repository:   repository,
 		ttlMinutes:   ttlMinutes,
 		notifService: notifService,
 		promosRepo:   promosRepo,
+		orchestrator: orchestrator,
 	}
 }
 
 func (s *Service) CreateBooking(ctx context.Context, customerID string, req CreateBookingRequest) (BookingResponse, error) {
+	if s.orchestrator == nil {
+		return BookingResponse{}, ErrSnapshotOrchestratorUnavailable
+	}
+
 	// 1. Parse and validate dates/times
 	loc, err := time.LoadLocation("Asia/Jakarta")
 	if err != nil {
@@ -170,18 +180,16 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 
 		// 4. Calculate total price
 		durationHours := endParsed.Sub(startParsed).Hours()
+		// Preserve the legacy price calculation boundary (rounded to cents) before
+		// enforcing the new whole-rupiah contract. Without this normalization,
+		// binary float noise can turn a mathematically whole price into a false
+		// fractional amount (for example, an 11-minute booking at Rp150.000/hour).
 		originalPrice := math.Round(durationHours*info.PricePerHour*100) / 100
-
 		finalPrice := originalPrice
-		discountAmount := 0.0
-
-		op := originalPrice
-		fp := finalPrice
-		originalPricePtr := &op
-		finalPricePtr := &fp
 
 		var promoID *string
 		var promoCode *string
+		var reason string
 
 		if req.PromoCode != nil {
 			code := strings.ToUpper(strings.TrimSpace(*req.PromoCode))
@@ -198,17 +206,19 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 				return err
 			}
 
-			discountAmount = promos.CalculateDiscount(promo, originalPrice)
+			discountAmount := promos.CalculateDiscount(promo, originalPrice)
 			finalPrice = originalPrice - discountAmount
 			if finalPrice <= 0 {
 				return ErrInvalidPromoPrice
 			}
 
-			fp = finalPrice
-			finalPricePtr = &fp
-
 			promoID = &promo.ID
 			promoCode = &promo.Code
+			normalizedPromoCode := strings.ToUpper(strings.TrimSpace(promo.Code))
+			if normalizedPromoCode == "" {
+				return ErrInvalidPromoCode
+			}
+			reason = "PROMO:" + normalizedPromoCode
 		}
 
 		// Check blocked slots
@@ -230,23 +240,53 @@ func (s *Service) CreateBooking(ctx context.Context, customerID string, req Crea
 		}
 
 		expiresAt := nowTz.Add(time.Duration(s.ttlMinutes) * time.Minute)
+		serverEffectiveAt := time.Now().UTC()
 
-		// Insert
-		params := CreateBookingParams{
-			CustomerID:     customerID,
-			CourtID:        req.CourtID,
-			Date:           req.BookingDate,
-			StartTime:      req.StartTime,
-			EndTime:        req.EndTime,
-			OriginalPrice:  originalPricePtr,
-			DiscountAmount: discountAmount,
-			FinalPrice:     finalPricePtr,
-			PromoID:        promoID,
-			PromoCode:      promoCode,
-			TotalPrice:     finalPrice,
-			ExpiresAt:      &expiresAt,
+		originalPriceInt, err := exactFloat64ToRupiah(originalPrice)
+		if err != nil {
+			return err
 		}
-		b, err := s.repository.InsertBooking(ctx, tx, params)
+
+		finalPriceInt, err := exactFloat64ToRupiah(finalPrice)
+		if err != nil {
+			return err
+		}
+		adjustmentRupiah := finalPriceInt - originalPriceInt
+		discountRupiah := originalPriceInt - finalPriceInt
+		if promoID != nil && (adjustmentRupiah >= 0 || discountRupiah <= 0) {
+			return ErrInvalidPromoPrice
+		}
+
+		reqOrch := SnapshotOrchestrationRequest{
+			OwnerProfileID:             info.OwnerProfileID,
+			VenueID:                    info.VenueID,
+			EffectiveAt:                serverEffectiveAt,
+			Channel:                    platformfinance.BookingChannelMarketplaceOnline,
+			OriginalPriceRupiah:        originalPriceInt,
+			OwnerPriceAdjustmentRupiah: adjustmentRupiah,
+			PriceAdjustmentReason:      reason,
+		}
+
+		insertCallback := func(ctx context.Context, tx pgx.Tx, pricing CanonicalBookingPricing) (Booking, error) {
+			op := float64(pricing.OriginalPriceRupiah)
+			fp := float64(pricing.FinalBookingPriceRupiah)
+			return s.repository.InsertBooking(ctx, tx, CreateBookingParams{
+				CustomerID:     customerID,
+				CourtID:        req.CourtID,
+				Date:           req.BookingDate,
+				StartTime:      req.StartTime,
+				EndTime:        req.EndTime,
+				OriginalPrice:  &op,
+				DiscountAmount: float64(pricing.OriginalPriceRupiah - pricing.FinalBookingPriceRupiah),
+				FinalPrice:     &fp,
+				PromoID:        promoID,
+				PromoCode:      promoCode,
+				TotalPrice:     fp,
+				ExpiresAt:      &expiresAt,
+			})
+		}
+
+		b, _, err := s.orchestrator.CreateBookingWithSnapshot(ctx, tx, reqOrch, insertCallback)
 		if err != nil {
 			return err
 		}

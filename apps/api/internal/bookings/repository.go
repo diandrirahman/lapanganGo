@@ -15,11 +15,12 @@ type Repository struct {
 }
 
 type CourtValidationInfo struct {
-	PricePerHour float64
-	CourtStatus  string
-	VenueStatus  string
-	VenueID      string
-	OwnerUserID  string
+	PricePerHour   float64
+	CourtStatus    string
+	VenueStatus    string
+	VenueID        string
+	OwnerUserID    string
+	OwnerProfileID string
 }
 
 type OperatingHour struct {
@@ -134,7 +135,7 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 
 func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error) {
 	query := `
-		SELECT c.price_per_hour, c.status, v.status, v.id, op.user_id
+		SELECT c.price_per_hour, c.status, v.status, v.id, op.user_id, op.id
 		FROM courts c
 		JOIN venues v ON v.id = c.venue_id
 		JOIN owner_profiles op ON op.id = v.owner_profile_id
@@ -142,7 +143,7 @@ func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, cou
 		FOR UPDATE
 	`
 	var info CourtValidationInfo
-	err := tx.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.VenueID, &info.OwnerUserID)
+	err := tx.QueryRow(ctx, query, courtID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.VenueID, &info.OwnerUserID, &info.OwnerProfileID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return info, ErrCourtNotFound
@@ -154,7 +155,7 @@ func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, cou
 
 func (r *Repository) LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID, venueID, ownerProfileID string) (CourtValidationInfo, error) {
 	query := `
-		SELECT c.price_per_hour, c.status, v.status, op.user_id
+		SELECT c.price_per_hour, c.status, v.status, v.id, op.user_id, op.id
 		FROM courts c
 		JOIN venues v ON v.id = c.venue_id
 		JOIN owner_profiles op ON op.id = v.owner_profile_id
@@ -162,7 +163,7 @@ func (r *Repository) LockOwnerCourtValidationInfo(ctx context.Context, tx pgx.Tx
 		FOR UPDATE
 	`
 	var info CourtValidationInfo
-	err := tx.QueryRow(ctx, query, courtID, venueID, ownerProfileID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.OwnerUserID)
+	err := tx.QueryRow(ctx, query, courtID, venueID, ownerProfileID).Scan(&info.PricePerHour, &info.CourtStatus, &info.VenueStatus, &info.VenueID, &info.OwnerUserID, &info.OwnerProfileID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return info, ErrCourtNotFound

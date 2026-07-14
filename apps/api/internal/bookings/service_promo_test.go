@@ -39,7 +39,7 @@ func getBaseTestSetup() (*mockRepo, *mockPromosRepo, *Service, string) {
 	end, _ := time.Parse("15:04", "12:00")
 
 	repo := &mockRepo{
-		CourtValidationInfo: CourtValidationInfo{PricePerHour: 100000, CourtStatus: "ACTIVE", VenueStatus: "ACTIVE", OwnerUserID: "owner-1"},
+		CourtValidationInfo: CourtValidationInfo{PricePerHour: 100000, CourtStatus: "ACTIVE", VenueStatus: "ACTIVE", OwnerUserID: "owner-1", OwnerProfileID: "owner-profile-1", VenueID: "venue-1"},
 		OperatingHour:       OperatingHour{IsClosed: false, OpenTime: ptrTime(start.Add(-time.Hour)), CloseTime: ptrTime(end.Add(time.Hour))},
 		IsBlocked:           false,
 		IsOverlap:           false,
@@ -47,7 +47,7 @@ func getBaseTestSetup() (*mockRepo, *mockPromosRepo, *Service, string) {
 	}
 
 	promosRepo := &mockPromosRepo{}
-	svc := NewService(repo, 30, nil, promosRepo)
+	svc := NewService(repo, 30, nil, promosRepo, &mockOrchestrator{})
 
 	return repo, promosRepo, svc, tomorrow
 }

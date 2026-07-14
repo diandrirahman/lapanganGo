@@ -162,8 +162,20 @@ func main() {
 	promosHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 	promosHandler.RegisterCustomerRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 
+	resolverAdapter := func(ctx context.Context, db platformfinance.CommercialTermQueryer, ownerProfileID string, effectiveAt time.Time) (*platformfinance.CommercialTerm, error) {
+		resolver := platformfinance.NewCommercialTermResolver(db)
+		return resolver.ResolveEffectiveTerm(ctx, ownerProfileID, effectiveAt)
+	}
+	calculator := platformfinance.CalculateBookingFees
+	snapshotRepo := platformfinance.NewBookingFeeSnapshotRepository()
+
+	snapshotOrchestrator, err := bookings.NewSnapshotOrchestrator(resolverAdapter, calculator, snapshotRepo)
+	if err != nil {
+		log.Fatalf("failed to initialize snapshot orchestrator: %v", err)
+	}
+
 	bookingsRepository := bookings.NewRepository(dbPool)
-	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService, promosRepository)
+	bookingsService := bookings.NewService(bookingsRepository, cfg.BookingPaymentTTLMinutes, notificationsService, promosRepository, snapshotOrchestrator)
 	bookingsHandler := bookings.NewHandler(bookingsService, auditService)
 	bookingsHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
