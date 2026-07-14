@@ -13,8 +13,8 @@ import (
 
 type mockRepo struct {
 	ExecuteBookingTxCalls int
-	CourtValidationInfo CourtValidationInfo
-	CourtInfoErr        error
+	CourtValidationInfo   CourtValidationInfo
+	CourtInfoErr          error
 
 	OperatingHour OperatingHour
 	OpHourErr     error
@@ -966,6 +966,17 @@ func TestCancelPaidBookingWithRefund_NoIncomeLedger(t *testing.T) {
 	}
 }
 
+func TestOwnerCreateOfflineBooking_Fail_NilOrchestrator(t *testing.T) {
+	svc := NewService(&mockRepo{}, 30, nil, nil, nil)
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID: "venue-1",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
+	if !errors.Is(err, ErrSnapshotOrchestratorUnavailable) {
+		t.Fatalf("expected ErrSnapshotOrchestratorUnavailable, got %v", err)
+	}
+}
+
 func TestOwnerCreateOfflineBooking_Success(t *testing.T) {
 	tm, _ := time.Parse("15:04", "22:00")
 	repo := &mockRepo{
@@ -1063,6 +1074,55 @@ func TestOwnerCreateOfflineBooking_Success_WithOverride(t *testing.T) {
 	}
 }
 
+func TestOwnerCreateOfflineBooking_Success_Markup(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus:  "ACTIVE",
+			VenueStatus:  "ACTIVE",
+			PricePerHour: 75000,
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			CloseTime: &tm,
+		},
+		IsBlocked:       false,
+		IsOverlap:       false,
+		InsertedBooking: Booking{ID: "booking-3", Status: "PAID"},
+	}
+	svc := NewService(repo, 30, nil, nil, &mockOrchestrator{})
+
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:             "venue-1",
+		CourtID:             "court-1",
+		BookingDate:         "2026-10-10",
+		StartTime:           "10:00",
+		EndTime:             "12:00",
+		CustomerName:        "Budi",
+		TotalPrice:          200000, // System price is 150000, this is markup
+		PriceOverrideReason: "Biaya tambahan alat",
+		Status:              "PAID",
+	}
+	resp, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp.ID != "booking-3" {
+		t.Fatalf("expected booking-3, got %s", resp.ID)
+	}
+	if repo.LastOfflineCreateParams.SystemPrice != 150000 {
+		t.Errorf("expected SystemPrice 150000, got %f", repo.LastOfflineCreateParams.SystemPrice)
+	}
+	if repo.LastOfflineCreateParams.FinalPrice != 200000 {
+		t.Errorf("expected FinalPrice 200000, got %f", repo.LastOfflineCreateParams.FinalPrice)
+	}
+	if repo.LastOfflineCreateParams.PriceOverrideReason == nil || *repo.LastOfflineCreateParams.PriceOverrideReason != "Biaya tambahan alat" {
+		t.Errorf("expected PriceOverrideReason 'Biaya tambahan alat', got %v", repo.LastOfflineCreateParams.PriceOverrideReason)
+	}
+}
+
 func TestOwnerCreateOfflineBooking_Fail_OverrideWithoutReason(t *testing.T) {
 	tm, _ := time.Parse("15:04", "22:00")
 	repo := &mockRepo{
@@ -1096,6 +1156,76 @@ func TestOwnerCreateOfflineBooking_Fail_OverrideWithoutReason(t *testing.T) {
 	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
 	if !errors.Is(err, ErrPriceOverrideReasonRequired) {
 		t.Fatalf("expected ErrPriceOverrideReasonRequired, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Fail_FractionalPrice(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus:  "ACTIVE",
+			VenueStatus:  "ACTIVE",
+			PricePerHour: 75000,
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			CloseTime: &tm,
+		},
+		IsBlocked: false,
+		IsOverlap: false,
+	}
+	svc := NewService(repo, 30, nil, nil, &mockOrchestrator{})
+
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:      "venue-1",
+		CourtID:      "court-1",
+		BookingDate:  "2026-10-10",
+		StartTime:    "10:00",
+		EndTime:      "12:00",
+		CustomerName: "Budi",
+		TotalPrice:   150000.50, // Fractional price
+		Status:       "PAID",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
+	if !errors.Is(err, errFractionalRupiahDetected) {
+		t.Fatalf("expected errFractionalRupiahDetected, got %v", err)
+	}
+}
+
+func TestOwnerCreateOfflineBooking_Fail_FractionalSystemPrice(t *testing.T) {
+	tm, _ := time.Parse("15:04", "22:00")
+	repo := &mockRepo{
+		OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+		OwnerVenue:   OwnerVenue{ID: "venue-1"},
+		CourtValidationInfo: CourtValidationInfo{
+			CourtStatus:  "ACTIVE",
+			VenueStatus:  "ACTIVE",
+			PricePerHour: 33333.33, // Fractional system price
+		},
+		OperatingHour: OperatingHour{
+			IsClosed:  false,
+			CloseTime: &tm,
+		},
+		IsBlocked: false,
+		IsOverlap: false,
+	}
+	svc := NewService(repo, 30, nil, nil, &mockOrchestrator{})
+
+	req := OwnerCreateOfflineBookingRequest{
+		VenueID:      "venue-1",
+		CourtID:      "court-1",
+		BookingDate:  "2026-10-10",
+		StartTime:    "10:00",
+		EndTime:      "12:00",
+		CustomerName: "Budi",
+		TotalPrice:   150000,
+		Status:       "PAID",
+	}
+	_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
+	if !errors.Is(err, errFractionalRupiahDetected) {
+		t.Fatalf("expected errFractionalRupiahDetected, got %v", err)
 	}
 }
 

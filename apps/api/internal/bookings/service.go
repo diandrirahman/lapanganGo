@@ -914,6 +914,10 @@ func (s *Service) StartAutoCompleteWorker(ctx context.Context, interval time.Dur
 }
 
 func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerCtx httputil.OwnerContext, req OwnerCreateOfflineBookingRequest) (BookingResponse, error) {
+	if s.orchestrator == nil {
+		return BookingResponse{}, ErrSnapshotOrchestratorUnavailable
+	}
+
 	// 1. Fetch court & venue info
 	_, err := s.repository.FindVenueByIDAndOwnerProfileID(ctx, req.VenueID, ownerCtx.OwnerProfileID)
 	if err != nil {
@@ -1004,11 +1008,21 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerCtx httput
 		systemPrice := math.Round(durationHours*info.PricePerHour*100) / 100
 		finalPrice := math.Round(req.TotalPrice*100) / 100
 
-		if finalPrice <= 0 {
+		systemPriceRupiah, err := exactFloat64ToRupiah(systemPrice)
+		if err != nil {
+			return err
+		}
+		finalPriceRupiah, err := exactFloat64ToRupiah(finalPrice)
+		if err != nil {
+			return err
+		}
+
+		if finalPriceRupiah <= 0 {
 			return ErrInvalidPrice
 		}
 
-		isOverride := finalPrice != systemPrice
+		adjustmentRupiah := finalPriceRupiah - systemPriceRupiah
+		isOverride := adjustmentRupiah != 0
 		reason := strings.TrimSpace(req.PriceOverrideReason)
 		if isOverride && reason == "" {
 			return ErrPriceOverrideReasonRequired
@@ -1017,33 +1031,48 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerCtx httput
 			return ErrPriceOverrideReasonTooLong
 		}
 
-		params := CreateOfflineBookingParams{
-			VenueID:         req.VenueID,
-			CourtID:         req.CourtID,
-			Date:            req.BookingDate,
-			StartTime:       req.StartTime,
-			EndTime:         req.EndTime,
-			SystemPrice:     systemPrice,
-			FinalPrice:      finalPrice,
-			Status:          req.Status,
-			OwnerUserID:     ownerCtx.EffectiveOwnerUserID,
-			CreatedByUserID: ownerCtx.ActorUserID,
-			CustomerName:    req.CustomerName,
+		reqOrch := SnapshotOrchestrationRequest{
+			OwnerProfileID:             info.OwnerProfileID,
+			VenueID:                    info.VenueID,
+			EffectiveAt:                time.Now().UTC(),
+			Channel:                    platformfinance.BookingChannelOwnerWalkIn,
+			OriginalPriceRupiah:        systemPriceRupiah,
+			OwnerPriceAdjustmentRupiah: adjustmentRupiah,
 		}
 		if isOverride {
-			params.PriceOverrideReason = &reason
-		}
-		if req.CustomerPhone != "" {
-			params.CustomerPhone = &req.CustomerPhone
-		}
-		if req.CustomerEmail != "" {
-			params.CustomerEmail = &req.CustomerEmail
-		}
-		if req.Note != "" {
-			params.Note = &req.Note
+			reqOrch.PriceAdjustmentReason = reason
 		}
 
-		b, err := s.repository.InsertOfflineBookingTx(ctx, tx, params)
+		b, _, err := s.orchestrator.CreateBookingWithSnapshot(ctx, tx, reqOrch, func(ctx context.Context, tx pgx.Tx, pricing CanonicalBookingPricing) (Booking, error) {
+			params := CreateOfflineBookingParams{
+				VenueID:         info.VenueID,
+				CourtID:         req.CourtID,
+				Date:            req.BookingDate,
+				StartTime:       req.StartTime,
+				EndTime:         req.EndTime,
+				SystemPrice:     float64(pricing.OriginalPriceRupiah),
+				FinalPrice:      float64(pricing.FinalBookingPriceRupiah),
+				Status:          req.Status,
+				OwnerUserID:     ownerCtx.EffectiveOwnerUserID,
+				CreatedByUserID: ownerCtx.ActorUserID,
+				CustomerName:    req.CustomerName,
+			}
+			if isOverride {
+				params.PriceOverrideReason = &reason
+			}
+			if req.CustomerPhone != "" {
+				params.CustomerPhone = &req.CustomerPhone
+			}
+			if req.CustomerEmail != "" {
+				params.CustomerEmail = &req.CustomerEmail
+			}
+			if req.Note != "" {
+				params.Note = &req.Note
+			}
+
+			return s.repository.InsertOfflineBookingTx(ctx, tx, params)
+		})
+
 		if err != nil {
 			return err
 		}

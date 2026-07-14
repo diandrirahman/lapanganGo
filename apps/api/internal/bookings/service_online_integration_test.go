@@ -80,9 +80,11 @@ type testTxRepoWrapper struct {
 	*bookings.Repository
 	testTx          pgx.Tx
 	rollbackOnError bool
+	execTxCalled    bool
 }
 
 func (w *testTxRepoWrapper) ExecuteBookingTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	w.execTxCalled = true
 	err := fn(w.testTx)
 	if err == nil || !w.rollbackOnError {
 		return err
@@ -91,6 +93,24 @@ func (w *testTxRepoWrapper) ExecuteBookingTx(ctx context.Context, fn func(pgx.Tx
 		return fmt.Errorf("booking transaction failed: %w; rollback failed: %v", err, rollbackErr)
 	}
 	return err
+}
+
+func (w *testTxRepoWrapper) FindVenueByIDAndOwnerProfileID(ctx context.Context, venueID, ownerProfileID string) (bookings.OwnerVenue, error) {
+	query := `
+		SELECT id::text, name
+		FROM venues
+		WHERE id = $1 AND owner_profile_id = $2
+		LIMIT 1
+	`
+	var venue bookings.OwnerVenue
+	err := w.testTx.QueryRow(ctx, query, venueID, ownerProfileID).Scan(&venue.ID, &venue.Name)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return venue, pgx.ErrNoRows
+		}
+		return venue, err
+	}
+	return venue, nil
 }
 
 var _ bookings.BookingRepository = (*testTxRepoWrapper)(nil)
