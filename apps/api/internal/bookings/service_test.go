@@ -1194,6 +1194,53 @@ func TestOwnerCreateOfflineBooking_Fail_FractionalPrice(t *testing.T) {
 	}
 }
 
+func TestOwnerCreateOfflineBooking_Fail_SubRupiahPriceBeforeRounding(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		totalPrice float64
+	}{
+		{name: "fraction previously rounded down", totalPrice: 100000.001},
+		{name: "fraction previously rounded up", totalPrice: 100000.999},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			tm, _ := time.Parse("15:04", "22:00")
+			repo := &mockRepo{
+				OwnerProfile: OwnerProfile{ID: "owner-prof-1"},
+				OwnerVenue:   OwnerVenue{ID: "venue-1"},
+				CourtValidationInfo: CourtValidationInfo{
+					CourtStatus:  "ACTIVE",
+					VenueStatus:  "ACTIVE",
+					PricePerHour: 100000,
+				},
+				OperatingHour: OperatingHour{
+					IsClosed:  false,
+					CloseTime: &tm,
+				},
+			}
+			svc := NewService(repo, 30, nil, nil, &mockOrchestrator{})
+
+			req := OwnerCreateOfflineBookingRequest{
+				VenueID:      "venue-1",
+				CourtID:      "court-1",
+				BookingDate:  "2026-10-10",
+				StartTime:    "10:00",
+				EndTime:      "11:00",
+				CustomerName: "Budi",
+				TotalPrice:   testCase.totalPrice,
+				Status:       "PAID",
+			}
+			_, err := svc.OwnerCreateOfflineBooking(context.Background(), testOwnerContext("owner-user-1", "owner-prof-1"), req)
+			if !errors.Is(err, errFractionalRupiahDetected) {
+				t.Fatalf("expected errFractionalRupiahDetected, got %v", err)
+			}
+			if repo.LastOfflineCreateParams.CourtID != "" {
+				t.Fatalf("fractional request reached offline insert: %+v", repo.LastOfflineCreateParams)
+			}
+		})
+	}
+}
+
 func TestOwnerCreateOfflineBooking_Fail_FractionalSystemPrice(t *testing.T) {
 	tm, _ := time.Parse("15:04", "22:00")
 	repo := &mockRepo{

@@ -1006,13 +1006,15 @@ func (s *Service) OwnerCreateOfflineBooking(ctx context.Context, ownerCtx httput
 
 		durationHours := endTz.Sub(startTz).Hours()
 		systemPrice := math.Round(durationHours*info.PricePerHour*100) / 100
-		finalPrice := math.Round(req.TotalPrice*100) / 100
 
 		systemPriceRupiah, err := exactFloat64ToRupiah(systemPrice)
 		if err != nil {
 			return err
 		}
-		finalPriceRupiah, err := exactFloat64ToRupiah(finalPrice)
+		// Owner-supplied money must already be a whole rupiah amount. Do not
+		// normalize it first: rounding here would silently accept fractional
+		// request values and change the amount selected by the owner/staff actor.
+		finalPriceRupiah, err := exactFloat64ToRupiah(req.TotalPrice)
 		if err != nil {
 			return err
 		}

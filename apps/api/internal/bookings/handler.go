@@ -401,6 +401,12 @@ func (h *Handler) CompleteBooking(c *gin.Context) {
 
 func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 	switch {
+	case errors.Is(err, errNaNDetected),
+		errors.Is(err, errInfinityDetected),
+		errors.Is(err, errNegativeValueDetected),
+		errors.Is(err, errValueExceedsMax),
+		errors.Is(err, errFractionalRupiahDetected):
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid price"})
 	case errors.Is(err, ErrPastDate),
 		errors.Is(err, ErrInvalidTimeRange),
 		errors.Is(err, ErrInvalidPrice),
