@@ -42,22 +42,41 @@ func main() {
 	flag.Parse()
 
 	cfg := config.Load()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
 	dbPool, err := database.NewPostgresPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal("Failed to connect to PostgreSQL:", err)
+		log.Fatal("Error: failed to establish database connection")
 	}
 	defer dbPool.Close()
+
+	// 1. Cutover preflight check
+	var cutoverActive bool
+	err = dbPool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM platform_finance_cutovers WHERE id = 1)").Scan(&cutoverActive)
+	if err != nil {
+		log.Fatal("Error: unable to verify whether seeding is permitted")
+	}
+	if cutoverActive {
+		log.Fatal("Error: Seeding is not allowed because platform finance cutover is active")
+	}
 
 	tokenService := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpiresInHours)
 
 	// Mulai Transaksi
+	var cancelSeed context.CancelFunc
+	ctx, cancelSeed = context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancelSeed()
+
 	tx, err := dbPool.Begin(ctx)
 	if err != nil {
 		log.Fatal("Failed to begin transaction:", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer rollbackCancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
 
 	fmt.Println("--- Starting Demo Cleanup ---")
 	if err := cleanupDemoData(ctx, tx); err != nil {
