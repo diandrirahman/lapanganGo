@@ -107,7 +107,7 @@ func TestLegacyBackfillIntegration(t *testing.T) {
 	var totalCandidate, online, offline int
 	var batchCounts []int
 	for hasMore {
-		batch, err := FetchLegacyBackfillCandidates(ctx, tx, cutover, batchSize, cursor)
+		batch, err := FetchLegacyBackfillCandidates(ctx, tx, cutover, batchSize, cursor, false)
 		require.NoError(t, err)
 
 		if batch.Count > 0 {
@@ -135,7 +135,7 @@ func TestLegacyBackfillIntegration(t *testing.T) {
 
 	// 8. Resume setelah UUID spesifik
 	resumeCursor := uuid.MustParse("00000000-0000-4000-8000-000000000504")
-	resumeBatch1, err := FetchLegacyBackfillCandidates(ctx, tx, cutover, 10, &resumeCursor)
+	resumeBatch1, err := FetchLegacyBackfillCandidates(ctx, tx, cutover, 10, &resumeCursor, false)
 	require.NoError(t, err)
 	assert.Equal(t, 3, resumeBatch1.Count)
 	assert.Equal(t, 1, resumeBatch1.OnlineCount)

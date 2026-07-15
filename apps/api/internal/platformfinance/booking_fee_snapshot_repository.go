@@ -3,6 +3,7 @@ package platformfinance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -85,9 +86,17 @@ type BookingFeeSnapshotRepository interface {
 	GetSnapshot(ctx context.Context, db SnapshotDBTX, bookingID string) (*BookingFeeSnapshot, error)
 }
 
+type LegacyBackfillSnapshotRepository interface {
+	InsertIdempotentBackfillSnapshot(ctx context.Context, db SnapshotDBTX, params CreateBookingFeeSnapshotParams) (*BookingFeeSnapshot, bool, error)
+}
+
 type bookingFeeSnapshotRepository struct{}
 
 func NewBookingFeeSnapshotRepository() BookingFeeSnapshotRepository {
+	return &bookingFeeSnapshotRepository{}
+}
+
+func NewLegacyBackfillSnapshotRepository() LegacyBackfillSnapshotRepository {
 	return &bookingFeeSnapshotRepository{}
 }
 
@@ -126,6 +135,83 @@ func (r *bookingFeeSnapshotRepository) InsertSnapshot(ctx context.Context, db Sn
 	)
 
 	return scanSnapshotRow(row)
+}
+
+func (r *bookingFeeSnapshotRepository) InsertIdempotentBackfillSnapshot(ctx context.Context, db SnapshotDBTX, params CreateBookingFeeSnapshotParams) (*BookingFeeSnapshot, bool, error) {
+	if err := validateSnapshotParams(params); err != nil {
+		return nil, false, err
+	}
+
+	sqlInsert := `
+		INSERT INTO booking_fee_snapshots (
+			booking_id, owner_profile_id, venue_id, commercial_term_id,
+			terms_source, booking_channel, finance_mode, currency, currency_exponent,
+			original_price_rupiah, owner_price_adjustment_rupiah, price_adjustment_reason, final_booking_price_rupiah,
+			customer_service_fee_rupiah, customer_charge_amount_rupiah, commission_basis_amount_rupiah, commission_bps, commission_amount_rupiah, owner_net_amount_rupiah,
+			calculation_version
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6, $7, $8, $9,
+			$10, $11, $12, $13,
+			$14, $15, $16, $17, $18, $19,
+			$20
+		) ON CONFLICT (booking_id) DO NOTHING
+		RETURNING booking_id
+	`
+	var insertedID string
+	err := db.QueryRow(ctx, sqlInsert,
+		params.BookingID, params.OwnerProfileID, params.VenueID, params.CommercialTermID,
+		params.TermsSource, params.BookingChannel, params.FinanceMode, SnapshotCurrencyIDR, SnapshotCurrencyExponentIDR,
+		params.OriginalPriceRupiah, params.OwnerPriceAdjustmentRupiah, params.PriceAdjustmentReason, params.FinalBookingPriceRupiah,
+		params.CustomerServiceFeeRupiah, params.CustomerChargeAmountRupiah, params.CommissionBasisAmountRupiah, params.CommissionBps, params.CommissionAmountRupiah, params.OwnerNetAmountRupiah,
+		params.CalculationVersion,
+	).Scan(&insertedID)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No row returned -> Duplicate exists. Fetch and verify.
+			existing, getErr := r.GetSnapshot(ctx, db, params.BookingID)
+			if getErr != nil {
+				return nil, false, fmt.Errorf("idempotent conflict check failed to get existing: %w", getErr)
+			}
+
+			// Exact comparison (ignoring created_at)
+			if existing.OwnerProfileID != params.OwnerProfileID ||
+				existing.VenueID != params.VenueID ||
+				(existing.CommercialTermID != nil && params.CommercialTermID == nil) ||
+				(existing.CommercialTermID == nil && params.CommercialTermID != nil) ||
+				(existing.CommercialTermID != nil && params.CommercialTermID != nil && *existing.CommercialTermID != *params.CommercialTermID) ||
+				existing.TermsSource != params.TermsSource ||
+				existing.BookingChannel != params.BookingChannel ||
+				existing.FinanceMode != params.FinanceMode ||
+				existing.Currency != SnapshotCurrencyIDR ||
+				existing.CurrencyExponent != SnapshotCurrencyExponentIDR ||
+				existing.OriginalPriceRupiah != params.OriginalPriceRupiah ||
+				existing.OwnerPriceAdjustmentRupiah != params.OwnerPriceAdjustmentRupiah ||
+				(existing.PriceAdjustmentReason != nil && params.PriceAdjustmentReason == nil) ||
+				(existing.PriceAdjustmentReason == nil && params.PriceAdjustmentReason != nil) ||
+				(existing.PriceAdjustmentReason != nil && params.PriceAdjustmentReason != nil && *existing.PriceAdjustmentReason != *params.PriceAdjustmentReason) ||
+				existing.FinalBookingPriceRupiah != params.FinalBookingPriceRupiah ||
+				existing.CustomerServiceFeeRupiah != params.CustomerServiceFeeRupiah ||
+				existing.CustomerChargeAmountRupiah != params.CustomerChargeAmountRupiah ||
+				existing.CommissionBasisAmountRupiah != params.CommissionBasisAmountRupiah ||
+				existing.CommissionBps != params.CommissionBps ||
+				existing.CommissionAmountRupiah != params.CommissionAmountRupiah ||
+				existing.OwnerNetAmountRupiah != params.OwnerNetAmountRupiah ||
+				existing.CalculationVersion != params.CalculationVersion {
+
+				return nil, false, ErrBackfillSnapshotConflict
+			}
+
+			// Exact match -> idempotent no-op.
+			return existing, false, nil
+		}
+		return nil, false, err
+	}
+
+	// It was successfully inserted. We can just return the snapshot or fetch it.
+	snap, err := r.GetSnapshot(ctx, db, params.BookingID)
+	return snap, true, err
 }
 
 func (r *bookingFeeSnapshotRepository) GetSnapshot(ctx context.Context, db SnapshotDBTX, bookingID string) (*BookingFeeSnapshot, error) {

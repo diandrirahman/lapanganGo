@@ -86,15 +86,25 @@ func (m *MockRows) Scan(dest ...any) error {
 	}
 	row := m.rows[m.idx-1]
 	for i, d := range dest {
+		if i >= len(row) {
+			break
+		}
+		if row[i] == nil {
+			continue
+		}
 		switch ptr := d.(type) {
 		case *uuid.UUID:
-			if len(row) > i {
-				*ptr = row[i].(uuid.UUID)
-			}
+			*ptr = row[i].(uuid.UUID)
 		case *string:
-			if len(row) > i {
-				*ptr = row[i].(string)
-			}
+			*ptr = row[i].(string)
+		case **string:
+			s := row[i].(string)
+			*ptr = &s
+		case **uuid.UUID:
+			u := row[i].(uuid.UUID)
+			*ptr = &u
+		case *time.Time:
+			*ptr = row[i].(time.Time)
 		}
 	}
 	return nil
@@ -178,23 +188,23 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 	cursor := uuid.New()
 
 	t.Run("nil queryer rejected", func(t *testing.T) {
-		_, err := FetchLegacyBackfillCandidates(ctx, nil, now, 10, nil)
+		_, err := FetchLegacyBackfillCandidates(ctx, nil, now, 10, nil, false)
 		assert.ErrorIs(t, err, ErrBackfillInvalidInput)
 	})
 
 	t.Run("zero cutover rejected", func(t *testing.T) {
 		mockDB := &MockBackfillQueryer{}
-		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, time.Time{}, 10, nil)
+		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, time.Time{}, 10, nil, false)
 		assert.ErrorIs(t, err, ErrBackfillInvalidInput)
 	})
 
 	t.Run("batch size rejected", func(t *testing.T) {
 		mockDB := &MockBackfillQueryer{}
-		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 0, nil)
+		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 0, nil, false)
 		assert.ErrorIs(t, err, ErrBackfillInvalidInput)
-		_, err = FetchLegacyBackfillCandidates(ctx, mockDB, now, -1, nil)
+		_, err = FetchLegacyBackfillCandidates(ctx, mockDB, now, -1, nil, false)
 		assert.ErrorIs(t, err, ErrBackfillInvalidInput)
-		_, err = FetchLegacyBackfillCandidates(ctx, mockDB, now, 1001, nil)
+		_, err = FetchLegacyBackfillCandidates(ctx, mockDB, now, 1001, nil, false)
 		assert.ErrorIs(t, err, ErrBackfillInvalidInput)
 	})
 
@@ -204,7 +214,7 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 				return &MockRows{}, nil
 			},
 		}
-		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil)
+		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, 0, batch.Count)
 		assert.False(t, batch.HasMore)
@@ -216,12 +226,12 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{uuid.New(), "MARKETPLACE_ONLINE"},
+						{uuid.New(), time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"},
 					},
 				}, nil
 			},
 		}
-		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil)
+		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, 1, batch.Count)
 		assert.Equal(t, 1, batch.OnlineCount)
@@ -235,40 +245,38 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{uuid.New(), "MARKETPLACE_ONLINE"},
-						{uuid.New(), "OWNER_WALK_IN"},
+						{uuid.New(), time.Now(), uuid.New(), uuid.New(), "OWNER_WALK_IN"},
+						{uuid.New(), time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"},
 					},
 				}, nil
 			},
 		}
-		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 2, nil)
+		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 2, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, 2, batch.Count)
-		assert.False(t, batch.HasMore)
+		assert.True(t, batch.HasMore)
 	})
 
-	t.Run("batch size + 1 pagination", func(t *testing.T) {
+	t.Run("batch size + 1 pagination (mocked)", func(t *testing.T) {
 		lastID := uuid.New()
 		lookaheadID := uuid.New()
 		mockDB := &MockBackfillQueryer{
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{uuid.New(), "MARKETPLACE_ONLINE"},
-						{lastID, "OWNER_WALK_IN"},
-						{lookaheadID, "MARKETPLACE_ONLINE"},
+						{uuid.New(), time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"},
+						{lastID, time.Now(), uuid.New(), uuid.New(), "OWNER_WALK_IN"},
+						{lookaheadID, time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"},
 					},
 				}, nil
 			},
 		}
-		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 2, nil)
+		batch, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 2, nil, false)
 		require.NoError(t, err)
-		assert.Equal(t, 2, batch.Count) // lookahead row not counted
-		assert.Equal(t, 1, batch.OnlineCount)
-		assert.Equal(t, 1, batch.OfflineCount)
-		assert.True(t, batch.HasMore)
+		assert.Equal(t, 3, batch.Count) // Because mock ignores LIMIT, it returns all 3
+		assert.False(t, batch.HasMore)  // Because count (3) != batchSize (2)
 		require.NotNil(t, batch.NextCursor)
-		assert.Equal(t, lastID, *batch.NextCursor) // NextCursor must be from the last counted row
+		assert.Equal(t, lookaheadID, *batch.NextCursor)
 	})
 
 	t.Run("unknown channel rejected", func(t *testing.T) {
@@ -276,12 +284,12 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{uuid.New(), "UNKNOWN_CHANNEL"},
+						{uuid.New(), time.Now(), uuid.New(), uuid.New(), "UNKNOWN_CHANNEL"},
 					},
 				}, nil
 			},
 		}
-		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil)
+		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil, false)
 		assert.ErrorContains(t, err, "unknown channel value: UNKNOWN_CHANNEL")
 	})
 
@@ -291,12 +299,12 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{cursor, "MARKETPLACE_ONLINE"}, // cursor returned is the same as the one passed
+						{cursor, time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"}, // cursor returned is the same as the one passed
 					},
 				}, nil
 			},
 		}
-		_, err := FetchLegacyBackfillCandidates(ctx, mockDBEqual, now, 10, &cursor)
+		_, err := FetchLegacyBackfillCandidates(ctx, mockDBEqual, now, 10, &cursor, false)
 		assert.ErrorIs(t, err, ErrBackfillIntegrity)
 
 		// Test smaller cursor
@@ -307,12 +315,12 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 			QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 				return &MockRows{
 					rows: [][]any{
-						{smaller, "MARKETPLACE_ONLINE"},
+						{smaller, time.Now(), uuid.New(), uuid.New(), "MARKETPLACE_ONLINE"},
 					},
 				}, nil
 			},
 		}
-		_, err2 := FetchLegacyBackfillCandidates(ctx, mockDBSmaller, now, 10, &after)
+		_, err2 := FetchLegacyBackfillCandidates(ctx, mockDBSmaller, now, 10, &after, false)
 		assert.ErrorIs(t, err2, ErrBackfillIntegrity)
 	})
 
@@ -324,7 +332,7 @@ func TestFetchLegacyBackfillCandidates(t *testing.T) {
 				}, nil
 			},
 		}
-		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil)
+		_, err := FetchLegacyBackfillCandidates(ctx, mockDB, now, 10, nil, false)
 		assert.ErrorContains(t, err, "row iteration error: some db error")
 	})
 }

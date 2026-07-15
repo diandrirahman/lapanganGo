@@ -52,7 +52,10 @@ func countIdleInTransaction(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	query := `
 		SELECT COUNT(*)
 		FROM pg_stat_activity
-		WHERE application_name = 'lapanggo-backfill-dry-run'
+		WHERE application_name IN (
+			'lapanggo-backfill-dry-run',
+			'lapanggo-backfill-apply'
+		)
 		  AND state = 'idle in transaction'
 	`
 	err := pool.QueryRow(ctx, query).Scan(&count)
@@ -87,6 +90,7 @@ func TestCLIMain(t *testing.T) {
 	tests := []struct {
 		name         string
 		args         []string
+		envOverwrite map[string]string
 		expectedCode int
 		expectOut    string
 		expectErr    string
@@ -102,33 +106,69 @@ func TestCLIMain(t *testing.T) {
 			name:         "Cutover berbeda satu jam menghasilkan exit code 1",
 			args:         []string{"--dry-run=true", "--batch-size=2", "--cutover-at=" + cutover.Add(1*time.Hour).UTC().Format(time.RFC3339Nano)},
 			expectedCode: 1,
-			expectErr:    "Provided cutover time does not match stored cutover exactly",
+			expectErr:    "cutover configuration mismatch",
 			notExpectErr: []string{"postgres://", "localhost", "5432", "55433", "FATAL", "ERROR"},
 		},
 		{
-			name:         "--dry-run=false menghasilkan exit code 1",
-			args:         []string{"--dry-run=false", "--cutover-at=" + exactCutoverStr},
+			name:         "--apply dan --dry-run tidak boleh sama-sama aktif",
+			args:         []string{"--apply=true", "--dry-run=true", "--cutover-at=" + exactCutoverStr},
 			expectedCode: 1,
-			expectErr:    "--dry-run=true is required",
+			expectErr:    "Exactly one of --apply or --dry-run must be true",
 		},
 		{
-			name:         "--apply ditolak",
-			args:         []string{"--dry-run=true", "--apply=true", "--cutover-at=" + exactCutoverStr},
+			name:         "salah satu mode wajib aktif",
+			args:         []string{"--cutover-at=" + exactCutoverStr},
 			expectedCode: 1,
-			expectErr:    "--apply is not supported",
+			expectErr:    "Exactly one of --apply or --dry-run must be true",
+		},
+		{
+			name:         "apply tanpa confirmation ditolak",
+			args:         []string{"--apply=true", "--cutover-at=" + exactCutoverStr},
+			expectedCode: 1,
+			expectErr:    "--apply requires --non-production-confirmed=true",
+		},
+		{
+			name:         "apply tanpa expected count ditolak",
+			args:         []string{"--apply=true", "--non-production-confirmed=true", "--cutover-at=" + exactCutoverStr},
+			expectedCode: 1,
+			expectErr:    "--apply requires --expected-candidate-count",
+		},
+		{
+			name:         "production target ditolak",
+			args:         []string{"--apply=true", "--non-production-confirmed=true", "--expected-candidate-count=7", "--cutover-at=" + exactCutoverStr},
+			envOverwrite: map[string]string{"BACKFILL_TARGET_ENVIRONMENT": "production"},
+			expectedCode: 1,
+			expectErr:    "BACKFILL_TARGET_ENVIRONMENT must be 'development' or 'staging'",
+		},
+		{
+			name:         "database mismatch ditolak",
+			args:         []string{"--apply=true", "--non-production-confirmed=true", "--expected-candidate-count=7", "--cutover-at=" + exactCutoverStr},
+			envOverwrite: map[string]string{"BACKFILL_TARGET_ENVIRONMENT": "staging", "BACKFILL_EXPECTED_DATABASE_NAME": "wrong_db"},
+			expectedCode: 1,
+			expectErr:    "unable to verify target database",
 		},
 		{
 			name:         "Invalid UUID cursor ditolak",
 			args:         []string{"--dry-run=true", "--after-booking-id=invalid-uuid", "--cutover-at=" + exactCutoverStr},
 			expectedCode: 1,
-			expectErr:    "--after-booking-id must be a valid UUID",
+			expectErr:    "Invalid after-booking-id UUID",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			exitCode := run(tt.args, getenv, &stdout, &stderr)
+
+			customGetenv := func(key string) string {
+				if tt.envOverwrite != nil {
+					if val, ok := tt.envOverwrite[key]; ok {
+						return val
+					}
+				}
+				return getenv(key)
+			}
+
+			exitCode := run(tt.args, customGetenv, &stdout, &stderr)
 
 			assert.Equal(t, tt.expectedCode, exitCode)
 
@@ -162,4 +202,41 @@ func TestCLIMain(t *testing.T) {
 	assert.Equal(t, initialBookings, finalBookings, "Bookings count should not change")
 	assert.Equal(t, initialSnapshots, finalSnapshots, "Snapshots count should not change")
 	assert.Equal(t, initialCutovers, finalCutovers, "Cutovers count should not change")
+}
+
+func TestApply(t *testing.T) {
+	fixture := newDisposableApplyFixture(t)
+	pool := fixture.pool
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	exactCutoverStr := storedCutoverString(t, ctx, pool)
+
+	// 1. First Apply
+	var stdout1, stderr1 bytes.Buffer
+	args1 := []string{"--apply=true", "--non-production-confirmed=true", "--expected-candidate-count=7", "--batch-size=2", "--cutover-at=" + exactCutoverStr}
+	exitCode1 := run(args1, fixture.getenv(), &stdout1, &stderr1)
+
+	require.Equal(t, 0, exitCode1, "First apply should succeed: %s", stderr1.String())
+	assert.Contains(t, stdout1.String(), "processed=7")
+	assert.Contains(t, stdout1.String(), "inserted=7")
+	assert.Contains(t, stdout1.String(), "idempotent_noop=0")
+	assert.Contains(t, stdout1.String(), "commit_outcome=CONFIRMED")
+
+	// Ensure no idle in transaction left
+	assert.Equal(t, 0, countIdleInTransaction(t, ctx, pool), "Should not have idle transactions remaining")
+
+	// 2. Rerun (Idempotent / No candidates left)
+	var stdout2, stderr2 bytes.Buffer
+	args2 := []string{"--apply=true", "--non-production-confirmed=true", "--expected-candidate-count=0", "--batch-size=2", "--cutover-at=" + exactCutoverStr}
+	exitCode2 := run(args2, fixture.getenv(), &stdout2, &stderr2)
+
+	require.Equal(t, 0, exitCode2, "Rerun apply should succeed: %s", stderr2.String())
+	assert.Contains(t, stdout2.String(), "processed=0")
+	assert.Contains(t, stdout2.String(), "inserted=0")
+	assert.Contains(t, stdout2.String(), "idempotent_noop=0")
+	assert.Contains(t, stdout2.String(), "commit_outcome=CONFIRMED")
+
+	// Ensure no idle in transaction left
+	assert.Equal(t, 0, countIdleInTransaction(t, ctx, pool), "Should not have idle transactions remaining")
 }
