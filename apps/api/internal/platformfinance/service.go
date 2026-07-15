@@ -44,6 +44,19 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 	netGMV := data.Gross - data.RefundPrincipal
 	netComm := data.ProjectedCommGross - data.ProjectedCommRefunded
 	ownerNetAfterComm := netGMV - netComm
+	legacyCount := data.LegacyScenarioCount
+	snapshotCount := data.SnapshotProjectionCount
+	legacyAmount := data.LegacyProjectionAmount
+	snapshotAmount := data.SnapshotProjectionAmount
+	legacyGross := data.LegacyGross
+	projectionBasis := data.ProjectionBasis
+	hasProjectionEvents := data.RealizedBookingCount > 0 || data.RefundedBookingCount > 0
+	if projectionBasis == "" && hasProjectionEvents {
+		return nil, ErrProjectionIntegrity
+	}
+	if projectionBasis == "" {
+		projectionBasis = projectionBasisForEmptyRange(utcStart, utcEndExclusive, data.CutoverAt)
+	}
 
 	var bpsValue *int
 	if netGMV > 0 {
@@ -63,7 +76,7 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		ProjectedTakeRateBps:                           bpsValue,
 		RealizedOnlineBookingCount:                     data.RealizedBookingCount,
 		RefundedBookingCount:                           data.RefundedBookingCount,
-		LegacyManualRealizedGMV:                        strconv.FormatInt(data.Gross, 10),
+		LegacyManualRealizedGMV:                        strconv.FormatInt(legacyGross, 10),
 		GatewayCapturedGMV:                             nil,
 		ActualCommissionRevenue:                        nil,
 		PaymentProcessingExpense:                       nil,
@@ -86,38 +99,49 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 	dq := DataQuality{
 		PaidWithoutLedgerCount:      data.PaidWithoutLedgerCount,
 		LedgerWithoutBookingCount:   data.LedgerWithoutBookingCount,
-		LegacyScenarioCount:         data.RealizedBookingCount,
-		SnapshotProjectionCount:     0,
-		NonBillableProjectionAmount: strconv.FormatInt(netComm, 10),
+		LegacyScenarioCount:         legacyCount,
+		SnapshotProjectionCount:     snapshotCount,
+		NonBillableProjectionAmount: strconv.FormatInt(legacyAmount, 10),
+		SnapshotProjectionAmount:    strconv.FormatInt(snapshotAmount, 10),
 		DuplicateLedgerCount:        0,
 	}
 
 	generatedAt := time.Now().In(jakartaLocation).Format(time.RFC3339)
 
 	// Build trend
-	trend := buildContinuousBuckets(utcStart, utcEndExclusive, granularity, data.IncomeBuckets, data.RefundBuckets)
+	trend := buildContinuousBucketsAt(utcStart, utcEndExclusive, granularity, data.IncomeBuckets, data.RefundBuckets, data.CutoverAt)
 
 	// Build top owners
 	topOwners := make([]TopOwnerItem, 0, len(data.TopOwners))
 	for _, row := range data.TopOwners {
 		topOwners = append(topOwners, TopOwnerItem{
-			OwnerProfileID:             row.ID,
-			BusinessName:               row.Name,
-			RealizedOnlineBookingCount: row.BookingCount,
-			OnlineGMVNet:               strconv.FormatInt(row.Net, 10),
-			ProjectedCommission:        strconv.FormatInt(row.NetComm, 10),
+			OwnerProfileID:              row.ID,
+			BusinessName:                row.Name,
+			RealizedOnlineBookingCount:  row.BookingCount,
+			OnlineGMVNet:                strconv.FormatInt(row.Net, 10),
+			ProjectedCommission:         strconv.FormatInt(row.NetComm, 10),
+			ProjectionBasis:             row.ProjectionBasis,
+			LegacyScenarioCount:         row.LegacyScenarioCount,
+			SnapshotProjectionCount:     row.SnapshotProjectionCount,
+			NonBillableProjectionAmount: strconv.FormatInt(row.NonBillableProjectionAmount, 10),
+			SnapshotProjectionAmount:    strconv.FormatInt(row.SnapshotProjectionAmount, 10),
 		})
 	}
 	// Build top venues
 	topVenues := make([]TopVenueItem, 0, len(data.TopVenues))
 	for _, row := range data.TopVenues {
 		topVenues = append(topVenues, TopVenueItem{
-			VenueID:                    row.ID,
-			VenueName:                  row.Name,
-			OwnerProfileID:             row.OwnerProfileID,
-			RealizedOnlineBookingCount: row.BookingCount,
-			OnlineGMVNet:               strconv.FormatInt(row.Net, 10),
-			ProjectedCommission:        strconv.FormatInt(row.NetComm, 10),
+			VenueID:                     row.ID,
+			VenueName:                   row.Name,
+			OwnerProfileID:              row.OwnerProfileID,
+			RealizedOnlineBookingCount:  row.BookingCount,
+			OnlineGMVNet:                strconv.FormatInt(row.Net, 10),
+			ProjectedCommission:         strconv.FormatInt(row.NetComm, 10),
+			ProjectionBasis:             row.ProjectionBasis,
+			LegacyScenarioCount:         row.LegacyScenarioCount,
+			SnapshotProjectionCount:     row.SnapshotProjectionCount,
+			NonBillableProjectionAmount: strconv.FormatInt(row.NonBillableProjectionAmount, 10),
+			SnapshotProjectionAmount:    strconv.FormatInt(row.SnapshotProjectionAmount, 10),
 		})
 	}
 
@@ -130,15 +154,15 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		AsOf:                 data.AsOf.In(jakartaLocation).Format(time.RFC3339),
 		Granularity:          granularity,
 		DefaultCommissionBps: 700,
-		MetricSourceVersion:  "legacy-owner-ledger-v1",
-		ProjectionBasis:      "HISTORICAL_SCENARIO",
+		MetricSourceVersion:  ProjectionMetricVersion,
+		ProjectionBasis:      projectionBasis,
 		Metrics:              metrics,
 		DataAvailability:     da,
 		DataQuality:          dq,
 		Trend:                trend,
 		TopOwnerBreakdown:    topOwners,
 		TopVenueBreakdown:    topVenues,
-		Caveats:              []string{"Proyeksi komisi bukan pendapatan aktual dan belum ditagihkan kepada owner."},
+		Caveats:              []string{"Proyeksi komisi bukan pendapatan aktual dan belum ditagihkan kepada owner.", "LEGACY_NO_COMMISSION ditampilkan sebagai skenario historis 7% non-billable; POLICY memakai nilai booking_fee_snapshots."},
 	}
 
 	return res, nil
@@ -189,7 +213,18 @@ func calculateBps(numerator, denominator int64) (int, error) {
 	return int(v), nil
 }
 
+func maxProjectionTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return b
+	}
+	return a
+}
+
 func buildContinuousBuckets(utcStart, utcEndExclusive time.Time, granularity string, income, refund []BucketResult) []TrendItem {
+	return buildContinuousBucketsAt(utcStart, utcEndExclusive, granularity, income, refund, time.Time{})
+}
+
+func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity string, income, refund []BucketResult, cutover time.Time) []TrendItem {
 	// Aggregate bucket days into requested granularity
 	// Map data by day
 	dayGross := make(map[string]int64)
@@ -201,10 +236,37 @@ func buildContinuousBuckets(utcStart, utcEndExclusive time.Time, granularity str
 	}
 	dayRefund := make(map[string]int64)
 	dayCommRefund := make(map[string]int64)
+	dayLegacyCount := make(map[string]int)
+	daySnapshotCount := make(map[string]int)
+	dayLegacyComm := make(map[string]int64)
+	daySnapshotComm := make(map[string]int64)
+	dayLegacyRefundComm := make(map[string]int64)
+	daySnapshotRefundComm := make(map[string]int64)
+	dayLegacyPresent := make(map[string]bool)
+	daySnapshotPresent := make(map[string]bool)
 	for _, b := range refund {
 		dStr := b.Bucket.In(jakartaLocation).Format("2006-01-02")
 		dayRefund[dStr] += b.Amount
 		dayCommRefund[dStr] += b.Comm
+		if b.Source == ProjectionBasisSnapshot {
+			daySnapshotPresent[dStr] = true
+			daySnapshotRefundComm[dStr] += b.Comm
+		} else {
+			dayLegacyPresent[dStr] = true
+			dayLegacyRefundComm[dStr] += b.Comm
+		}
+	}
+	for _, b := range income {
+		dStr := b.Bucket.In(jakartaLocation).Format("2006-01-02")
+		if b.Source == ProjectionBasisSnapshot {
+			daySnapshotPresent[dStr] = true
+			daySnapshotCount[dStr]++
+			daySnapshotComm[dStr] += b.Comm
+		} else {
+			dayLegacyPresent[dStr] = true
+			dayLegacyCount[dStr]++
+			dayLegacyComm[dStr] += b.Comm
+		}
 	}
 
 	var trend []TrendItem
@@ -320,6 +382,37 @@ func buildContinuousBuckets(utcStart, utcEndExclusive time.Time, granularity str
 		// return empty array not null
 		trend = []TrendItem{}
 	}
+	for i := range trend {
+		bucketStart, errStart := time.ParseInLocation("2006-01-02", trend[i].PeriodStart, jakartaLocation)
+		bucketEnd, errEnd := time.ParseInLocation("2006-01-02", trend[i].PeriodEnd, jakartaLocation)
+		if errStart != nil || errEnd != nil {
+			continue
+		}
+		requestStart := utcStart.In(jakartaLocation)
+		requestEndExclusive := utcEndExclusive.In(jakartaLocation)
+		bucketStart = maxProjectionTime(bucketStart, requestStart)
+		bucketEndExclusive := bucketEnd.AddDate(0, 0, 1)
+		if bucketEndExclusive.After(requestEndExclusive) {
+			bucketEndExclusive = requestEndExclusive
+		}
+		legacyCount, snapshotCount := 0, 0
+		legacyPresent, snapshotPresent := false, false
+		legacyComm, snapshotComm := int64(0), int64(0)
+		for day := bucketStart; day.Before(bucketEndExclusive); day = day.AddDate(0, 0, 1) {
+			key := day.Format("2006-01-02")
+			legacyCount += dayLegacyCount[key]
+			snapshotCount += daySnapshotCount[key]
+			legacyPresent = legacyPresent || dayLegacyPresent[key]
+			snapshotPresent = snapshotPresent || daySnapshotPresent[key]
+			legacyComm += dayLegacyComm[key] - dayLegacyRefundComm[key]
+			snapshotComm += daySnapshotComm[key] - daySnapshotRefundComm[key]
+		}
+		trend[i].ProjectionBasis = projectionBasisWithPresence(legacyCount, snapshotCount, legacyPresent, snapshotPresent, projectionBasisForEmptyRange(bucketStart.UTC(), bucketEndExclusive.UTC(), cutover))
+		trend[i].LegacyScenarioCount = legacyCount
+		trend[i].SnapshotProjectionCount = snapshotCount
+		trend[i].NonBillableProjectionAmount = strconv.FormatInt(legacyComm, 10)
+		trend[i].SnapshotProjectionAmount = strconv.FormatInt(snapshotComm, 10)
+	}
 
 	return trend
 }
@@ -351,22 +444,32 @@ func (s *service) GetBreakdown(ctx context.Context, query FinanceBreakdownQuery)
 	if query.Dimension == "owner" {
 		for _, row := range data.Rows {
 			items = append(items, TopOwnerItem{
-				OwnerProfileID:             row.ID,
-				BusinessName:               row.Name,
-				RealizedOnlineBookingCount: row.BookingCount,
-				OnlineGMVNet:               strconv.FormatInt(row.Net, 10),
-				ProjectedCommission:        strconv.FormatInt(row.NetComm, 10),
+				OwnerProfileID:              row.ID,
+				BusinessName:                row.Name,
+				RealizedOnlineBookingCount:  row.BookingCount,
+				OnlineGMVNet:                strconv.FormatInt(row.Net, 10),
+				ProjectedCommission:         strconv.FormatInt(row.NetComm, 10),
+				ProjectionBasis:             row.ProjectionBasis,
+				LegacyScenarioCount:         row.LegacyScenarioCount,
+				SnapshotProjectionCount:     row.SnapshotProjectionCount,
+				NonBillableProjectionAmount: strconv.FormatInt(row.NonBillableProjectionAmount, 10),
+				SnapshotProjectionAmount:    strconv.FormatInt(row.SnapshotProjectionAmount, 10),
 			})
 		}
 	} else {
 		for _, row := range data.Rows {
 			items = append(items, TopVenueItem{
-				VenueID:                    row.ID,
-				VenueName:                  row.Name,
-				OwnerProfileID:             row.OwnerProfileID,
-				RealizedOnlineBookingCount: row.BookingCount,
-				OnlineGMVNet:               strconv.FormatInt(row.Net, 10),
-				ProjectedCommission:        strconv.FormatInt(row.NetComm, 10),
+				VenueID:                     row.ID,
+				VenueName:                   row.Name,
+				OwnerProfileID:              row.OwnerProfileID,
+				RealizedOnlineBookingCount:  row.BookingCount,
+				OnlineGMVNet:                strconv.FormatInt(row.Net, 10),
+				ProjectedCommission:         strconv.FormatInt(row.NetComm, 10),
+				ProjectionBasis:             row.ProjectionBasis,
+				LegacyScenarioCount:         row.LegacyScenarioCount,
+				SnapshotProjectionCount:     row.SnapshotProjectionCount,
+				NonBillableProjectionAmount: strconv.FormatInt(row.NonBillableProjectionAmount, 10),
+				SnapshotProjectionAmount:    strconv.FormatInt(row.SnapshotProjectionAmount, 10),
 			})
 		}
 	}
@@ -381,13 +484,19 @@ func (s *service) GetBreakdown(ctx context.Context, query FinanceBreakdownQuery)
 	}
 
 	return &PaginatedBreakdownResponse{
-		Mode:        "SIMULATION",
-		Data:        items,
-		TotalItems:  data.TotalItems,
-		TotalPages:  totalPages,
-		Page:        page,
-		Limit:       limit,
-		AsOf:        data.AsOf.In(jakartaLocation).Format(time.RFC3339),
-		GeneratedAt: time.Now().In(jakartaLocation).Format(time.RFC3339),
+		Mode:                        "SIMULATION",
+		Data:                        items,
+		TotalItems:                  data.TotalItems,
+		TotalPages:                  totalPages,
+		Page:                        page,
+		Limit:                       limit,
+		AsOf:                        data.AsOf.In(jakartaLocation).Format(time.RFC3339),
+		GeneratedAt:                 time.Now().In(jakartaLocation).Format(time.RFC3339),
+		MetricSourceVersion:         ProjectionMetricVersion,
+		ProjectionBasis:             data.ProjectionBasis,
+		LegacyScenarioCount:         data.LegacyScenarioCount,
+		SnapshotProjectionCount:     data.SnapshotProjectionCount,
+		NonBillableProjectionAmount: strconv.FormatInt(data.NonBillableProjectionAmount, 10),
+		SnapshotProjectionAmount:    strconv.FormatInt(data.SnapshotProjectionAmount, 10),
 	}, nil
 }

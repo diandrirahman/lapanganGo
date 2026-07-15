@@ -47,6 +47,7 @@ func NewRepository(db *pgxpool.Pool) Repository {
 
 type SummaryDataResult struct {
 	AsOf                  time.Time
+	CutoverAt             time.Time
 	Gross                 int64
 	RealizedBookingCount  int
 	ProjectedCommGross    int64
@@ -62,29 +63,59 @@ type SummaryDataResult struct {
 
 	TopOwners []BreakdownRow
 	TopVenues []BreakdownRow
+
+	ProjectionBasis           string
+	LegacyScenarioCount       int
+	SnapshotProjectionCount   int
+	LegacyProjectionAmount    int64
+	SnapshotProjectionAmount  int64
+	LegacyGross               int64
+	SnapshotGross             int64
+	LegacyRefund              int64
+	SnapshotRefund            int64
+	LegacyProjectionPresent   bool
+	SnapshotProjectionPresent bool
 }
 
 type BucketResult struct {
-	Bucket time.Time
-	Amount int64
-	Comm   int64
+	Bucket           time.Time
+	Amount           int64
+	Comm             int64
+	Source           string
+	BookingCount     int
+	CommissionAmount int64
 }
 
 type BreakdownRow struct {
-	ID             string
-	Name           string
-	OwnerProfileID string // only used for venue dimension
-	Gross          int64
-	Refund         int64
-	Net            int64
-	BookingCount   int
-	NetComm        int64
+	ID                          string
+	Name                        string
+	OwnerProfileID              string // only used for venue dimension
+	Gross                       int64
+	Refund                      int64
+	Net                         int64
+	BookingCount                int
+	NetComm                     int64
+	ProjectionBasis             string
+	LegacyScenarioCount         int
+	SnapshotProjectionCount     int
+	NonBillableProjectionAmount int64
+	SnapshotProjectionAmount    int64
+	LegacyProjectionPresent     bool
+	SnapshotProjectionPresent   bool
 }
 
 type BreakdownResult struct {
-	AsOf       time.Time
-	TotalItems int
-	Rows       []BreakdownRow
+	AsOf                        time.Time
+	CutoverAt                   time.Time
+	TotalItems                  int
+	Rows                        []BreakdownRow
+	ProjectionBasis             string
+	LegacyScenarioCount         int
+	SnapshotProjectionCount     int
+	NonBillableProjectionAmount int64
+	SnapshotProjectionAmount    int64
+	LegacyProjectionPresent     bool
+	SnapshotProjectionPresent   bool
 }
 
 func buildFilters(ownerProfileID, venueID string, argOffset int) (string, []any) {
@@ -148,15 +179,7 @@ func mapRepositoryError(err error) error {
 }
 
 func (r *repository) GetSummaryData(ctx context.Context, utcStart, utcEndExclusive time.Time, ownerID, venueID string) (*SummaryDataResult, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.RepeatableRead,
-		AccessMode: pgx.ReadOnly,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	return getSummaryDataInTx(ctx, tx, utcStart, utcEndExclusive, ownerID, venueID)
+	return r.getProjectionSummary(ctx, utcStart, utcEndExclusive, ownerID, venueID)
 }
 
 func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusive time.Time, ownerID, venueID string) (*SummaryDataResult, error) {
@@ -256,7 +279,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT 
 			CAST(COALESCE(SUM(amount), 0) AS bigint),
 			count(DISTINCT booking_id),
-			CAST(COALESCE(SUM(CAST(ROUND(amount * 700.0 / 10000.0) AS bigint)), 0) AS bigint)
+			CAST(COALESCE(SUM(CAST(ROUND(amount * 700::numeric / 10000::numeric) AS bigint)), 0) AS bigint)
 		FROM owner_finance_transactions t
 		WHERE type = 'INCOME' AND source = 'BOOKING'
 		  AND created_at >= $1 AND created_at < $2
@@ -275,7 +298,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 			count(DISTINCT booking_id),
 			CAST(COALESCE(SUM(
 				COALESCE((
-					SELECT CAST(ROUND(i.amount * 700.0 / 10000.0) AS bigint)
+					SELECT CAST(ROUND(i.amount * 700::numeric / 10000::numeric) AS bigint)
 					FROM owner_finance_transactions i
 					WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING'
 					  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount
@@ -326,7 +349,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT 
 			date_trunc('day', created_at AT TIME ZONE 'Asia/Jakarta') AS bucket,
 			CAST(COALESCE(SUM(amount), 0) AS bigint),
-			CAST(COALESCE(SUM(CAST(ROUND(amount * 700.0 / 10000.0) AS bigint)), 0) AS bigint)
+			CAST(COALESCE(SUM(CAST(ROUND(amount * 700::numeric / 10000::numeric) AS bigint)), 0) AS bigint)
 		FROM owner_finance_transactions t
 		WHERE type = 'INCOME' AND source = 'BOOKING'
 		  AND created_at >= $1 AND created_at < $2
@@ -354,7 +377,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT 
 			date_trunc('day', created_at AT TIME ZONE 'Asia/Jakarta') AS bucket,
 			CAST(COALESCE(SUM(amount), 0) AS bigint),
-			CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700.0 / 10000.0) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint)
+			CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700::numeric / 10000::numeric) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint)
 		FROM owner_finance_transactions t
 		WHERE type = 'EXPENSE' AND source = 'REFUND' AND EXISTS (SELECT 1 FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount)
 		  AND created_at >= $1 AND created_at < $2
@@ -381,7 +404,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 	// 6. Top 10 Owners
 	qTopOwners := `
 		WITH income_stats AS (
-			SELECT owner_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS gross, count(DISTINCT booking_id) AS booking_cnt, CAST(COALESCE(SUM(CAST(ROUND(amount * 700.0 / 10000.0) AS bigint)), 0) AS bigint) AS comm
+			SELECT owner_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS gross, count(DISTINCT booking_id) AS booking_cnt, CAST(COALESCE(SUM(CAST(ROUND(amount * 700::numeric / 10000::numeric) AS bigint)), 0) AS bigint) AS comm
 			FROM owner_finance_transactions t
 			WHERE type = 'INCOME' AND source = 'BOOKING' AND created_at >= $1 AND created_at < $2
 			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
@@ -390,7 +413,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		),
 		refund_stats AS (
 			SELECT owner_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS refund, 
-			  CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700.0 / 10000.0) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint) AS refund_comm
+			  CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700::numeric / 10000::numeric) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint) AS refund_comm
 			FROM owner_finance_transactions t
 			WHERE type = 'EXPENSE' AND source = 'REFUND' AND EXISTS (SELECT 1 FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount) AND created_at >= $1 AND created_at < $2
 			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
@@ -427,7 +450,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 	// 7. Top 10 Venues
 	qTopVenues := `
 		WITH income_stats AS (
-			SELECT venue_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS gross, count(DISTINCT booking_id) AS booking_cnt, CAST(COALESCE(SUM(CAST(ROUND(amount * 700.0 / 10000.0) AS bigint)), 0) AS bigint) AS comm
+			SELECT venue_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS gross, count(DISTINCT booking_id) AS booking_cnt, CAST(COALESCE(SUM(CAST(ROUND(amount * 700::numeric / 10000::numeric) AS bigint)), 0) AS bigint) AS comm
 			FROM owner_finance_transactions t
 			WHERE type = 'INCOME' AND source = 'BOOKING' AND created_at >= $1 AND created_at < $2
 			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
@@ -436,7 +459,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		),
 		refund_stats AS (
 			SELECT venue_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS refund, 
-			  CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700.0 / 10000.0) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint) AS refund_comm
+			  CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700::numeric / 10000::numeric) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint) AS refund_comm
 			FROM owner_finance_transactions t
 			WHERE type = 'EXPENSE' AND source = 'REFUND' AND EXISTS (SELECT 1 FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount) AND created_at >= $1 AND created_at < $2
 			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
@@ -475,177 +498,5 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 }
 
 func (r *repository) GetPaginatedBreakdown(ctx context.Context, utcStart, utcEndExclusive time.Time, ownerID, venueID, dimension string, page, limit int) (*BreakdownResult, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	var asOf time.Time
-	if err := tx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&asOf); err != nil {
-		return nil, err
-	}
-
-	// 1. Duplicate check (Fail closed)
-	var dupCount int
-	err = tx.QueryRow(ctx, `
-		SELECT count(*) FROM (
-			SELECT booking_id 
-			FROM owner_finance_transactions 
-			WHERE type = 'INCOME' AND source = 'BOOKING' 
-			GROUP BY booking_id 
-			HAVING count(*) > 1
-		) d
-	`).Scan(&dupCount)
-	if err != nil {
-		return nil, err
-	}
-	if dupCount > 0 {
-		return nil, ErrDuplicateLedgerDetected
-	}
-
-	// 1a. Fractional ledger check (Fail closed)
-	var fracCount int
-	err = tx.QueryRow(ctx, `
-		SELECT count(*) 
-		FROM owner_finance_transactions 
-		WHERE amount != TRUNC(amount)
-	`).Scan(&fracCount)
-	if err != nil {
-		return nil, err
-	}
-	if fracCount > 0 {
-		return nil, ErrFractionalLedgerDetected
-	}
-
-	var orphanRefundCount int
-	err = tx.QueryRow(ctx, `
-		SELECT count(*)
-		FROM owner_finance_transactions t
-		WHERE t.type = 'EXPENSE' AND t.source = 'REFUND'
-		  AND (
-			t.booking_id IS NULL
-			OR NOT (`+canonicalLedgerBookingPredicate+`)
-			OR NOT EXISTS (
-			SELECT 1 FROM owner_finance_transactions i
-			WHERE i.booking_id = t.booking_id
-			  AND i.type = 'INCOME' AND i.source = 'BOOKING'
-			  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id
-			)
-		  )
-	`).Scan(&orphanRefundCount)
-	if err != nil {
-		return nil, mapRepositoryError(err)
-	}
-	if orphanRefundCount > 0 {
-		return nil, ErrOrphanRefundDetected
-	}
-
-	var refundAmountMismatchCount int
-	err = tx.QueryRow(ctx, `
-		SELECT count(*)
-		FROM owner_finance_transactions t
-		WHERE t.type = 'EXPENSE' AND t.source = 'REFUND'
-		  AND `+canonicalLedgerBookingPredicate+`
-		  AND NOT EXISTS (
-			SELECT 1 FROM owner_finance_transactions i
-			WHERE i.booking_id = t.booking_id
-			  AND i.type = 'INCOME' AND i.source = 'BOOKING'
-			  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id
-			  AND i.amount = t.amount
-		  )
-	`).Scan(&refundAmountMismatchCount)
-	if err != nil {
-		return nil, mapRepositoryError(err)
-	}
-	if refundAmountMismatchCount > 0 {
-		return nil, ErrRefundAmountMismatch
-	}
-
-	filterSQL, filterArgs := buildFilters(ownerID, venueID, 3)
-
-	dimCol := "owner_id"
-	joinTable := "owner_profiles"
-	nameCol := "business_name"
-	joinCol := "user_id"
-	if dimension == "venue" {
-		dimCol = "venue_id"
-		joinTable = "venues"
-		nameCol = "name"
-		joinCol = "id"
-	}
-
-	qStats := `
-		WITH income_stats AS (
-			SELECT ` + dimCol + ` AS dim_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS gross, count(DISTINCT booking_id) AS booking_cnt, CAST(COALESCE(SUM(CAST(ROUND(amount * 700.0 / 10000.0) AS bigint)), 0) AS bigint) AS comm
-			FROM owner_finance_transactions t
-			WHERE type = 'INCOME' AND source = 'BOOKING' AND created_at >= $1 AND created_at < $2
-			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
-			  AND ` + canonicalLedgerBookingPredicate + filterSQL + `
-			GROUP BY ` + dimCol + `
-		),
-		refund_stats AS (
-			SELECT ` + dimCol + ` AS dim_id, CAST(COALESCE(SUM(amount), 0) AS bigint) AS refund, 
-			  CAST(COALESCE(SUM(COALESCE((SELECT CAST(ROUND(i.amount * 700.0 / 10000.0) AS bigint) FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount), 0)), 0) AS bigint) AS refund_comm
-			FROM owner_finance_transactions t
-			WHERE type = 'EXPENSE' AND source = 'REFUND' AND EXISTS (SELECT 1 FROM owner_finance_transactions i WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING' AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id AND i.amount = t.amount) AND created_at >= $1 AND created_at < $2
-			  AND NOT EXISTS (SELECT 1 FROM offline_booking_customers obc WHERE obc.booking_id = t.booking_id)
-			  AND ` + canonicalLedgerBookingPredicate + filterSQL + `
-			GROUP BY ` + dimCol + `
-		),
-		combined AS (
-			SELECT
-				COALESCE(i.dim_id, r.dim_id) AS dim_id,
-				COALESCE(i.gross, 0) AS gross, COALESCE(r.refund, 0) AS refund,
-				COALESCE(i.gross, 0) - COALESCE(r.refund, 0) AS net,
-				COALESCE(i.booking_cnt, 0) AS booking_cnt,
-				COALESCE(i.comm, 0) - COALESCE(r.refund_comm, 0) AS net_comm
-			FROM income_stats i
-			FULL OUTER JOIN refund_stats r ON i.dim_id = r.dim_id
-		)
-	`
-
-	args := append([]any{utcStart, utcEndExclusive}, filterArgs...)
-
-	var totalItems int
-	err = tx.QueryRow(ctx, qStats+` SELECT count(*) FROM combined JOIN `+joinTable+` j ON j.`+joinCol+` = combined.dim_id`, args...).Scan(&totalItems)
-	if err != nil {
-		return nil, mapRepositoryError(err)
-	}
-
-	offset := (page - 1) * limit
-
-	ownerProfileSelect := "''"
-	if dimension == "venue" {
-		ownerProfileSelect = "j.owner_profile_id"
-	}
-
-	qRows := qStats + `
-		SELECT j.id, j.` + nameCol + `, ` + ownerProfileSelect + `, combined.gross, combined.refund, combined.net, combined.booking_cnt, combined.net_comm
-		FROM combined
-		JOIN ` + joinTable + ` j ON j.` + joinCol + ` = combined.dim_id
-		ORDER BY net DESC, j.id ASC
-		LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
-
-	argsRows := append(args, limit, offset)
-
-	res := &BreakdownResult{AsOf: asOf, TotalItems: totalItems}
-	rows, err := tx.Query(ctx, qRows, argsRows...)
-	if err != nil {
-		return nil, mapRepositoryError(err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var row BreakdownRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.OwnerProfileID, &row.Gross, &row.Refund, &row.Net, &row.BookingCount, &row.NetComm); err != nil {
-			return nil, mapRepositoryError(err)
-		}
-		res.Rows = append(res.Rows, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapRepositoryError(err)
-	}
-
-	return res, nil
+	return r.getProjectionBreakdown(ctx, utcStart, utcEndExclusive, ownerID, venueID, dimension, page, limit)
 }

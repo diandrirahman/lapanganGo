@@ -69,6 +69,14 @@ func writeServiceError(c *gin.Context, err error) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": "REFUND_AMOUNT_MISMATCH", "message": "Finance integrity check failed", "field_errors": gin.H{}})
 	case errors.Is(err, ErrOverflowDetected):
 		c.JSON(http.StatusInternalServerError, gin.H{"code": "MONEY_OVERFLOW", "message": "Finance calculation could not be completed", "field_errors": gin.H{}})
+	case errors.Is(err, ErrMissingProjectionSnapshot),
+		errors.Is(err, ErrProjectionSnapshotMismatch),
+		errors.Is(err, ErrInvalidProjectionSource),
+		errors.Is(err, ErrProjectionIntegrity),
+		errors.Is(err, ErrMissingProjectionCutover),
+		errors.Is(err, ErrPostCutoverLegacyProjection),
+		errors.Is(err, ErrProjectionTooLarge):
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "PROJECTION_INTEGRITY_FAILED", "message": "Finance projection integrity check failed", "field_errors": gin.H{}})
 	default:
 		// Deliberately avoid serializing SQL, provider, or internal error text.
 		c.JSON(http.StatusInternalServerError, gin.H{"code": "FINANCE_UNAVAILABLE", "message": "Failed to fetch finance data", "field_errors": gin.H{}})

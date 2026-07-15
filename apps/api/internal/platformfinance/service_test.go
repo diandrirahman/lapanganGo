@@ -12,13 +12,17 @@ import (
 
 func TestService_Summary_CalculationRules(t *testing.T) {
 	repo := &detailedMockRepo{summary: &platformfinance.SummaryDataResult{
-		AsOf:                  time.Now(),
-		Gross:                 1_000_000,
-		RefundPrincipal:       200_000,
-		ProjectedCommGross:    70_000,
-		ProjectedCommRefunded: 14_000,
-		RealizedBookingCount:  8,
-		RefundedBookingCount:  1,
+		AsOf:                   time.Now(),
+		Gross:                  1_000_000,
+		RefundPrincipal:        200_000,
+		ProjectedCommGross:     70_000,
+		ProjectedCommRefunded:  14_000,
+		RealizedBookingCount:   8,
+		RefundedBookingCount:   1,
+		ProjectionBasis:        platformfinance.ProjectionBasisHistorical,
+		LegacyScenarioCount:    8,
+		LegacyProjectionAmount: 56_000,
+		LegacyGross:            1_000_000,
 	}}
 	res, err := platformfinance.NewService(repo).GetSummary(context.Background(), platformfinance.FinanceQuery{
 		StartDate: "2026-06-01",
@@ -33,6 +37,34 @@ func TestService_Summary_CalculationRules(t *testing.T) {
 	assert.Equal(t, 700, *res.Metrics.ProjectedTakeRateBps)
 	assert.Equal(t, 8, res.DataQuality.LegacyScenarioCount)
 	assert.Equal(t, "56000", res.DataQuality.NonBillableProjectionAmount)
+}
+
+func TestService_Summary_RejectsMissingProjectionBasis(t *testing.T) {
+	repo := &detailedMockRepo{summary: &platformfinance.SummaryDataResult{
+		AsOf:                 time.Now(),
+		Gross:                100_000,
+		ProjectedCommGross:   7_000,
+		RealizedBookingCount: 1,
+	}}
+	_, err := platformfinance.NewService(repo).GetSummary(context.Background(), platformfinance.FinanceQuery{
+		StartDate: "2026-06-01",
+		EndDate:   "2026-06-01",
+	})
+	assert.ErrorIs(t, err, platformfinance.ErrProjectionIntegrity)
+}
+
+func TestService_Summary_RejectsMissingProjectionBasisForRefundOnly(t *testing.T) {
+	repo := &detailedMockRepo{summary: &platformfinance.SummaryDataResult{
+		AsOf:                  time.Now(),
+		RefundPrincipal:       100_000,
+		ProjectedCommRefunded: 7_000,
+		RefundedBookingCount:  1,
+	}}
+	_, err := platformfinance.NewService(repo).GetSummary(context.Background(), platformfinance.FinanceQuery{
+		StartDate: "2026-06-01",
+		EndDate:   "2026-06-01",
+	})
+	assert.ErrorIs(t, err, platformfinance.ErrProjectionIntegrity)
 }
 
 type detailedMockRepo struct {

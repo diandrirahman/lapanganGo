@@ -40,34 +40,50 @@ type DataQuality struct {
 	LegacyScenarioCount         int    `json:"legacy_scenario_count"`
 	SnapshotProjectionCount     int    `json:"snapshot_projection_count"`
 	NonBillableProjectionAmount string `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string `json:"snapshot_projection_amount"`
 	DuplicateLedgerCount        int    `json:"duplicate_ledger_count"`
 }
 
 type TrendItem struct {
-	PeriodStart              string  `json:"period_start"`
-	PeriodEnd                string  `json:"period_end"`
-	OnlineGMVGross           string  `json:"online_gmv_gross"`
-	RefundPrincipal          string  `json:"refund_principal"`
-	OnlineGMVNet             string  `json:"online_gmv_net"`
-	ProjectedCommission      string  `json:"projected_commission"`
-	PlatformOperatingExpense *string `json:"platform_operating_expense"`
+	PeriodStart                 string  `json:"period_start"`
+	PeriodEnd                   string  `json:"period_end"`
+	OnlineGMVGross              string  `json:"online_gmv_gross"`
+	RefundPrincipal             string  `json:"refund_principal"`
+	OnlineGMVNet                string  `json:"online_gmv_net"`
+	ProjectedCommission         string  `json:"projected_commission"`
+	ProjectionBasis             string  `json:"projection_basis"`
+	LegacyScenarioCount         int     `json:"legacy_scenario_count"`
+	SnapshotProjectionCount     int     `json:"snapshot_projection_count"`
+	NonBillableProjectionAmount string  `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string  `json:"snapshot_projection_amount"`
+	PlatformOperatingExpense    *string `json:"platform_operating_expense"`
 }
 
 type TopOwnerItem struct {
-	OwnerProfileID             string `json:"owner_profile_id"`
-	BusinessName               string `json:"business_name"`
-	RealizedOnlineBookingCount int    `json:"realized_online_booking_count"`
-	OnlineGMVNet               string `json:"online_gmv_net"`
-	ProjectedCommission        string `json:"projected_commission"`
+	OwnerProfileID              string `json:"owner_profile_id"`
+	BusinessName                string `json:"business_name"`
+	RealizedOnlineBookingCount  int    `json:"realized_online_booking_count"`
+	OnlineGMVNet                string `json:"online_gmv_net"`
+	ProjectedCommission         string `json:"projected_commission"`
+	ProjectionBasis             string `json:"projection_basis"`
+	LegacyScenarioCount         int    `json:"legacy_scenario_count"`
+	SnapshotProjectionCount     int    `json:"snapshot_projection_count"`
+	NonBillableProjectionAmount string `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string `json:"snapshot_projection_amount"`
 }
 
 type TopVenueItem struct {
-	VenueID                    string `json:"venue_id"`
-	VenueName                  string `json:"venue_name"`
-	OwnerProfileID             string `json:"owner_profile_id"`
-	RealizedOnlineBookingCount int    `json:"realized_online_booking_count"`
-	OnlineGMVNet               string `json:"online_gmv_net"`
-	ProjectedCommission        string `json:"projected_commission"`
+	VenueID                     string `json:"venue_id"`
+	VenueName                   string `json:"venue_name"`
+	OwnerProfileID              string `json:"owner_profile_id"`
+	RealizedOnlineBookingCount  int    `json:"realized_online_booking_count"`
+	OnlineGMVNet                string `json:"online_gmv_net"`
+	ProjectedCommission         string `json:"projected_commission"`
+	ProjectionBasis             string `json:"projection_basis"`
+	LegacyScenarioCount         int    `json:"legacy_scenario_count"`
+	SnapshotProjectionCount     int    `json:"snapshot_projection_count"`
+	NonBillableProjectionAmount string `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string `json:"snapshot_projection_amount"`
 }
 
 type SummaryResponse struct {
@@ -91,14 +107,20 @@ type SummaryResponse struct {
 }
 
 type PaginatedBreakdownResponse struct {
-	Mode        string `json:"mode"`
-	Data        any    `json:"data"`
-	TotalItems  int    `json:"total_items"`
-	TotalPages  int    `json:"total_pages"`
-	Page        int    `json:"page"`
-	Limit       int    `json:"limit"`
-	AsOf        string `json:"as_of"`
-	GeneratedAt string `json:"generated_at"`
+	Mode                        string `json:"mode"`
+	Data                        any    `json:"data"`
+	TotalItems                  int    `json:"total_items"`
+	TotalPages                  int    `json:"total_pages"`
+	Page                        int    `json:"page"`
+	Limit                       int    `json:"limit"`
+	AsOf                        string `json:"as_of"`
+	GeneratedAt                 string `json:"generated_at"`
+	MetricSourceVersion         string `json:"metric_source_version"`
+	ProjectionBasis             string `json:"projection_basis"`
+	LegacyScenarioCount         int    `json:"legacy_scenario_count"`
+	SnapshotProjectionCount     int    `json:"snapshot_projection_count"`
+	NonBillableProjectionAmount string `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string `json:"snapshot_projection_amount"`
 }
 
 type FinanceQuery struct {
