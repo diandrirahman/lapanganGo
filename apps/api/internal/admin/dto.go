@@ -56,18 +56,21 @@ type VenueResponse struct {
 
 type AuditLogQuery struct {
 	PaginationQuery
+	Scope      string `form:"scope"`
 	Action     string `form:"action"`
 	EntityType string `form:"entity_type"`
 }
 
 type AuditLogResponse struct {
 	ID             string    `json:"id"`
+	Scope          string    `json:"scope"`
 	OwnerProfileID *string   `json:"owner_profile_id,omitempty"`
 	ActorUserID    *string   `json:"actor_user_id,omitempty"`
 	ActorRole      string    `json:"actor_role"`
 	Action         string    `json:"action"`
 	EntityType     string    `json:"entity_type"`
 	EntityID       *string   `json:"entity_id,omitempty"`
+	VenueID        *string   `json:"venue_id,omitempty"`
 	Metadata       any       `json:"metadata"`
 	IPAddress      *string   `json:"ip_address,omitempty"`
 	UserAgent      *string   `json:"user_agent,omitempty"`

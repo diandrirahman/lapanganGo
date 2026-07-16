@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"lapangango-api/internal/audit"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -277,31 +280,9 @@ func (r *repository) GetVenueOwnerProfileID(ctx context.Context, venueID string)
 }
 
 func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]AuditLogResponse, int, error) {
-	whereClauses := []string{"1=1"}
-	args := []any{}
-	argID := 1
-
-	if query.Action != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("action = $%d", argID))
-		args = append(args, query.Action)
-		argID++
-	}
-	if query.EntityType != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("entity_type = $%d", argID))
-		args = append(args, query.EntityType)
-		argID++
-	}
-
-	whereClause := strings.Join(whereClauses, " AND ")
-	countQuery := "SELECT count(*) FROM owner_audit_logs WHERE " + whereClause
-	var total int
-	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
 	limit := query.Limit
 	if limit == 0 {
-		limit = 10
+		limit = 20
 	}
 	page := query.Page
 	if page < 1 {
@@ -309,14 +290,46 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 	}
 	offset := (page - 1) * limit
 
-	sqlQuery := fmt.Sprintf(`
-		SELECT id::text, owner_profile_id::text, actor_user_id::text, actor_role, action, entity_type, entity_id::text, metadata, ip_address, user_agent, created_at
-		FROM owner_audit_logs
-		WHERE %s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argID, argID+1)
+	branches := make([]string, 0, 2)
+	args := make([]any, 0, 6)
+	if query.Scope == "OWNER" || query.Scope == "" {
+		branch, branchArgs := buildAuditBranch("owner_audit_logs", "OWNER", query, len(args)+1)
+		branches = append(branches, branch)
+		args = append(args, branchArgs...)
+	}
+	if query.Scope == "PLATFORM" {
+		branch, branchArgs := buildAuditBranch("platform_audit_logs", "PLATFORM", query, len(args)+1)
+		branches = append(branches, branch)
+		args = append(args, branchArgs...)
+	}
+	if query.Scope == "ALL" {
+		branch, branchArgs := buildAuditBranch("owner_audit_logs", "OWNER", query, len(args)+1)
+		branches = append(branches, branch)
+		args = append(args, branchArgs...)
+		branch, branchArgs = buildAuditBranch("platform_audit_logs", "PLATFORM", query, len(args)+1)
+		branches = append(branches, branch)
+		args = append(args, branchArgs...)
+	}
+	if len(branches) == 0 {
+		return []AuditLogResponse{}, 0, fmt.Errorf("invalid audit scope")
+	}
 
+	limitArg := len(args) + 1
+	offsetArg := len(args) + 2
+	sqlQuery := fmt.Sprintf(`
+		WITH audit_rows AS (
+			%s
+		), counted AS (
+			SELECT *, count(*) OVER() AS total_items
+			FROM audit_rows
+		)
+		SELECT id, scope, owner_profile_id, actor_user_id, actor_role, action,
+		       entity_type, entity_id, venue_id, metadata, ip_address, user_agent,
+		       created_at, total_items
+		FROM counted
+		ORDER BY created_at DESC, id DESC
+		LIMIT $%d OFFSET $%d
+	`, strings.Join(branches, "\nUNION ALL\n"), limitArg, offsetArg)
 	args = append(args, limit, offset)
 
 	rows, err := r.db.Query(ctx, sqlQuery, args...)
@@ -325,19 +338,79 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 	}
 	defer rows.Close()
 
-	var logs []AuditLogResponse
+	logs := make([]AuditLogResponse, 0)
+	total := 0
 	for rows.Next() {
 		var l AuditLogResponse
-		if err := rows.Scan(&l.ID, &l.OwnerProfileID, &l.ActorUserID, &l.ActorRole, &l.Action, &l.EntityType, &l.EntityID, &l.Metadata, &l.IPAddress, &l.UserAgent, &l.CreatedAt); err != nil {
+		var metadataJSON string
+		var rowTotal int
+		if err := rows.Scan(&l.ID, &l.Scope, &l.OwnerProfileID, &l.ActorUserID, &l.ActorRole, &l.Action, &l.EntityType, &l.EntityID, &l.VenueID, &metadataJSON, &l.IPAddress, &l.UserAgent, &l.CreatedAt, &rowTotal); err != nil {
 			return nil, 0, err
 		}
+		if rowTotal > total {
+			total = rowTotal
+		}
+		metadata := make(map[string]any)
+		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil || metadata == nil {
+			metadata = make(map[string]any)
+		}
+		if l.Scope == "PLATFORM" {
+			metadata = audit.SanitizePlatformAuditMetadata(l.Action, metadata)
+		} else {
+			metadata = audit.SanitizeAuditMetadata(metadata)
+		}
+		l.Metadata = metadata
 		logs = append(logs, l)
 	}
-	if logs == nil {
-		logs = []AuditLogResponse{}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 
 	return logs, total, nil
+}
+
+func buildAuditBranch(table, scope string, query AuditLogQuery, firstArg int) (string, []any) {
+	where := []string{"1=1"}
+	args := make([]any, 0, 2)
+	argID := firstArg
+	if query.Action != "" {
+		where = append(where, fmt.Sprintf("action = $%d", argID))
+		args = append(args, query.Action)
+		argID++
+	}
+	if query.EntityType != "" {
+		where = append(where, fmt.Sprintf("entity_type = $%d", argID))
+		args = append(args, query.EntityType)
+		argID++
+	}
+
+	venueColumn := "NULL::text"
+	ipColumn := "NULL::text"
+	userAgentColumn := "NULL::text"
+	if table == "owner_audit_logs" {
+		ipColumn = "ip_address"
+		userAgentColumn = "user_agent"
+	} else {
+		venueColumn = "venue_id::text"
+	}
+
+	branch := fmt.Sprintf(`
+		SELECT id::text,
+		       '%s'::text AS scope,
+		       owner_profile_id::text,
+		       actor_user_id::text,
+		       actor_role,
+		       action,
+		       entity_type,
+		       entity_id::text,
+		       %s AS venue_id,
+		       metadata::text,
+		       %s AS ip_address,
+		       %s AS user_agent,
+		       created_at
+		FROM %s
+		WHERE %s`, scope, venueColumn, ipColumn, userAgentColumn, table, strings.Join(where, " AND "))
+	return branch, args
 }
 
 func (r *repository) GetDashboardStats(ctx context.Context) (DashboardStatsResponse, error) {

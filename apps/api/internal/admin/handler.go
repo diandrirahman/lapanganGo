@@ -16,6 +16,56 @@ import (
 
 const requestDeadlineHeader = "X-Request-Deadline-Ms"
 
+const (
+	AuditScopeOwner    = "OWNER"
+	AuditScopePlatform = "PLATFORM"
+	AuditScopeAll      = "ALL"
+)
+
+var ownerAuditEntities = map[string]struct{}{
+	audit.EntityOwnerProfile:       {},
+	audit.EntityVenue:              {},
+	audit.EntityUser:               {},
+	audit.EntityBooking:            {},
+	audit.EntityStaff:              {},
+	audit.EntityRefund:             {},
+	audit.EntityFinanceTransaction: {},
+}
+
+var platformAuditEntities = map[string]struct{}{
+	audit.EntityPlatformCommercialTerm: {},
+}
+
+var ownerAuditActions = map[string]struct{}{
+	audit.ActionStaffCreated:                {},
+	audit.ActionStaffUpdated:                {},
+	audit.ActionStaffStatusUpdated:          {},
+	audit.ActionStaffVenuesUpdated:          {},
+	audit.ActionStaffInviteCreated:          {},
+	audit.ActionStaffInviteRegenerated:      {},
+	audit.ActionStaffPasswordResetRequested: {},
+	audit.ActionStaffPasswordResetCompleted: {},
+	audit.ActionStaffPasswordSetupCompleted: {},
+	audit.ActionBookingPaymentVerified:      {},
+	audit.ActionBookingPaymentRejected:      {},
+	audit.ActionBookingMarkedPaid:           {},
+	audit.ActionBookingCompleted:            {},
+	audit.ActionBookingCancelRefund:         {},
+	audit.ActionRefundApproved:              {},
+	audit.ActionRefundRejected:              {},
+	audit.ActionFinanceCreated:              {},
+	audit.ActionFinanceUpdated:              {},
+	audit.ActionFinanceDeleted:              {},
+	"UPDATE_OWNER_STATUS":                   {},
+	"UPDATE_VENUE_STATUS":                   {},
+}
+
+var platformAuditActions = map[string]struct{}{
+	audit.ActionPlatformCommercialTermCreated:      {},
+	audit.ActionPlatformCommercialTermSuperseded:   {},
+	audit.ActionPlatformCommercialTermLiveRejected: {},
+}
+
 type Handler struct {
 	service Service
 }
@@ -142,34 +192,92 @@ func (h *Handler) UpdateVenueStatus(c *gin.Context) {
 func (h *Handler) GetAuditLogs(c *gin.Context) {
 	var query AuditLogQuery
 	if err := c.ShouldBindQuery(&query); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid query parameters"})
+		writeAuditError(c, http.StatusBadRequest, "INVALID_QUERY", "Invalid query parameters")
 		return
 	}
 
-	if query.EntityType != "" {
-		query.EntityType = strings.ToUpper(strings.TrimSpace(query.EntityType))
-		validEntities := map[string]bool{
-			audit.EntityOwnerProfile:       true,
-			audit.EntityVenue:              true,
-			audit.EntityUser:               true,
-			audit.EntityBooking:            true,
-			audit.EntityStaff:              true,
-			audit.EntityRefund:             true,
-			audit.EntityFinanceTransaction: true,
-		}
-		if !validEntities[query.EntityType] {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity_type"})
-			return
-		}
+	query.Scope = strings.ToUpper(strings.TrimSpace(query.Scope))
+	if query.Scope == "" {
+		query.Scope = AuditScopeOwner
+	}
+	if query.Scope != AuditScopeOwner && query.Scope != AuditScopePlatform && query.Scope != AuditScopeAll {
+		writeAuditError(c, http.StatusBadRequest, "INVALID_SCOPE", "Scope must be OWNER, PLATFORM, or ALL")
+		return
+	}
+	query.EntityType = strings.ToUpper(strings.TrimSpace(query.EntityType))
+	query.Action = strings.ToUpper(strings.TrimSpace(query.Action))
+	if query.EntityType != "" && !validAuditEntity(query.Scope, query.EntityType) {
+		writeAuditError(c, http.StatusBadRequest, "INVALID_ENTITY_TYPE", "Invalid entity_type for the selected scope")
+		return
+	}
+	if query.Action != "" && !validAuditAction(query.Scope, query.Action) {
+		writeAuditError(c, http.StatusBadRequest, "INVALID_ACTION", "Invalid action for the selected scope")
+		return
 	}
 
 	res, err := h.service.GetAuditLogs(c.Request.Context(), query)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch audit logs", "error": err.Error()})
+		writeAuditError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch audit logs")
 		return
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+func validAuditEntity(scope, entity string) bool {
+	switch scope {
+	case AuditScopeOwner:
+		_, ok := ownerAuditEntities[entity]
+		return ok
+	case AuditScopePlatform:
+		_, ok := platformAuditEntities[entity]
+		return ok
+	case AuditScopeAll:
+		if _, ok := ownerAuditEntities[entity]; ok {
+			return true
+		}
+		_, ok := platformAuditEntities[entity]
+		return ok
+	default:
+		return false
+	}
+}
+
+func validAuditAction(scope, action string) bool {
+	switch scope {
+	case AuditScopeOwner:
+		_, ok := ownerAuditActions[action]
+		return ok || legacyAuditActionToken(action)
+	case AuditScopePlatform:
+		_, ok := platformAuditActions[action]
+		return ok
+	case AuditScopeAll:
+		if _, ok := ownerAuditActions[action]; ok {
+			return true
+		}
+		if _, ok := platformAuditActions[action]; ok {
+			return true
+		}
+		return legacyAuditActionToken(action)
+	default:
+		return false
+	}
+}
+
+func legacyAuditActionToken(action string) bool {
+	if action == "" || len(action) > 100 {
+		return false
+	}
+	for _, char := range action {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func writeAuditError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{"code": code, "message": message})
 }
 
 func (h *Handler) GetDashboardStats(c *gin.Context) {

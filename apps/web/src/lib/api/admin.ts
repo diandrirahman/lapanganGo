@@ -49,21 +49,24 @@ export interface VenueResponse {
 }
 
 export interface AuditLogQuery extends PaginationQuery {
+  scope?: AuditScope;
   action?: string;
   entity_type?: string;
 }
 
+export type AuditScope = 'OWNER' | 'PLATFORM' | 'ALL';
+
 export interface AuditLogResponse {
   id: string;
+  scope: AuditScope;
   owner_profile_id?: string;
   actor_user_id?: string;
   actor_role: string;
   action: string;
   entity_type: string;
   entity_id?: string;
-  metadata: any;
-  ip_address?: string;
-  user_agent?: string;
+  venue_id?: string;
+  metadata: unknown;
   created_at: string;
 }
 
@@ -147,11 +150,22 @@ export const adminApi = {
     if (!response.ok) throw new Error('Failed to update venue status');
   },
 
-  getAuditLogs: async (params?: AuditLogQuery): Promise<PaginatedResponse<AuditLogResponse>> => {
-    const query = new URLSearchParams(params as any).toString();
+  getAuditLogs: async (
+    params?: AuditLogQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PaginatedResponse<AuditLogResponse>> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        searchParams.set(key, String(value));
+      }
+    });
     const token = localStorage.getItem('auth_token');
-    const response = await apiFetch(`${API_BASE_URL}/admin/audit-logs?${query}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
+    const query = searchParams.toString();
+    const response = await apiFetch(`${API_BASE_URL}/admin/audit-logs${query ? `?${query}` : ''}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { 'Authorization': `Bearer ${token}` },
     });
     if (!response.ok) throw new Error('Failed to fetch audit logs');
     return response.json();

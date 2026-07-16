@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -158,4 +159,91 @@ func containsSecret(s string) bool {
 		}
 	}
 	return false
+}
+
+// SanitizePlatformAuditMetadata projects platform audit metadata onto the
+// allowlisted, scalar fields that are safe for an administrative read API.
+// Invalid or unknown values are omitted rather than being returned verbatim.
+func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[string]any {
+	out := make(map[string]any)
+	allowedKeys := allowedMetadataKeysPerAction[action]
+	for key, value := range metadata {
+		if !allowedKeys[key] || key == "request_fingerprint" {
+			continue
+		}
+
+		switch key {
+		case "commission_bps":
+			if bps, ok := scalarCommissionBPS(value); ok {
+				out[key] = bps
+			}
+		case "label":
+			if value, ok := value.(string); ok && len(value) <= 200 && !containsSecret(value) {
+				out[key] = value
+			}
+		case "valid_from":
+			if value, ok := value.(string); ok && !containsSecret(value) {
+				out[key] = value
+			}
+		case "phase":
+			if value, ok := value.(string); ok && (value == "TRIAL" || value == "INTRODUCTORY" || value == "STANDARD" || value == "CUSTOM") {
+				out[key] = value
+			}
+		case "superseded_term_id", "new_term_id":
+			if value, ok := value.(string); ok {
+				if _, err := uuid.Parse(value); err == nil {
+					out[key] = value
+				}
+			}
+		case "reason":
+			if value, ok := value.(string); ok && (value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR") {
+				out[key] = value
+			}
+		}
+	}
+	return out
+}
+
+// SanitizeAuditMetadata applies a conservative scalar-only projection to
+// legacy owner audit metadata before it crosses the admin read boundary.
+func SanitizeAuditMetadata(metadata map[string]any) map[string]any {
+	out := make(map[string]any)
+	for key, value := range metadata {
+		if containsSecret(key) || !safeAuditMetadataScalar(value) {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func safeAuditMetadataScalar(value any) bool {
+	switch value := value.(type) {
+	case nil, bool, int, int64:
+		return value != nil
+	case float64:
+		return !math.IsNaN(value) && !math.IsInf(value, 0)
+	case string:
+		return len(value) <= 500 && !containsSecret(value)
+	default:
+		return false
+	}
+}
+
+func scalarCommissionBPS(value any) (int, bool) {
+	switch value := value.(type) {
+	case int:
+		if value >= 0 && value <= 3000 {
+			return value, true
+		}
+	case int64:
+		if value >= 0 && value <= 3000 {
+			return int(value), true
+		}
+	case float64:
+		if value >= 0 && value <= 3000 && value == math.Trunc(value) {
+			return int(value), true
+		}
+	}
+	return 0, false
 }

@@ -149,6 +149,9 @@ func (s *service) UpdateVenueStatus(ctx context.Context, venueID string, status 
 }
 
 func (s *service) GetAuditLogs(ctx context.Context, query AuditLogQuery) (PaginatedResponse, error) {
+	if query.Scope == "" {
+		query.Scope = AuditScopeOwner
+	}
 	logs, total, err := s.repo.GetAuditLogs(ctx, query)
 	if err != nil {
 		return PaginatedResponse{}, err
@@ -156,7 +159,7 @@ func (s *service) GetAuditLogs(ctx context.Context, query AuditLogQuery) (Pagina
 
 	limit := query.Limit
 	if limit == 0 {
-		limit = 10
+		limit = 20
 	}
 	page := query.Page
 	if page < 1 {
