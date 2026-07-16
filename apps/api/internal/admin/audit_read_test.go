@@ -57,6 +57,7 @@ func TestGetAuditLogsReadContract(t *testing.T) {
 	}{
 		{name: "default owner", query: "", wantStatus: http.StatusOK, wantScope: "OWNER"},
 		{name: "platform scope", query: "scope=platform&entity_type=platform_commercial_term&action=platform_commercial_term_created&limit=100", wantStatus: http.StatusOK, wantScope: "PLATFORM"},
+		{name: "platform finance journal scope", query: "scope=platform&entity_type=platform_finance_journal&action=platform_finance_journal_reversed", wantStatus: http.StatusOK, wantScope: "PLATFORM"},
 		{name: "all scope", query: "scope=ALL", wantStatus: http.StatusOK, wantScope: "ALL"},
 		{name: "invalid scope", query: "scope=INVALID", wantStatus: http.StatusBadRequest},
 		{name: "invalid platform entity", query: "scope=PLATFORM&entity_type=BOOKING", wantStatus: http.StatusBadRequest},

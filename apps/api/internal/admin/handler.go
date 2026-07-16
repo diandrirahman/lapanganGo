@@ -34,6 +34,7 @@ var ownerAuditEntities = map[string]struct{}{
 
 var platformAuditEntities = map[string]struct{}{
 	audit.EntityPlatformCommercialTerm: {},
+	audit.EntityPlatformFinanceJournal:  {},
 }
 
 var ownerAuditActions = map[string]struct{}{
@@ -64,6 +65,8 @@ var platformAuditActions = map[string]struct{}{
 	audit.ActionPlatformCommercialTermCreated:      {},
 	audit.ActionPlatformCommercialTermSuperseded:   {},
 	audit.ActionPlatformCommercialTermLiveRejected: {},
+	audit.ActionPlatformFinanceJournalReversed:     {},
+	audit.ActionPlatformFinanceLiveWriteRejected:   {},
 }
 
 type Handler struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -13,18 +14,32 @@ const (
 	ActionPlatformCommercialTermCreated      = "PLATFORM_COMMERCIAL_TERM_CREATED"
 	ActionPlatformCommercialTermSuperseded   = "PLATFORM_COMMERCIAL_TERM_SUPERSEDED"
 	ActionPlatformCommercialTermLiveRejected = "PLATFORM_COMMERCIAL_TERM_LIVE_REJECTED"
+	ActionPlatformFinanceJournalReversed     = "PLATFORM_FINANCE_JOURNAL_REVERSED"
+	ActionPlatformFinanceLiveWriteRejected   = "PLATFORM_FINANCE_LIVE_WRITE_REJECTED"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
+	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
 )
 
 var allowedPlatformActions = map[string]bool{
 	ActionPlatformCommercialTermCreated:      true,
 	ActionPlatformCommercialTermSuperseded:   true,
 	ActionPlatformCommercialTermLiveRejected: true,
+	ActionPlatformFinanceJournalReversed:     true,
+	ActionPlatformFinanceLiveWriteRejected:   true,
 }
 
 var allowedPlatformEntities = map[string]bool{
 	EntityPlatformCommercialTerm: true,
+	EntityPlatformFinanceJournal: true,
+}
+
+var platformActionEntity = map[string]string{
+	ActionPlatformCommercialTermCreated:      EntityPlatformCommercialTerm,
+	ActionPlatformCommercialTermSuperseded:   EntityPlatformCommercialTerm,
+	ActionPlatformCommercialTermLiveRejected: EntityPlatformCommercialTerm,
+	ActionPlatformFinanceJournalReversed:     EntityPlatformFinanceJournal,
+	ActionPlatformFinanceLiveWriteRejected:   EntityPlatformFinanceJournal,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -42,6 +57,34 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"reason":              true,
 		"request_fingerprint": true,
 	},
+	ActionPlatformFinanceJournalReversed: {
+		"source_journal_id": true,
+		"effective_at":      true,
+	},
+	ActionPlatformFinanceLiveWriteRejected: {
+		"reason":              true,
+		"write_kind":          true,
+		"request_fingerprint": true,
+	},
+}
+
+var requiredMetadataKeysPerAction = map[string][]string{
+	ActionPlatformFinanceJournalReversed:   {"source_journal_id", "effective_at"},
+	ActionPlatformFinanceLiveWriteRejected: {"reason", "write_kind", "request_fingerprint"},
+}
+
+var allowedLiveWriteKinds = map[string]bool{
+	"JOURNAL":           true,
+	"PAYMENT":           true,
+	"COMMISSION":        true,
+	"REFUND":            true,
+	"PAYOUT":            true,
+	"SETTLEMENT":        true,
+	"OPERATING_EXPENSE": true,
+}
+
+func IsAllowedPlatformFinanceWriteKind(value string) bool {
+	return allowedLiveWriteKinds[value]
 }
 
 var forbiddenMetadataKeys = []string{
@@ -104,8 +147,49 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if !allowedPlatformEntities[p.EntityType] {
 		return errors.New("invalid platform audit entity type")
 	}
+	if expectedEntity := platformActionEntity[p.Action]; p.EntityType != expectedEntity {
+		return errors.New("platform audit action/entity mismatch")
+	}
 	if p.ActorRole == "" {
 		return errors.New("actor role is required")
+	}
+	if p.ActorRole != strings.TrimSpace(p.ActorRole) {
+		return errors.New("actor role must not contain surrounding whitespace")
+	}
+	if p.ActorUserID != nil {
+		if _, err := uuid.Parse(*p.ActorUserID); err != nil {
+			return errors.New("actor user id must be a valid UUID")
+		}
+	}
+	if p.EntityID != nil {
+		if _, err := uuid.Parse(*p.EntityID); err != nil {
+			return errors.New("entity id must be a valid UUID")
+		}
+	}
+	if p.OwnerProfileID != nil {
+		if _, err := uuid.Parse(*p.OwnerProfileID); err != nil {
+			return errors.New("owner profile id must be a valid UUID")
+		}
+	}
+	if p.VenueID != nil {
+		if _, err := uuid.Parse(*p.VenueID); err != nil {
+			return errors.New("venue id must be a valid UUID")
+		}
+	}
+	if p.CorrelationID != nil && strings.TrimSpace(*p.CorrelationID) == "" {
+		return errors.New("correlation id must not be empty")
+	}
+	if p.Action == ActionPlatformFinanceJournalReversed && p.EntityID == nil {
+		return errors.New("reversal audit entity id is required")
+	}
+	if p.Action == ActionPlatformFinanceLiveWriteRejected && p.EntityID != nil {
+		return errors.New("live rejection audit entity id must be nil")
+	}
+	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
+		return errors.New("correlation id is required for finance audit action")
+	}
+	if _, required := requiredMetadataKeysPerAction[p.Action]; required && p.Metadata == nil {
+		return errors.New("metadata is required for this platform audit action")
 	}
 
 	allowedKeys := allowedMetadataKeysPerAction[p.Action]
@@ -177,10 +261,42 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				if _, err := hex.DecodeString(v); err != nil {
 					return errors.New("request_fingerprint must be valid hexadecimal")
 				}
+			case "source_journal_id":
+				v, ok := val.(string)
+				if !ok {
+					return errors.New("source_journal_id must be a UUID string")
+				}
+				if _, err := uuid.Parse(v); err != nil {
+					return errors.New("source_journal_id must be a valid UUID")
+				}
+			case "effective_at":
+				v, ok := val.(string)
+				if !ok {
+					return errors.New("effective_at must be an RFC3339 timestamp")
+				}
+				if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
+					return errors.New("effective_at must be an RFC3339 timestamp")
+				}
+			case "write_kind":
+				v, ok := val.(string)
+				if !ok || !allowedLiveWriteKinds[v] {
+					return errors.New("write_kind must be a supported finance write kind")
+				}
 			}
 		}
 	} else {
 		p.Metadata = make(map[string]any)
+	}
+
+	for _, key := range requiredMetadataKeysPerAction[p.Action] {
+		if _, ok := p.Metadata[key]; !ok {
+			return errors.New("required metadata key missing: " + key)
+		}
+	}
+	if p.Action == ActionPlatformFinanceLiveWriteRejected {
+		if p.Metadata["reason"] != "LIVE_NOT_ALLOWED" {
+			return errors.New("reason must be LIVE_NOT_ALLOWED for finance LIVE rejection")
+		}
 	}
 
 	return nil
@@ -232,6 +348,22 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			}
 		case "reason":
 			if value, ok := value.(string); ok && (value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR") {
+				out[key] = value
+			}
+		case "source_journal_id":
+			if value, ok := value.(string); ok {
+				if _, err := uuid.Parse(value); err == nil {
+					out[key] = value
+				}
+			}
+		case "effective_at":
+			if value, ok := value.(string); ok {
+				if _, err := time.Parse(time.RFC3339Nano, value); err == nil {
+					out[key] = value
+				}
+			}
+		case "write_kind":
+			if value, ok := value.(string); ok && allowedLiveWriteKinds[value] {
 				out[key] = value
 			}
 		}
