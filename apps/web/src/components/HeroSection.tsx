@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { CalendarCheck, MapPin, Search, Trophy } from 'lucide-react';
+import { CalendarCheck, MapPin, Search, Sparkles } from 'lucide-react';
 import { Button } from './ui/Button';
 import { useNavigate } from 'react-router-dom';
+import heroIndoorVenue from '../assets/hero-sports-venue.webp';
 
-const heroSportsVenue = '/hero-basketball.webp';
+const heroBasketball = '/hero-basketball.webp';
 
 export const HeroSection: React.FC = () => {
   const navigate = useNavigate();
@@ -15,7 +16,7 @@ export const HeroSection: React.FC = () => {
     if (!searchQuery.trim() && !sport) {
       return;
     }
-    
+
     const params = new URLSearchParams();
     if (searchQuery.trim()) {
       params.append('search', searchQuery.trim());
@@ -23,7 +24,7 @@ export const HeroSection: React.FC = () => {
     if (sport && sport !== 'Semua Olahraga') {
       params.append('sport', sport);
     }
-    
+
     navigate(`/venues?${params.toString()}`);
   };
 
@@ -32,98 +33,103 @@ export const HeroSection: React.FC = () => {
   };
 
   return (
-    <section className="relative overflow-hidden bg-white pt-8 pb-12 md:pt-10 md:pb-16">
-      <div className="max-w-7xl mx-auto px-4 md:px-6 grid lg:grid-cols-[0.92fr_1.08fr] gap-8 lg:gap-12 items-center">
-        <div className="relative z-10 flex flex-col items-center text-center lg:items-start lg:text-left">
-          <div className="animate-fade-up inline-flex items-center gap-2 px-4 py-1.5 bg-primary/10 text-primary rounded-full text-sm font-bold mb-5 border border-primary/15">
-            <Trophy className="w-4 h-4" /> Temukan Venue Olahraga
-          </div>
-          
-          <h1 className="animate-fade-up delay-75 text-[36px] sm:text-5xl lg:text-6xl font-extrabold tracking-tight mb-4 text-text-main leading-[1.08] max-w-[720px]">
-            Booking Venue & Main Tanpa <span className="text-primary">Ribet.</span>
-          </h1>
-          
-          <p className="animate-fade-up delay-150 text-base md:text-lg text-text-muted mb-6 md:mb-8 max-w-2xl leading-relaxed">
-            Cari lapangan, cek jadwal real-time, dan mulai olahraga tanpa bolak-balik chat admin.
-          </p>
-          
-          <form onSubmit={handleSearch} className="animate-fade-up delay-200 bg-white p-2 rounded-2xl md:rounded-full flex flex-col md:flex-row gap-2 md:gap-0 items-stretch md:items-center shadow-lg border border-gray-200 w-full max-w-3xl min-w-0 relative z-20">
-            <div className="flex-1 min-w-0 flex flex-col px-4 md:px-6 py-2 md:border-r border-gray-200 w-full text-left">
-              <label className="text-xs font-bold text-text-muted mb-1 uppercase tracking-wider">Lokasi / Venue</label>
-              <input 
-                type="text" 
-                placeholder="Contoh: Jakarta Selatan" 
-                className="bg-transparent border-none text-[15px] font-bold text-text-main outline-none w-full placeholder:text-gray-400 placeholder:font-medium transition-all focus:ring-0"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <div className="flex-1 min-w-0 flex flex-col px-4 md:px-6 py-2 w-full text-left">
-              <label className="text-xs font-bold text-text-muted mb-1 uppercase tracking-wider">Olahraga</label>
-              <select 
-                className="bg-transparent border-none text-[15px] font-bold text-text-main outline-none w-full min-w-0 cursor-pointer transition-colors"
-                value={sport}
-                onChange={(e) => setSport(e.target.value)}
-              >
-                <option value="">Semua Olahraga</option>
-                <option value="Mini Soccer">Mini Soccer</option>
-                <option value="Futsal">Futsal</option>
-                <option value="Tenis Lapangan">Tenis Lapangan</option>
-                <option value="Badminton">Badminton</option>
-                <option value="Basket">Basket</option>
-              </select>
-            </div>
-            <Button type="submit" className="w-full md:w-14 h-12 md:h-14 md:rounded-full p-0 flex items-center justify-center shrink-0 font-bold gap-2 active:scale-95 transition-transform">
-              <Search className="w-5 h-5" />
-              <span className="md:hidden">Cari Lapangan</span>
-            </Button>
-          </form>
+    <section className="relative px-3 pb-12 sm:px-5 md:pb-20">
+      <div className="relative mx-auto max-w-[1440px] overflow-hidden rounded-[28px] bg-[#05221e] shadow-[0_38px_90px_-50px_rgba(5,34,30,0.8)] sm:rounded-[40px] lg:min-h-[690px]">
+        <div className="grid lg:min-h-[690px] lg:grid-cols-[45%_55%]">
+          <div className="relative z-10 flex flex-col justify-between px-5 pb-10 pt-9 text-white sm:px-9 sm:pb-12 sm:pt-12 lg:px-12 lg:pb-[190px] lg:pt-16 xl:px-16">
+            <div>
+              <div className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/[0.06] px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white/80 sm:text-xs">
+                <Sparkles className="h-4 w-4 text-secondary" /> Cari. Booking. Main.
+              </div>
 
-          <div className="mt-6 flex gap-2 flex-wrap justify-center lg:justify-start animate-fade-up delay-300">
-            {[
-              'Mini Soccer', 
-              'Futsal', 
-              'Tenis Lapangan', 
-              'Badminton', 
-              'Basket'
-            ].map((cat) => (
-              <button 
-                key={cat} 
+              <h1 className="animate-fade-up delay-75 mt-7 max-w-[680px] text-[clamp(3.35rem,6.4vw,6.4rem)] font-extrabold uppercase leading-[0.84] tracking-[-0.07em] text-white">
+                Booking
+                <span className="block">venue.</span>
+                <span className="block text-secondary">Tanpa ribet.</span>
+              </h1>
+            </div>
+
+            <div className="animate-fade-up delay-150 mt-10 flex max-w-xl flex-col gap-5 border-t border-white/15 pt-6 sm:flex-row sm:items-end sm:justify-between">
+              <p className="max-w-md text-sm font-medium leading-relaxed text-white/65 sm:text-base">
+                Cek jadwal real-time, pilih lapangan terbaik, dan amankan jam main tanpa bolak-balik chat admin.
+              </p>
+            </div>
+          </div>
+
+          <div className="animate-fade-up delay-150 relative min-h-[380px] overflow-hidden bg-[#0c4b46] sm:min-h-[500px] lg:min-h-full">
+            <img
+              src={heroBasketball}
+              alt="Pertandingan basket bersama di lapangan terbuka"
+              className="hero-shot hero-shot-one absolute inset-0 h-full w-full object-cover"
+              decoding="async"
+              fetchPriority="high"
+            />
+            <img
+              src={heroIndoorVenue}
+              alt="Venue futsal indoor modern"
+              className="hero-shot hero-shot-two absolute inset-0 h-full w-full object-cover"
+              decoding="async"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#031b18]/70 via-[#042b27]/10 to-[#031b18]/20" />
+            <div className="absolute inset-y-0 left-0 hidden w-36 bg-gradient-to-r from-[#05221e] to-transparent lg:block" />
+
+            <div className="absolute left-5 top-5 rounded-full border border-white/25 bg-[#05221e]/60 px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-white backdrop-blur-md sm:left-7 sm:top-7">
+              Venue pilihan kota kamu
+            </div>
+          </div>
+        </div>
+
+        <form aria-label="Cari venue olahraga" onSubmit={handleSearch} className="animate-fade-up delay-200 relative z-20 mx-4 -mt-4 grid min-w-0 gap-2 rounded-[24px] border border-white/50 bg-white p-2 text-text-main shadow-[0_24px_60px_-28px_rgba(0,0,0,0.65)] sm:mx-8 md:grid-cols-[1fr_1fr_auto] md:items-center md:gap-0 md:rounded-full lg:absolute lg:bottom-[88px] lg:left-[4.5%] lg:right-[4.5%] lg:mx-0 lg:mt-0">
+          <div className="flex min-w-0 flex-col px-4 py-2 text-left md:border-r md:border-gray-200 md:px-6">
+            <label htmlFor="hero-location" className="mb-1 text-[10px] font-extrabold uppercase tracking-[0.16em] text-text-muted sm:text-xs">Lokasi / Venue</label>
+            <input
+              id="hero-location"
+              type="text"
+              placeholder="Contoh: Jakarta Selatan"
+              className="w-full border-none bg-transparent text-[15px] font-bold text-text-main outline-none transition-all placeholder:font-medium placeholder:text-gray-400 focus:ring-0"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div className="flex min-w-0 flex-col px-4 py-2 text-left md:px-6">
+            <label htmlFor="hero-sport" className="mb-1 text-[10px] font-extrabold uppercase tracking-[0.16em] text-text-muted sm:text-xs">Olahraga</label>
+            <select
+              id="hero-sport"
+              className="bg-transparent border-none text-[15px] font-bold text-text-main outline-none w-full min-w-0 cursor-pointer transition-colors"
+              value={sport}
+              onChange={(e) => setSport(e.target.value)}
+            >
+              <option value="">Semua Olahraga</option>
+              <option value="Mini Soccer">Mini Soccer</option>
+              <option value="Futsal">Futsal</option>
+              <option value="Tenis Lapangan">Tenis Lapangan</option>
+              <option value="Badminton">Badminton</option>
+              <option value="Basket">Basket</option>
+            </select>
+          </div>
+          <Button type="submit" className="h-13 w-full shrink-0 gap-2 p-0 font-bold active:scale-95 md:h-15 md:w-32 md:rounded-full">
+            <Search className="w-5 h-5" />
+            <span>Cari</span>
+          </Button>
+        </form>
+
+        <div className="relative z-10 mt-4 flex flex-col gap-4 border-t border-white/10 px-5 py-5 sm:px-8 md:flex-row md:items-center md:justify-between lg:absolute lg:inset-x-0 lg:bottom-0 lg:mt-0 lg:px-12 xl:px-16">
+          <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-white/55">
+            <span className="flex items-center gap-2 text-white"><CalendarCheck className="h-4 w-4 text-secondary" /> Slot ter-update</span>
+            <span className="hidden h-1 w-1 rounded-full bg-white/25 sm:block" />
+            <span className="flex items-center gap-2"><MapPin className="h-4 w-4 text-white/70" /> Venue terkurasi</span>
+          </div>
+          <div className="flex flex-wrap gap-2 animate-fade-up delay-300">
+            {['Mini Soccer', 'Futsal', 'Tenis Lapangan', 'Badminton', 'Basket'].map((cat) => (
+              <button
+                key={cat}
                 onClick={() => handleChipClick(cat)}
                 type="button"
-                className="bg-gray-50 border border-gray-200 px-3.5 sm:px-4 py-2 rounded-full font-bold text-xs sm:text-sm text-text-muted transition-all hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95"
+                className="rounded-full border border-white/15 bg-white/[0.07] px-3 py-1.5 text-[11px] font-bold text-white/70 transition-all hover:-translate-y-0.5 hover:border-secondary/50 hover:bg-secondary hover:text-white active:scale-95 sm:text-xs"
               >
                 {cat}
               </button>
             ))}
-          </div>
-        </div>
-
-        <div className="animate-fade-up delay-150 relative z-0 w-full max-w-full min-w-0">
-          <div className="relative overflow-hidden rounded-3xl border border-white shadow-lg bg-gray-100 aspect-[16/10] min-h-[220px] w-full max-w-full">
-            <img
-              src={heroSportsVenue}
-              alt="Lapangan olahraga indoor modern"
-              className="h-full w-full object-cover"
-              decoding="async"
-              fetchPriority="high"
-            />
-            <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-slate-950/55 to-transparent" />
-            <div className="absolute left-4 right-4 bottom-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div className="rounded-2xl bg-white/92 backdrop-blur px-4 py-3 shadow-sm border border-white/70 max-w-[260px]">
-                <div className="flex items-center gap-2 text-xs font-bold text-primary uppercase tracking-wide">
-                  <CalendarCheck className="w-4 h-4" />
-                  Jadwal siap dicek
-                </div>
-                <p className="mt-1 text-sm font-extrabold text-text-main">Pilih venue, jam main, lalu booking.</p>
-              </div>
-              <div className="rounded-2xl bg-slate-950/75 text-white backdrop-blur px-4 py-3 border border-white/20">
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  <MapPin className="w-4 h-4 text-primary" />
-                  Venue pilihan kota Anda
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>

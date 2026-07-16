@@ -29,12 +29,12 @@ export const MabarCard: React.FC<Props> = ({ match }) => {
   const isCancelled = match.status === 'CANCELLED';
 
   return (
-    <Card className="animate-fade-up group flex flex-col h-full hover:shadow-lg md:hover:-translate-y-1 transition-all duration-300">
+    <Card className="group flex h-full flex-col rounded-[26px] border-white/10 bg-white p-5 transition-all duration-500 hover:-translate-y-1 hover:shadow-2xl sm:p-6">
       {/* Header */}
       <div className="flex justify-between items-start mb-5 pb-4 border-b border-border-main">
         <div className="flex gap-3 items-center">
           {/* Avatar Placeholder */}
-          <div className="w-12 h-12 rounded-full border-2 border-primary p-0.5 shrink-0 bg-secondary-soft flex items-center justify-center font-bold text-primary">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-primary bg-secondary-soft p-0.5 font-bold text-primary transition-transform group-hover:scale-105">
             {match.host_name.charAt(0).toUpperCase()}
           </div>
           <div className="flex flex-col gap-0.5">

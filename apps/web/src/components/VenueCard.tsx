@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import type { Venue } from '../types/venue';
-import { MapPin } from 'lucide-react';
+import { ArrowUpRight, MapPin } from 'lucide-react';
 import { SafeVenueImage } from './ui/SafeVenueImage';
 
 interface Props {
@@ -21,14 +21,14 @@ export const VenueCard: React.FC<Props> = ({ venue, playDate }) => {
   }
 
   return (
-    <Link to={`/venues/${venue.id}${playDate ? `?play_date=${playDate}` : ''}`} className="animate-fade-up bg-white rounded-2xl p-4 flex flex-col group cursor-pointer border border-border-main shadow-sm hover:shadow-lg md:hover:-translate-y-1 hover:border-primary/30 transition-all duration-300">
+    <Link to={`/venues/${venue.id}${playDate ? `?play_date=${playDate}` : ''}`} className="group flex h-full min-w-0 cursor-pointer flex-col rounded-[26px] border border-border-main/80 bg-bg-main p-3 transition-all duration-500 hover:-translate-y-1 hover:border-primary/25 hover:bg-white hover:shadow-lg">
       {/* Image Wrapper */}
-      <div className="relative h-48 rounded-xl overflow-hidden mb-4 bg-gray-100 flex items-center justify-center">
+      <div className="relative mb-5 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-[20px] bg-gray-100">
         <SafeVenueImage 
           src={primaryPhotoUrl}
           venueId={venue.id}
           alt={venue.name}
-          className="w-full h-full group-hover:scale-105 transition-transform duration-500"
+          className="h-full w-full transition-transform duration-700 group-hover:scale-105"
           fallbackIcon="image"
         />
         {venue.has_promo && (
@@ -45,38 +45,38 @@ export const VenueCard: React.FC<Props> = ({ venue, playDate }) => {
       </div>
 
       {/* Content */}
-      <div className="flex flex-col flex-1">
-        <h3 className="text-lg font-bold mb-1 text-text-main line-clamp-1" title={venue.name}>
-          {venue.name}
-        </h3>
+      <div className="flex flex-1 flex-col px-1 pb-1">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="line-clamp-2 text-lg font-extrabold leading-tight text-text-main" title={venue.name}>
+            {venue.name}
+          </h3>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border-main bg-white text-text-main transition-all duration-300 group-hover:rotate-45 group-hover:border-primary group-hover:bg-primary group-hover:text-white">
+            <ArrowUpRight className="h-4 w-4" />
+          </span>
+        </div>
         
-        <div className="flex items-center gap-1 text-text-muted text-sm font-medium mb-4">
+        <div className="mb-4 mt-2 flex items-center gap-1 text-sm font-medium text-text-muted">
           <MapPin className="w-4 h-4 shrink-0" />
           <span className="line-clamp-1">{venue.address}, {venue.city}</span>
         </div>
 
         {/* Facilities Chips */}
         {venue.facilities.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-4">
+          <div className="mb-4 flex flex-wrap gap-1.5">
             {displayedFacilities.map(f => (
-              <span key={f.id} className="bg-bg-main text-text-muted px-2 py-1 rounded-md text-xs font-bold border border-border-main">
+              <span key={f.id} className="rounded-full border border-border-main bg-white px-2.5 py-1 text-[11px] font-bold text-text-muted">
                 {f.name}
               </span>
             ))}
             {extraFacilities > 0 && (
-              <span className="bg-bg-main text-text-muted px-2 py-1 rounded-md text-xs font-bold border border-border-main">
+              <span className="rounded-full border border-border-main bg-white px-2.5 py-1 text-[11px] font-bold text-text-muted">
                 +{extraFacilities}
               </span>
             )}
           </div>
         )}
 
-        {/* Action */}
-        <div className="mt-auto pt-2">
-          <button className="w-full rounded-xl py-3 bg-primary/10 text-primary font-bold text-sm transition-all duration-300 group-hover:bg-primary group-hover:text-white">
-            Lihat Detail
-          </button>
-        </div>
+        <p className="mt-auto border-t border-border-main/80 pt-4 text-xs font-extrabold uppercase tracking-[0.16em] text-primary">Lihat jadwal tersedia</p>
       </div>
     </Link>
   );

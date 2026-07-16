@@ -7,6 +7,7 @@ import { VenueCard } from './VenueCard';
 import { EmptyState } from './feedback/EmptyState';
 import { ErrorState } from './feedback/ErrorState';
 import { LoadingState } from './feedback/LoadingState';
+import { ScrollReveal } from './ui/ScrollReveal';
 
 export const VenueSection: React.FC = () => {
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -31,21 +32,22 @@ export const VenueSection: React.FC = () => {
   }, []);
 
   return (
-    <section className="py-14 md:py-20 relative z-20 bg-bg-main">
-      <div className="max-w-7xl mx-auto px-5 md:px-6">
+    <section id="venue-pilihan" className="relative z-20 bg-white py-16 md:py-28">
+      <div className="mx-auto max-w-7xl px-5 md:px-6">
         
         {/* Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-4">
+        <ScrollReveal className="mb-10 flex flex-col items-start justify-between gap-6 md:mb-14 md:flex-row md:items-end">
           <div>
-            <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-text-main mb-2">Rekomendasi Venue</h2>
-            <p className="text-base md:text-lg text-text-muted font-medium">
+            <p className="mb-4 text-xs font-extrabold uppercase tracking-[0.2em] text-primary">01 / Venue pilihan</p>
+            <h2 className="max-w-4xl text-[clamp(2.6rem,6vw,5.4rem)] font-extrabold leading-[0.95] tracking-[-0.055em] text-text-main">Tempat terbaik untuk mulai bergerak.</h2>
+            <p className="mt-5 text-base font-medium text-text-muted md:text-lg">
               Lapangan terbaik yang bisa langsung dibooking hari ini.
             </p>
           </div>
-          <Link to="/venues" className="flex items-center gap-2 font-bold text-primary transition-colors shrink-0 bg-primary/10 px-5 py-2.5 rounded-full hover:bg-primary/20 active:scale-95">
-            Lihat Semua <ArrowRight className="w-4 h-4" />
+          <Link to="/venues" className="group flex shrink-0 items-center gap-3 rounded-full border border-border-main bg-white px-5 py-3 font-bold text-text-main transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:text-primary hover:shadow-md active:scale-95">
+            Lihat Semua <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
           </Link>
-        </div>
+        </ScrollReveal>
 
         {/* Content */}
         {isLoading ? (
@@ -58,9 +60,11 @@ export const VenueSection: React.FC = () => {
             description="Saat ini belum ada venue lapangan yang tersedia di sistem kami."
           />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {venues.map((venue) => (
-              <VenueCard key={venue.id} venue={venue} />
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            {venues.map((venue, index) => (
+              <ScrollReveal key={venue.id} delay={index * 70} className="h-full">
+                <VenueCard venue={venue} />
+              </ScrollReveal>
             ))}
           </div>
         )}

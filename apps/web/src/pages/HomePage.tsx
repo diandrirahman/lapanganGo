@@ -27,11 +27,13 @@ export const HomePage: React.FC = () => {
 
   return (
     <PageShell>
-      <HeroSection />
-      <TrustStatsSection />
-      <VenueSection />
-      <MabarSection />
-      <FinalCtaSection />
+      <div className="overflow-clip">
+        <HeroSection />
+        <TrustStatsSection />
+        <VenueSection />
+        <MabarSection />
+        <FinalCtaSection />
+      </div>
     </PageShell>
   );
 };

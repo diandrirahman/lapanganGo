@@ -53,6 +53,35 @@
     background-size: 200% 100%;
   }
 
+  .scroll-reveal {
+    opacity: 0;
+    transform: translateY(28px);
+    transition:
+      opacity 700ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+  }
+
+  .scroll-reveal.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .hero-shot {
+    will-change: opacity, transform;
+    animation-duration: 10s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+  }
+
+  .hero-shot-one {
+    animation-name: hero-shot-cycle-one;
+  }
+
+  .hero-shot-two {
+    animation-name: hero-shot-cycle-two;
+  }
+
   @keyframes fade-up {
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }
@@ -64,6 +93,18 @@
   @keyframes shimmer {
     from { background-position: 200% 0; }
     to { background-position: -200% 0; }
+  }
+
+  @keyframes hero-shot-cycle-one {
+    0%, 44% { opacity: 1; transform: scale(1); }
+    50%, 94% { opacity: 0; transform: scale(1.04); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+
+  @keyframes hero-shot-cycle-two {
+    0%, 44% { opacity: 0; transform: scale(1.04); }
+    50%, 94% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.04); }
   }
 
   /* Delay utilities */
@@ -79,12 +120,32 @@
       opacity: 1 !important;
       transform: none !important;
     }
+
+    .hero-shot {
+      animation: none !important;
+      opacity: 0 !important;
+      transform: none !important;
+    }
+
+    .hero-shot-one {
+      opacity: 1 !important;
+    }
+
+    .scroll-reveal {
+      opacity: 1 !important;
+      transform: none !important;
+      transition: none !important;
+    }
   }
 }
 
 @layer base {
   body {
     @apply bg-bg-main text-text-main font-sans antialiased;
+    overflow-x: hidden;
+  }
+
+  button, a, input, select {
+    -webkit-tap-highlight-color: transparent;
   }
 }
-
