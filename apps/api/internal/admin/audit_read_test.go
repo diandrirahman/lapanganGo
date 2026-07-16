@@ -10,12 +10,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"lapangango-api/internal/admin"
+	"lapangango-api/internal/auth"
+	"lapangango-api/internal/middleware"
 )
 
 type auditReadService struct {
 	query admin.AuditLogQuery
 	res   admin.PaginatedResponse
 	err   error
+	calls int
 }
 
 func (s *auditReadService) GetUsers(context.Context, admin.UserQuery) (admin.PaginatedResponse, error) {
@@ -37,6 +40,7 @@ func (s *auditReadService) GetVenueOwnerProfileID(context.Context, string) (stri
 	return "", nil
 }
 func (s *auditReadService) GetAuditLogs(_ context.Context, query admin.AuditLogQuery) (admin.PaginatedResponse, error) {
+	s.calls++
 	s.query = query
 	return s.res, s.err
 }
@@ -73,6 +77,13 @@ func TestGetAuditLogsReadContract(t *testing.T) {
 			if resp.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, resp.Code, resp.Body.String())
 			}
+			wantCalls := 0
+			if tt.wantStatus == http.StatusOK {
+				wantCalls = 1
+			}
+			if service.calls != wantCalls {
+				t.Fatalf("expected service calls %d, got %d", wantCalls, service.calls)
+			}
 			if tt.wantScope != "" && service.query.Scope != tt.wantScope {
 				t.Fatalf("expected normalized scope %q, got %q", tt.wantScope, service.query.Scope)
 			}
@@ -106,17 +117,19 @@ func TestGetAuditLogsSanitizedInternalError(t *testing.T) {
 
 func TestAdminAuditLogsAuthMatrix(t *testing.T) {
 	tests := []struct {
-		name           string
-		role           string
-		status         string
-		expectedStatus int
+		name                 string
+		userID               string
+		role                 string
+		status               string
+		expectedStatus       int
+		expectedStatusChecks int
 	}{
 		{name: "anonymous", expectedStatus: http.StatusUnauthorized},
-		{name: "active customer", role: "CUSTOMER", status: "ACTIVE", expectedStatus: http.StatusForbidden},
-		{name: "active owner", role: "OWNER", status: "ACTIVE", expectedStatus: http.StatusForbidden},
-		{name: "active staff", role: "STAFF", status: "ACTIVE", expectedStatus: http.StatusForbidden},
-		{name: "suspended super admin", role: "SUPER_ADMIN", status: "SUSPENDED", expectedStatus: http.StatusForbidden},
-		{name: "active super admin", role: "SUPER_ADMIN", status: "ACTIVE", expectedStatus: http.StatusOK},
+		{name: "active customer", userID: "customer-1", role: "CUSTOMER", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active owner", userID: "owner-1", role: "OWNER", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active staff", userID: "staff-1", role: "STAFF", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "suspended super admin", userID: "super-admin-suspended", role: "SUPER_ADMIN", status: "SUSPENDED", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active super admin", userID: "super-admin-active", role: "SUPER_ADMIN", status: "ACTIVE", expectedStatus: http.StatusOK, expectedStatusChecks: 1},
 	}
 
 	for _, tt := range tests {
@@ -124,31 +137,51 @@ func TestAdminAuditLogsAuthMatrix(t *testing.T) {
 			service := &auditReadService{res: admin.PaginatedResponse{Data: []admin.AuditLogResponse{}}}
 			handler := admin.NewHandler(service)
 			router := gin.New()
-			auth := func(c *gin.Context) {
-				if tt.role == "" {
-					c.AbortWithStatus(http.StatusUnauthorized)
-					return
-				}
-				c.Set("auth_role", tt.role)
-				c.Next()
-			}
-			requireActive := func(c *gin.Context) {
-				if tt.status != "ACTIVE" {
-					c.AbortWithStatus(http.StatusForbidden)
-					return
-				}
-				c.Next()
-			}
-			handler.RegisterRoutes(router, auth, requireActive)
+			statusRepo := &auditStatusRepo{statuses: map[string]string{}}
+			tokenService := auth.NewTokenService("task-2c-04-test-secret", 1)
+			handler.RegisterRoutes(router, middleware.Auth(tokenService), middleware.RequireActiveUser(statusRepo))
 
 			req := httptest.NewRequest(http.MethodGet, "/admin/audit-logs?scope=PLATFORM", nil)
+			if tt.role != "" {
+				statusRepo.statuses[tt.userID] = tt.status
+				token, err := tokenService.Generate(auth.UserResponse{
+					ID:     tt.userID,
+					Email:  tt.userID + "@example.test",
+					Role:   tt.role,
+					Status: tt.status,
+				})
+				if err != nil {
+					t.Fatalf("generate test token: %v", err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
 			resp := httptest.NewRecorder()
 			router.ServeHTTP(resp, req)
 			if resp.Code != tt.expectedStatus {
 				t.Fatalf("expected status %d, got %d: %s", tt.expectedStatus, resp.Code, resp.Body.String())
 			}
+			wantCalls := 0
+			if tt.expectedStatus == http.StatusOK {
+				wantCalls = 1
+			}
+			if service.calls != wantCalls {
+				t.Fatalf("expected service calls %d, got %d", wantCalls, service.calls)
+			}
+			if statusRepo.calls != tt.expectedStatusChecks {
+				t.Fatalf("expected active-user status checks %d, got %d", tt.expectedStatusChecks, statusRepo.calls)
+			}
 		})
 	}
+}
+
+type auditStatusRepo struct {
+	statuses map[string]string
+	calls    int
+}
+
+func (r *auditStatusRepo) GetUserStatus(_ context.Context, userID string) (string, error) {
+	r.calls++
+	return r.statuses[userID], nil
 }
 
 func querySuffix(query string) string {

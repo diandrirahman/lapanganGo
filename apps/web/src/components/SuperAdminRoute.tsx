@@ -18,8 +18,8 @@ export const SuperAdminRoute: React.FC = () => {
     );
   }
 
-  if (!user || user.role !== 'SUPER_ADMIN') {
-    const redirectPath = getRoleHomeRoute(user?.role);
+  if (!user || user.role !== 'SUPER_ADMIN' || user.status !== 'ACTIVE') {
+    const redirectPath = user?.role === 'SUPER_ADMIN' ? '/' : getRoleHomeRoute(user?.role);
     return <Navigate to={redirectPath} replace />;
   }
 
