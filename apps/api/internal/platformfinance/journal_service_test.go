@@ -214,6 +214,60 @@ func TestJournalPayloadHashV1IsCanonicalAndPreservesMultiplicity(t *testing.T) {
 	assert.NotEqual(t, hash, duplicateHash)
 }
 
+func TestReplayExistingJournalRequiresExactCanonicalIntegrity(t *testing.T) {
+	params := validPostJournalParams()
+	normalized, _, err := validateAndNormalizeJournal(params)
+	require.NoError(t, err)
+	hash, err := hashJournalPayloadV1(normalized)
+	require.NoError(t, err)
+
+	journalID := uuid.NewString()
+	existing := &loadedJournal{
+		Journal: PostedJournal{
+			ID:                 journalID,
+			EventKey:           normalized.EventKey,
+			EventType:          normalized.EventType,
+			PayloadHash:        hash,
+			PayloadHashVersion: JournalPayloadHashVersionV1,
+			Currency:           JournalCurrencyIDR,
+			EffectiveAt:        normalized.EffectiveAt,
+			Metadata:           cloneJournalMetadata(normalized.Metadata),
+			Entries: []PostedJournalEntry{
+				{ID: uuid.NewString(), JournalID: journalID, AccountCode: "FUNDING_CLEARING", Side: JournalSideCredit, AmountRupiah: 1},
+				{ID: uuid.NewString(), JournalID: journalID, AccountCode: "BANK_CASH", Side: JournalSideDebit, AmountRupiah: 1},
+			},
+		},
+	}
+	definitions := map[string]JournalAccountDefinition{
+		"BANK_CASH":        {Code: "BANK_CASH", OwnerDimension: JournalOwnerDimensionForbidden},
+		"FUNDING_CLEARING": {Code: "FUNDING_CLEARING", OwnerDimension: JournalOwnerDimensionForbidden},
+	}
+
+	replayed, err := replayExistingJournal(existing, normalized, hash, definitions)
+	require.NoError(t, err)
+	assert.Equal(t, journalID, replayed.ID)
+	assert.Equal(t, "BANK_CASH", replayed.Entries[0].AccountCode)
+
+	differentPayload := normalized
+	differentPayload.Entries = []PostJournalEntry{
+		{AccountCode: "BANK_CASH", Side: JournalSideDebit, AmountRupiah: 2},
+		{AccountCode: "FUNDING_CLEARING", Side: JournalSideCredit, AmountRupiah: 2},
+	}
+	differentHash, err := hashJournalPayloadV1(differentPayload)
+	require.NoError(t, err)
+	_, err = replayExistingJournal(existing, differentPayload, differentHash, definitions)
+	assert.ErrorIs(t, err, ErrJournalEventKeyConflict)
+
+	existing.Journal.Metadata["source_type"] = "tampered"
+	_, err = replayExistingJournal(existing, normalized, hash, definitions)
+	assert.ErrorIs(t, err, ErrJournalIntegrity)
+
+	existing.Journal.Metadata["source_type"] = "unit_test"
+	existing.Journal.PayloadHashVersion = "UNKNOWN_VERSION"
+	_, err = replayExistingJournal(existing, normalized, hash, definitions)
+	assert.ErrorIs(t, err, ErrJournalIntegrity)
+}
+
 func TestJournalMoneyContractUsesInt64AndNoFloat(t *testing.T) {
 	entryType := reflect.TypeOf(PostJournalEntry{})
 	amount, ok := entryType.FieldByName("AmountRupiah")
@@ -259,9 +313,161 @@ func TestJournalServiceConstructorAndGenericErrorMapping(t *testing.T) {
 		ConstraintName: "platform_journal_balance_guard",
 		Message:        "journal does not balance",
 	}), ErrJournalUnbalanced)
+	assert.ErrorIs(t, normalizeJournalServiceError(ErrJournalIntegrity), ErrJournalIntegrity)
 
-	for _, err := range []error{ErrJournalPersistence, ErrJournalEventKeyConflict, ErrInvalidJournalReference} {
+	for _, err := range []error{ErrJournalPersistence, ErrJournalEventKeyConflict, ErrJournalIntegrity, ErrInvalidJournalReference} {
 		assert.NotContains(t, err.Error(), "platform_journals")
 		assert.NotContains(t, err.Error(), "SQL")
 	}
+}
+
+func TestNormalizeReverseJournalParamsEnforcesStableContract(t *testing.T) {
+	actorID := uuid.NewString()
+	journalID := uuid.NewString()
+	normalized, err := normalizeReverseJournalParams(ReverseJournalParams{
+		JournalID:       journalID,
+		Reason:          "manual correction",
+		EffectiveAt:     time.Date(2026, time.July, 16, 10, 11, 12, 123456789, time.FixedZone("WIB", 7*60*60)),
+		CreatedByUserID: &actorID,
+		Metadata:        map[string]string{"reason_code": "correction"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, journalID, normalized.JournalID)
+	assert.Equal(t, time.Date(2026, time.July, 16, 3, 11, 12, 123456000, time.UTC), normalized.EffectiveAt)
+	assert.Equal(t, actorID, *normalized.CreatedByUserID)
+
+	for _, params := range []ReverseJournalParams{
+		{JournalID: "bad", Reason: "reason", EffectiveAt: time.Now()},
+		{JournalID: journalID, Reason: "", EffectiveAt: time.Now()},
+		{JournalID: journalID, Reason: " padded", EffectiveAt: time.Now()},
+		{JournalID: journalID, Reason: strings.Repeat("r", 501), EffectiveAt: time.Now()},
+		{JournalID: journalID, Reason: "reason", EffectiveAt: time.Time{}},
+	} {
+		_, err := normalizeReverseJournalParams(params)
+		assert.Error(t, err)
+	}
+}
+
+func TestInvertPostedJournalEntriesPreservesMultiplicityAndDimensions(t *testing.T) {
+	ownerID := uuid.NewString()
+	entries := []PostedJournalEntry{
+		{AccountCode: "OWNER_PAYABLE", OwnerProfileID: &ownerID, Side: JournalSideCredit, AmountRupiah: 7},
+		{AccountCode: "BANK_CASH", Side: JournalSideDebit, AmountRupiah: 4},
+		{AccountCode: "BANK_CASH", Side: JournalSideDebit, AmountRupiah: 4},
+	}
+	inverse := invertPostedJournalEntries(entries)
+	require.Len(t, inverse, len(entries))
+	assert.Equal(t, JournalSideDebit, inverse[0].Side)
+	assert.Equal(t, ownerID, *inverse[0].OwnerProfileID)
+	assert.Equal(t, int64(7), inverse[0].AmountRupiah)
+	assert.Equal(t, JournalSideCredit, inverse[1].Side)
+	assert.Equal(t, JournalSideCredit, inverse[2].Side)
+	assert.True(t, exactReversalEntryMultisetMatches(entries, []PostedJournalEntry{
+		{AccountCode: "OWNER_PAYABLE", OwnerProfileID: &ownerID, Side: JournalSideDebit, AmountRupiah: 7},
+		{AccountCode: "BANK_CASH", Side: JournalSideCredit, AmountRupiah: 4},
+		{AccountCode: "BANK_CASH", Side: JournalSideCredit, AmountRupiah: 4},
+	}))
+}
+
+func TestReversalPayloadHashIncludesReversalContract(t *testing.T) {
+	params := validPostJournalParams()
+	params.EventKey = "journal.reversed:" + uuid.NewString()
+	params.EventType = JournalReversalEventType
+	params.Entries = []PostJournalEntry{
+		{AccountCode: "BANK_CASH", Side: JournalSideCredit, AmountRupiah: 1},
+		{AccountCode: "FUNDING_CLEARING", Side: JournalSideDebit, AmountRupiah: 1},
+	}
+	sourceID := uuid.NewString()
+	reason := "manual correction"
+	hash, err := hashJournalPayloadV1WithReversal(params, &sourceID, &reason)
+	require.NoError(t, err)
+
+	changedReason := "different correction"
+	changedReasonHash, err := hashJournalPayloadV1WithReversal(params, &sourceID, &changedReason)
+	require.NoError(t, err)
+	assert.NotEqual(t, hash, changedReasonHash)
+
+	changedSource := uuid.NewString()
+	changedSourceHash, err := hashJournalPayloadV1WithReversal(params, &changedSource, &reason)
+	require.NoError(t, err)
+	assert.NotEqual(t, hash, changedSourceHash)
+}
+
+func TestReplayExistingReversalRequiresExactCanonicalIntegrity(t *testing.T) {
+	sourceID := uuid.NewString()
+	sourceParams := validPostJournalParams()
+	sourceParams.EventKey = "test.source:" + sourceID
+	sourceNormalized, _, err := validateAndNormalizeJournal(sourceParams)
+	require.NoError(t, err)
+	sourceHash, err := hashJournalPayloadV1(sourceNormalized)
+	require.NoError(t, err)
+	source := &loadedJournal{Journal: PostedJournal{
+		ID:                 sourceID,
+		EventKey:           sourceNormalized.EventKey,
+		EventType:          sourceNormalized.EventType,
+		PayloadHash:        sourceHash,
+		PayloadHashVersion: JournalPayloadHashVersionV1,
+		Currency:           JournalCurrencyIDR,
+		EffectiveAt:        sourceNormalized.EffectiveAt,
+		PostedAt:           sourceNormalized.EffectiveAt.Add(time.Minute),
+		Metadata:           cloneJournalMetadata(sourceNormalized.Metadata),
+		Entries: []PostedJournalEntry{
+			{ID: uuid.NewString(), JournalID: sourceID, AccountCode: "BANK_CASH", Side: JournalSideDebit, AmountRupiah: 1},
+			{ID: uuid.NewString(), JournalID: sourceID, AccountCode: "FUNDING_CLEARING", Side: JournalSideCredit, AmountRupiah: 1},
+		},
+	}}
+	definitions := map[string]JournalAccountDefinition{
+		"BANK_CASH":        {Code: "BANK_CASH", OwnerDimension: JournalOwnerDimensionForbidden},
+		"FUNDING_CLEARING": {Code: "FUNDING_CLEARING", OwnerDimension: JournalOwnerDimensionForbidden},
+	}
+	reversalReason := "manual correction"
+	reversalParams := PostJournalParams{
+		EventKey:    "journal.reversed:" + sourceID,
+		EventType:   JournalReversalEventType,
+		EffectiveAt: source.Journal.EffectiveAt.Add(time.Minute),
+		Metadata:    map[string]string{"reason_code": "correction"},
+		Entries: []PostJournalEntry{
+			{AccountCode: "BANK_CASH", Side: JournalSideCredit, AmountRupiah: 1},
+			{AccountCode: "FUNDING_CLEARING", Side: JournalSideDebit, AmountRupiah: 1},
+		},
+	}
+	reversalNormalized, _, err := validateAndNormalizeReversalJournal(reversalParams)
+	require.NoError(t, err)
+	reversalID := uuid.NewString()
+	reversalHash, err := hashJournalPayloadV1WithReversal(reversalNormalized, &sourceID, &reversalReason)
+	require.NoError(t, err)
+	existing := &loadedJournal{Journal: PostedJournal{
+		ID:                 reversalID,
+		EventKey:           reversalNormalized.EventKey,
+		EventType:          JournalReversalEventType,
+		PayloadHash:        reversalHash,
+		PayloadHashVersion: JournalPayloadHashVersionV1,
+		Currency:           JournalCurrencyIDR,
+		EffectiveAt:        reversalNormalized.EffectiveAt,
+		PostedAt:           reversalNormalized.EffectiveAt.Add(time.Minute),
+		ReversesJournalID:  &sourceID,
+		ReversalReason:     &reversalReason,
+		Metadata:           cloneJournalMetadata(reversalNormalized.Metadata),
+		Entries: []PostedJournalEntry{
+			{ID: uuid.NewString(), JournalID: reversalID, AccountCode: "FUNDING_CLEARING", Side: JournalSideDebit, AmountRupiah: 1},
+			{ID: uuid.NewString(), JournalID: reversalID, AccountCode: "BANK_CASH", Side: JournalSideCredit, AmountRupiah: 1},
+		},
+	}}
+	existing.ReversesJournalID = &sourceID
+	existing.ReversalReason = &reversalReason
+
+	replayed, err := replayExistingReversal(existing, source, reversalNormalized, reversalHash, definitions)
+	require.NoError(t, err)
+	assert.Equal(t, reversalID, replayed.ID)
+
+	different := reversalNormalized
+	different.Metadata = map[string]string{"reason_code": "different"}
+	differentHash, err := hashJournalPayloadV1WithReversal(different, &sourceID, &reversalReason)
+	require.NoError(t, err)
+	_, err = replayExistingReversal(existing, source, different, differentHash, definitions)
+	assert.ErrorIs(t, err, ErrJournalEventKeyConflict)
+
+	existing.Journal.Entries[0].AmountRupiah = 2
+	_, err = replayExistingReversal(existing, source, reversalNormalized, reversalHash, definitions)
+	assert.ErrorIs(t, err, ErrJournalIntegrity)
 }

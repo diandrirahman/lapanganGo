@@ -27,6 +27,7 @@ var (
 
 type JournalService interface {
 	PostJournal(ctx context.Context, tx pgx.Tx, params PostJournalParams) (*PostedJournal, error)
+	ReverseJournal(ctx context.Context, tx pgx.Tx, params ReverseJournalParams) (*PostedJournal, error)
 }
 
 type journalService struct {
@@ -88,20 +89,37 @@ func (s *journalService) PostJournal(ctx context.Context, tx pgx.Tx, params Post
 		})
 	}
 
-	posted, err := s.repository.InsertJournal(ctx, tx, prepared)
+	posted, inserted, err := s.repository.TryInsertJournal(ctx, tx, prepared)
 	if err != nil {
 		return nil, normalizeJournalServiceError(err)
 	}
+	if !inserted {
+		existing, err := s.repository.GetJournalByEventKey(ctx, tx, normalized.EventKey)
+		if err != nil {
+			return nil, normalizeJournalServiceError(err)
+		}
+		return replayExistingJournal(existing, normalized, payloadHash, definitions)
+	}
+
 	entries, err := s.repository.InsertEntries(ctx, tx, prepared.ID, prepared.Entries)
 	if err != nil {
 		return nil, normalizeJournalServiceError(err)
 	}
+	sortPostedJournalEntries(entries)
 	posted.Entries = entries
 	return posted, nil
 }
 
 func validateAndNormalizeJournal(params PostJournalParams) (PostJournalParams, []string, error) {
-	if len(params.EventKey) == 0 || len(params.EventKey) > 191 || !journalEventKeyPattern.MatchString(params.EventKey) || strings.HasPrefix(params.EventKey, "journal.reversed:") {
+	return validateAndNormalizeJournalInternal(params, false)
+}
+
+func validateAndNormalizeReversalJournal(params PostJournalParams) (PostJournalParams, []string, error) {
+	return validateAndNormalizeJournalInternal(params, true)
+}
+
+func validateAndNormalizeJournalInternal(params PostJournalParams, allowReversalEventKey bool) (PostJournalParams, []string, error) {
+	if len(params.EventKey) == 0 || len(params.EventKey) > 191 || !journalEventKeyPattern.MatchString(params.EventKey) || (!allowReversalEventKey && strings.HasPrefix(params.EventKey, "journal.reversed:")) {
 		return PostJournalParams{}, nil, ErrInvalidJournalRequest
 	}
 	if !journalEventTypePattern.MatchString(params.EventType) {
@@ -251,6 +269,7 @@ func normalizeJournalServiceError(err error) error {
 		ErrInvalidJournalMetadata,
 		ErrInvalidJournalReference,
 		ErrJournalEventKeyConflict,
+		ErrJournalIntegrity,
 		ErrJournalPayloadHash,
 		ErrJournalPersistence,
 		context.Canceled,

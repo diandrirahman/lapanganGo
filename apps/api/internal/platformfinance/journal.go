@@ -29,9 +29,12 @@ var (
 	ErrInvalidJournalMetadata       = errors.New("INVALID_JOURNAL_METADATA")
 	ErrInvalidJournalReference      = errors.New("INVALID_JOURNAL_REFERENCE")
 	ErrJournalEventKeyConflict      = errors.New("JOURNAL_EVENT_KEY_CONFLICT")
+	ErrJournalIntegrity             = errors.New("JOURNAL_INTEGRITY_FAILURE")
 	ErrJournalPersistence           = errors.New("JOURNAL_PERSISTENCE_FAILED")
 	ErrJournalPayloadHash           = errors.New("JOURNAL_PAYLOAD_HASH_FAILED")
 )
+
+const JournalReversalEventType = "JOURNAL_REVERSED"
 
 type JournalSide string
 
@@ -53,6 +56,14 @@ type PostJournalParams struct {
 	Description     *string
 	Metadata        map[string]string
 	Entries         []PostJournalEntry
+}
+
+type ReverseJournalParams struct {
+	JournalID       string
+	Reason          string
+	EffectiveAt     time.Time
+	CreatedByUserID *string
+	Metadata        map[string]string
 }
 
 type PostedJournalEntry struct {
@@ -77,6 +88,8 @@ type PostedJournal struct {
 	Currency           string
 	EffectiveAt        time.Time
 	PostedAt           time.Time
+	ReversesJournalID  *string
+	ReversalReason     *string
 	CreatedByUserID    *string
 	Description        *string
 	Metadata           map[string]string
@@ -100,6 +113,8 @@ type preparedJournal struct {
 	VenueID            *string
 	Currency           string
 	EffectiveAt        time.Time
+	ReversesJournalID  *string
+	ReversalReason     *string
 	CreatedByUserID    *string
 	Description        *string
 	Metadata           map[string]string
@@ -112,4 +127,11 @@ type preparedJournalEntry struct {
 	OwnerProfileID *string
 	Side           JournalSide
 	AmountRupiah   int64
+}
+
+type loadedJournal struct {
+	Journal            PostedJournal
+	ReversesJournalID  *string
+	ReversalReason     *string
+	CreatedInCurrentTx bool
 }

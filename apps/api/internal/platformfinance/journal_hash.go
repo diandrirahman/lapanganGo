@@ -38,6 +38,10 @@ type canonicalJournalPayloadV1 struct {
 }
 
 func hashJournalPayloadV1(params PostJournalParams) (string, error) {
+	return hashJournalPayloadV1WithReversal(params, nil, nil)
+}
+
+func hashJournalPayloadV1WithReversal(params PostJournalParams, reversesJournalID *string, reversalReason *string) (string, error) {
 	metadata := make([]canonicalJournalMetadata, 0, len(params.Metadata))
 	for key, value := range params.Metadata {
 		metadata = append(metadata, canonicalJournalMetadata{Key: key, Value: value})
@@ -69,18 +73,20 @@ func hashJournalPayloadV1(params PostJournalParams) (string, error) {
 	})
 
 	payload := canonicalJournalPayloadV1{
-		Version:         JournalPayloadHashVersionV1,
-		EventKey:        params.EventKey,
-		EventType:       params.EventType,
-		BookingID:       params.BookingID,
-		OwnerProfileID:  params.OwnerProfileID,
-		VenueID:         params.VenueID,
-		Currency:        JournalCurrencyIDR,
-		EffectiveAt:     params.EffectiveAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
-		CreatedByUserID: params.CreatedByUserID,
-		Description:     params.Description,
-		Metadata:        metadata,
-		Entries:         entries,
+		Version:           JournalPayloadHashVersionV1,
+		EventKey:          params.EventKey,
+		EventType:         params.EventType,
+		BookingID:         params.BookingID,
+		OwnerProfileID:    params.OwnerProfileID,
+		VenueID:           params.VenueID,
+		Currency:          JournalCurrencyIDR,
+		EffectiveAt:       params.EffectiveAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
+		CreatedByUserID:   params.CreatedByUserID,
+		Description:       params.Description,
+		Metadata:          metadata,
+		Entries:           entries,
+		ReversesJournalID: reversesJournalID,
+		ReversalReason:    reversalReason,
 	}
 
 	encoded, err := json.Marshal(payload)
