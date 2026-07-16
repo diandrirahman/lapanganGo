@@ -19,7 +19,7 @@ import (
 	"lapangango-api/internal/database"
 )
 
-const ledgerMigrationVersion = 22
+const ledgerMigrationVersion = 23
 
 func newLedgerMigrationDatabase(t *testing.T, targetVersion uint) (string, *migrate.Migrate, *pgxpool.Pool) {
 	t.Helper()
@@ -154,7 +154,7 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 	require.NoError(t, m.Steps(-1))
 	version, dirty, err = m.Version()
 	require.NoError(t, err)
-	assert.Equal(t, uint(21), version)
+	assert.Equal(t, uint(22), version)
 	assert.False(t, dirty)
 
 	var ledgerTables int
@@ -162,9 +162,9 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 		SELECT COUNT(*)
 		FROM information_schema.tables
 		WHERE table_schema = 'public'
-		  AND table_name IN ('platform_accounts', 'platform_journals', 'platform_ledger_entries')
+		AND table_name IN ('platform_accounts', 'platform_journals', 'platform_ledger_entries')
 	`).Scan(&ledgerTables))
-	assert.Zero(t, ledgerTables)
+	assert.Equal(t, 3, ledgerTables)
 
 	var ledgerFunctions int
 	require.NoError(t, pool.QueryRow(ctx, `
@@ -181,13 +181,45 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 		"validate_platform_ledger_entry_insert",
 		"validate_platform_journal_balance",
 	}).Scan(&ledgerFunctions))
-	assert.Zero(t, ledgerFunctions)
+	assert.Equal(t, 7, ledgerFunctions)
 
 	var auditCount int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_audit_logs").Scan(&auditCount))
 	assert.Equal(t, 1, auditCount)
 
-	require.NoError(t, m.Steps(1))
+	require.NoError(t, m.Steps(-1))
+	version, dirty, err = m.Version()
+	require.NoError(t, err)
+	assert.Equal(t, uint(21), version)
+	assert.False(t, dirty)
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = 'public'
+		AND table_name IN ('platform_accounts', 'platform_journals', 'platform_ledger_entries')
+	`).Scan(&ledgerTables))
+	assert.Zero(t, ledgerTables)
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_proc
+		WHERE pronamespace = 'public'::regnamespace
+		  AND proname = ANY($1::text[])
+	`, []string{
+		"validate_platform_journal_metadata",
+		"prevent_platform_ledger_mutation",
+		"prevent_platform_account_catalog_mutation",
+		"stamp_platform_journal_creation",
+		"validate_platform_journal_reversal_source",
+		"validate_platform_ledger_entry_insert",
+		"validate_platform_journal_balance",
+		"validate_platform_journal_balance_for",
+		"validate_platform_ledger_entry_balance",
+	}).Scan(&ledgerFunctions))
+	assert.Zero(t, ledgerFunctions)
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_audit_logs").Scan(&auditCount))
+	assert.Equal(t, 1, auditCount)
+
+	require.NoError(t, m.Steps(2))
 	version, dirty, err = m.Version()
 	require.NoError(t, err)
 	assert.Equal(t, uint(ledgerMigrationVersion), version)
@@ -216,8 +248,10 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 		"validate_platform_journal_reversal_source",
 		"validate_platform_ledger_entry_insert",
 		"validate_platform_journal_balance",
+		"validate_platform_journal_balance_for",
+		"validate_platform_ledger_entry_balance",
 	}).Scan(&ledgerFunctions))
-	assert.Equal(t, 7, ledgerFunctions)
+	assert.Equal(t, 9, ledgerFunctions)
 
 	_, upgradeM, upgradePool := newLedgerMigrationDatabase(t, 21)
 	_, err = upgradePool.Exec(ctx, `
@@ -225,11 +259,92 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 		VALUES ('SUPER_ADMIN', 'PLATFORM_COMMERCIAL_TERM_CREATED', 'PLATFORM_COMMERCIAL_TERM')
 	`)
 	require.NoError(t, err)
-	require.NoError(t, upgradeM.Steps(1))
+	require.NoError(t, upgradeM.Migrate(ledgerMigrationVersion))
 	require.NoError(t, upgradePool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_accounts").Scan(&accountCount))
 	assert.Equal(t, 26, accountCount)
 	require.NoError(t, upgradePool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_audit_logs").Scan(&auditCount))
 	assert.Equal(t, 1, auditCount)
+}
+
+func TestLedgerMigrationForwardPatchFromVersion22(t *testing.T) {
+	_, m, pool := newLedgerMigrationDatabase(t, 22)
+	ctx := context.Background()
+
+	originalID, _ := insertBalancedLedgerJournal(t, pool, "")
+	version, dirty, err := m.Version()
+	require.NoError(t, err)
+	assert.Equal(t, uint(22), version)
+	assert.False(t, dirty)
+
+	require.NoError(t, m.Steps(1))
+	version, dirty, err = m.Version()
+	require.NoError(t, err)
+	assert.Equal(t, uint(ledgerMigrationVersion), version)
+	assert.False(t, dirty)
+
+	var entryGuardCount int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_trigger
+		WHERE tgname = 'platform_ledger_entry_balance_guard'
+		  AND tgrelid = 'platform_ledger_entries'::regclass
+	`).Scan(&entryGuardCount))
+	assert.Equal(t, 1, entryGuardCount)
+
+	var helperCount int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_proc
+		WHERE pronamespace = 'public'::regnamespace
+		  AND proname = ANY($1::text[])
+	`, []string{"validate_platform_journal_balance_for", "validate_platform_ledger_entry_balance"}).Scan(&helperCount))
+	assert.Equal(t, 2, helperCount)
+
+	t.Run("balance guard is armed after 22 to 23 upgrade", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		journalID := uuid.NewString()
+		insertLedgerJournal(t, tx, journalID, "test.journal:upgrade-balance:"+journalID, nil, time.Now().UTC().Add(-time.Minute), strings.Repeat("b", 64))
+		insertLedgerEntry(t, tx, journalID, "BANK_CASH", "", "DEBIT", 100)
+		insertLedgerEntry(t, tx, journalID, "FUNDING_CLEARING", "", "CREDIT", 100)
+		_, err = tx.Exec(ctx, "SET CONSTRAINTS platform_journal_balance_guard IMMEDIATE")
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, journalID, "BANK_CASH", "", "DEBIT", 1)
+
+		err = tx.Commit(ctx)
+		require.Error(t, err)
+		var journalCount, entryCount int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_journals WHERE id = $1", journalID).Scan(&journalCount))
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_ledger_entries WHERE journal_id = $1", journalID).Scan(&entryCount))
+		assert.Zero(t, journalCount)
+		assert.Zero(t, entryCount)
+	})
+
+	t.Run("exact-reversal guard is armed after 22 to 23 upgrade", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		reversalID := uuid.NewString()
+		_, err = tx.Exec(ctx, `
+			INSERT INTO platform_journals (
+				id, event_key, event_type, payload_hash, reverses_journal_id, reversal_reason, effective_at, metadata
+			) VALUES ($1, $2, 'TEST_REVERSAL', $3, $4, 'upgrade reversal guard', now() - interval '1 minute', '{"source_type":"test"}'::jsonb)
+		`, reversalID, "journal.reversed:"+originalID, strings.Repeat("c", 64), originalID)
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, reversalID, "BANK_CASH", "", "CREDIT", 100)
+		insertLedgerEntry(t, tx, reversalID, "FUNDING_CLEARING", "", "DEBIT", 100)
+		_, err = tx.Exec(ctx, "SET CONSTRAINTS platform_journal_balance_guard IMMEDIATE")
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, reversalID, "BANK_CASH", "", "DEBIT", 1)
+		insertLedgerEntry(t, tx, reversalID, "FUNDING_CLEARING", "", "CREDIT", 1)
+
+		err = tx.Commit(ctx)
+		require.Error(t, err)
+		var journalCount, entryCount int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_journals WHERE id = $1", reversalID).Scan(&journalCount))
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_ledger_entries WHERE journal_id = $1", reversalID).Scan(&entryCount))
+		assert.Zero(t, journalCount)
+		assert.Zero(t, entryCount)
+	})
 }
 
 func TestLedgerMigrationDatabaseInvariants(t *testing.T) {
@@ -302,6 +417,27 @@ func TestLedgerMigrationDatabaseInvariants(t *testing.T) {
 				assert.Error(t, tx.Commit(ctx))
 			})
 		}
+	})
+
+	t.Run("balance guard remains armed after early constraint evaluation", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		journalID := uuid.NewString()
+		insertLedgerJournal(t, tx, journalID, "test.journal:early-balance:"+journalID, nil, time.Now().UTC().Add(-time.Minute), strings.Repeat("b", 64))
+		insertLedgerEntry(t, tx, journalID, "BANK_CASH", "", "DEBIT", 100)
+		insertLedgerEntry(t, tx, journalID, "FUNDING_CLEARING", "", "CREDIT", 100)
+		_, err = tx.Exec(ctx, "SET CONSTRAINTS platform_journal_balance_guard IMMEDIATE")
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, journalID, "BANK_CASH", "", "DEBIT", 1)
+
+		err = tx.Commit(ctx)
+		require.Error(t, err)
+
+		var journalCount, entryCount int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_journals WHERE id = $1", journalID).Scan(&journalCount))
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_ledger_entries WHERE journal_id = $1", journalID).Scan(&entryCount))
+		assert.Zero(t, journalCount)
+		assert.Zero(t, entryCount)
 	})
 
 	t.Run("current effective time remains valid after transaction starts", func(t *testing.T) {
@@ -474,6 +610,34 @@ func TestLedgerMigrationDatabaseInvariants(t *testing.T) {
 		assert.Zero(t, journalCount)
 		assert.Zero(t, entryCount)
 	})
+
+	t.Run("exact-reversal guard remains armed after early constraint evaluation", func(t *testing.T) {
+		originalID, _ := insertBalancedLedgerJournal(t, pool, "")
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		reversalID := uuid.NewString()
+		_, err = tx.Exec(ctx, `
+			INSERT INTO platform_journals (
+				id, event_key, event_type, payload_hash, reverses_journal_id, reversal_reason, effective_at, metadata
+			) VALUES ($1, $2, 'TEST_REVERSAL', $3, $4, 'early reversal guard', now() - interval '1 minute', '{"source_type":"test"}'::jsonb)
+		`, reversalID, "journal.reversed:"+originalID, strings.Repeat("4", 64), originalID)
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, reversalID, "BANK_CASH", "", "CREDIT", 100)
+		insertLedgerEntry(t, tx, reversalID, "FUNDING_CLEARING", "", "DEBIT", 100)
+		_, err = tx.Exec(ctx, "SET CONSTRAINTS platform_journal_balance_guard IMMEDIATE")
+		require.NoError(t, err)
+		insertLedgerEntry(t, tx, reversalID, "BANK_CASH", "", "DEBIT", 1)
+		insertLedgerEntry(t, tx, reversalID, "FUNDING_CLEARING", "", "CREDIT", 1)
+
+		err = tx.Commit(ctx)
+		require.Error(t, err)
+
+		var journalCount, entryCount int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_journals WHERE id = $1", reversalID).Scan(&journalCount))
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_ledger_entries WHERE journal_id = $1", reversalID).Scan(&entryCount))
+		assert.Zero(t, journalCount)
+		assert.Zero(t, entryCount)
+	})
 }
 
 func TestLedgerMigrationPostFactDownRefuses(t *testing.T) {
@@ -483,7 +647,7 @@ func TestLedgerMigrationPostFactDownRefuses(t *testing.T) {
 
 	err := m.Steps(-1)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot remove platform ledger migration after a financial fact exists")
+	assert.Contains(t, err.Error(), "cannot remove platform ledger balance reschedule after a financial fact exists")
 
 	// golang-migrate leaves the connection's transaction aborted after an
 	// expected migration refusal. Close that handle to release its advisory
@@ -532,6 +696,8 @@ func TestLedgerMigrationPostFactDownRefuses(t *testing.T) {
 		"validate_platform_journal_reversal_source",
 		"validate_platform_ledger_entry_insert",
 		"validate_platform_journal_balance",
+		"validate_platform_journal_balance_for",
+		"validate_platform_ledger_entry_balance",
 	}).Scan(&ledgerFunctions))
-	assert.Equal(t, 7, ledgerFunctions, "a refused down must keep ledger guard functions installed")
+	assert.Equal(t, 9, ledgerFunctions, "a refused down must keep ledger guard functions installed")
 }
