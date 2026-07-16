@@ -11,6 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,6 +166,23 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 	`).Scan(&ledgerTables))
 	assert.Zero(t, ledgerTables)
 
+	var ledgerFunctions int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_proc
+		WHERE pronamespace = 'public'::regnamespace
+		  AND proname = ANY($1::text[])
+	`, []string{
+		"validate_platform_journal_metadata",
+		"prevent_platform_ledger_mutation",
+		"prevent_platform_account_catalog_mutation",
+		"stamp_platform_journal_creation",
+		"validate_platform_journal_reversal_source",
+		"validate_platform_ledger_entry_insert",
+		"validate_platform_journal_balance",
+	}).Scan(&ledgerFunctions))
+	assert.Zero(t, ledgerFunctions)
+
 	var auditCount int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_audit_logs").Scan(&auditCount))
 	assert.Equal(t, 1, auditCount)
@@ -178,6 +196,28 @@ func TestLedgerMigrationFreshUpgradeAndPreFactDown(t *testing.T) {
 	assert.Equal(t, 26, accountCount)
 	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_audit_logs").Scan(&auditCount))
 	assert.Equal(t, 1, auditCount)
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = 'public'
+		  AND table_name IN ('platform_accounts', 'platform_journals', 'platform_ledger_entries')
+	`).Scan(&ledgerTables))
+	assert.Equal(t, 3, ledgerTables)
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_proc
+		WHERE pronamespace = 'public'::regnamespace
+		  AND proname = ANY($1::text[])
+	`, []string{
+		"validate_platform_journal_metadata",
+		"prevent_platform_ledger_mutation",
+		"prevent_platform_account_catalog_mutation",
+		"stamp_platform_journal_creation",
+		"validate_platform_journal_reversal_source",
+		"validate_platform_ledger_entry_insert",
+		"validate_platform_journal_balance",
+	}).Scan(&ledgerFunctions))
+	assert.Equal(t, 7, ledgerFunctions)
 
 	_, upgradeM, upgradePool := newLedgerMigrationDatabase(t, 21)
 	_, err = upgradePool.Exec(ctx, `
@@ -197,17 +237,38 @@ func TestLedgerMigrationDatabaseInvariants(t *testing.T) {
 	ctx := context.Background()
 
 	validJournalID, validEntryID := insertBalancedLedgerJournal(t, pool, "")
+	assertImmutableMutation := func(t *testing.T, err error) {
+		t.Helper()
+		require.Error(t, err)
+		var pgErr *pgconn.PgError
+		require.ErrorAs(t, err, &pgErr)
+		assert.Equal(t, "55000", pgErr.Code)
+	}
 
 	_, err := pool.Exec(ctx, "UPDATE platform_journals SET description = 'mutated' WHERE id = $1", validJournalID)
-	require.Error(t, err)
+	assertImmutableMutation(t, err)
+	_, err = pool.Exec(ctx, "DELETE FROM platform_journals WHERE id = $1", validJournalID)
+	assertImmutableMutation(t, err)
+	_, err = pool.Exec(ctx, "UPDATE platform_ledger_entries SET amount_rupiah = amount_rupiah + 1 WHERE id = $1", validEntryID)
+	assertImmutableMutation(t, err)
 	_, err = pool.Exec(ctx, "DELETE FROM platform_ledger_entries WHERE id = $1", validEntryID)
-	require.Error(t, err)
+	assertImmutableMutation(t, err)
 	_, err = pool.Exec(ctx, "UPDATE platform_accounts SET code = code WHERE code = 'BANK_CASH'")
-	require.Error(t, err)
+	assertImmutableMutation(t, err)
 	_, err = pool.Exec(ctx, "INSERT INTO platform_accounts (code, account_type, normal_side, owner_dimension) VALUES ('NOT_AN_ACCOUNT', 'ASSET', 'DEBIT', 'FORBIDDEN')")
-	require.Error(t, err)
+	assertImmutableMutation(t, err)
 	_, err = pool.Exec(ctx, "DELETE FROM platform_accounts WHERE code = 'OPEX_OTHER'")
-	require.Error(t, err)
+	assertImmutableMutation(t, err)
+
+	var journalDescription *string
+	var entryAmount int64
+	var accountCount int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT description FROM platform_journals WHERE id = $1", validJournalID).Scan(&journalDescription))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT amount_rupiah FROM platform_ledger_entries WHERE id = $1", validEntryID).Scan(&entryAmount))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM platform_accounts").Scan(&accountCount))
+	assert.Nil(t, journalDescription, "failed journal mutations must leave the original row unchanged")
+	assert.Equal(t, int64(100), entryAmount, "failed entry mutations must leave the original row unchanged")
+	assert.Equal(t, 26, accountCount, "failed catalog mutations must leave the seeded catalog unchanged")
 
 	t.Run("append after journal transaction is rejected", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
@@ -447,4 +508,30 @@ func TestLedgerMigrationPostFactDownRefuses(t *testing.T) {
 	require.NoError(t, poolAfterRefusal.QueryRow(ctx, "SELECT COUNT(*) FROM platform_ledger_entries").Scan(&entryCount))
 	assert.Equal(t, 1, journalCount)
 	assert.Equal(t, 2, entryCount)
+
+	var ledgerTables int
+	require.NoError(t, poolAfterRefusal.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = 'public'
+		  AND table_name IN ('platform_accounts', 'platform_journals', 'platform_ledger_entries')
+	`).Scan(&ledgerTables))
+	assert.Equal(t, 3, ledgerTables, "a refused down must not remove ledger tables")
+
+	var ledgerFunctions int
+	require.NoError(t, poolAfterRefusal.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_proc
+		WHERE pronamespace = 'public'::regnamespace
+		  AND proname = ANY($1::text[])
+	`, []string{
+		"validate_platform_journal_metadata",
+		"prevent_platform_ledger_mutation",
+		"prevent_platform_account_catalog_mutation",
+		"stamp_platform_journal_creation",
+		"validate_platform_journal_reversal_source",
+		"validate_platform_ledger_entry_insert",
+		"validate_platform_journal_balance",
+	}).Scan(&ledgerFunctions))
+	assert.Equal(t, 7, ledgerFunctions, "a refused down must keep ledger guard functions installed")
 }
