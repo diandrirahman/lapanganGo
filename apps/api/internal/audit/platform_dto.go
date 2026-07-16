@@ -48,6 +48,41 @@ var forbiddenMetadataKeys = []string{
 	"secret", "token", "password", "authorization", "credential", "payload", "pii", "bearer",
 }
 
+// Legacy owner audit rows predate the read API and may contain arbitrary JSON.
+// Keep the read boundary deny-by-default by projecting only fields emitted by
+// the current owner/staff/booking/finance handlers for each action.
+var allowedLegacyMetadataKeysPerAction = map[string]map[string]bool{
+	ActionStaffCreated:                legacyMetadataKeys("email", "role", "permissions", "venue_ids"),
+	ActionStaffUpdated:                legacyMetadataKeys("role", "permissions", "venue_ids"),
+	ActionStaffStatusUpdated:          legacyMetadataKeys("old_status", "new_status"),
+	ActionStaffVenuesUpdated:          legacyMetadataKeys("old_venue_ids", "new_venue_ids"),
+	ActionStaffInviteCreated:          legacyMetadataKeys("email", "role", "permissions", "venue_ids"),
+	ActionStaffInviteRegenerated:      legacyMetadataKeys("expires_at"),
+	ActionStaffPasswordResetRequested: legacyMetadataKeys("expires_at"),
+	ActionStaffPasswordResetCompleted: legacyMetadataKeys(),
+	ActionStaffPasswordSetupCompleted: legacyMetadataKeys(),
+	ActionBookingPaymentVerified:      legacyMetadataKeys("booking_id", "is_approved", "new_status"),
+	ActionBookingPaymentRejected:      legacyMetadataKeys("booking_id", "is_approved", "new_status"),
+	ActionBookingMarkedPaid:           legacyMetadataKeys("booking_id", "new_status"),
+	ActionBookingCompleted:            legacyMetadataKeys("booking_id", "new_status"),
+	ActionBookingCancelRefund:         legacyMetadataKeys("booking_id", "reason", "amount", "venue_id"),
+	ActionRefundApproved:              legacyMetadataKeys("refund_request_id", "booking_id", "owner_note"),
+	ActionRefundRejected:              legacyMetadataKeys("refund_request_id", "booking_id", "owner_note"),
+	ActionFinanceCreated:              legacyMetadataKeys("venue_id", "type", "category", "amount", "transaction_date"),
+	ActionFinanceUpdated:              legacyMetadataKeys("before", "after", "changed_fields"),
+	ActionFinanceDeleted:              legacyMetadataKeys("deleted_transaction"),
+	"UPDATE_OWNER_STATUS":             legacyMetadataKeys("new_status"),
+	"UPDATE_VENUE_STATUS":             legacyMetadataKeys("new_status"),
+}
+
+func legacyMetadataKeys(keys ...string) map[string]bool {
+	allowed := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		allowed[key] = true
+	}
+	return allowed
+}
+
 type CreatePlatformAuditLogParams struct {
 	ActorUserID    *string
 	ActorRole      string
@@ -204,12 +239,13 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 	return out
 }
 
-// SanitizeAuditMetadata applies a conservative scalar-only projection to
+// SanitizeAuditMetadata applies an action-specific, scalar-only projection to
 // legacy owner audit metadata before it crosses the admin read boundary.
-func SanitizeAuditMetadata(metadata map[string]any) map[string]any {
+func SanitizeAuditMetadata(action string, metadata map[string]any) map[string]any {
 	out := make(map[string]any)
+	allowedKeys := allowedLegacyMetadataKeysPerAction[action]
 	for key, value := range metadata {
-		if containsSecret(key) || !safeAuditMetadataScalar(value) {
+		if !allowedKeys[key] || containsSecret(key) || !safeAuditMetadataScalar(value) {
 			continue
 		}
 		out[key] = value

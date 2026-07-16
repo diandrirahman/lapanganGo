@@ -70,6 +70,35 @@ export interface AuditLogResponse {
   created_at: string;
 }
 
+export type CommercialTermScope = 'ALL' | 'GLOBAL' | 'OWNER';
+export type CommercialTermStatus = 'CURRENT' | 'SCHEDULED' | 'HISTORICAL';
+export type CommercialTermPhase = 'TRIAL' | 'INTRODUCTORY' | 'STANDARD' | 'CUSTOM';
+export type CommercialTermFinanceMode = 'SIMULATION' | 'LIVE';
+export type CommercialTermCollectionMethod = 'NONE' | 'DEDUCT_FROM_PAYOUT';
+
+export interface CommercialTermsQuery extends PaginationQuery {
+  scope?: CommercialTermScope;
+  owner_profile_id?: string;
+  status?: CommercialTermStatus;
+}
+
+export interface CommercialTermResponse {
+  id: string;
+  owner_profile_id: string | null;
+  scope_key: string;
+  label: string;
+  phase: CommercialTermPhase;
+  finance_mode: CommercialTermFinanceMode;
+  collection_method: CommercialTermCollectionMethod;
+  commission_bps: number;
+  valid_from: string;
+  valid_until: string | null;
+  supersedes_id: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  status: CommercialTermStatus;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   total_items: number;
@@ -168,6 +197,28 @@ export const adminApi = {
       headers: { 'Authorization': `Bearer ${token}` },
     });
     if (!response.ok) throw new Error('Failed to fetch audit logs');
+    return response.json();
+  },
+
+  getCommercialTerms: async (
+    params?: CommercialTermsQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PaginatedResponse<CommercialTermResponse>> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        searchParams.set(key, String(value));
+      }
+    });
+
+    const token = localStorage.getItem('auth_token');
+    const query = searchParams.toString();
+    const response = await apiFetch(`${API_BASE_URL}/admin/commercial-terms${query ? `?${query}` : ''}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('Failed to fetch commercial terms');
     return response.json();
   },
 

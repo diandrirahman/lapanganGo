@@ -15,8 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"lapangango-api/internal/audit"
+	"lapangango-api/internal/auth"
 	"lapangango-api/internal/commercialterms"
 	"lapangango-api/internal/database"
+	"lapangango-api/internal/middleware"
 )
 
 func setupRouter(repo commercialterms.Repository, dbPool *pgxpool.Pool, auditSvc audit.PlatformService) *gin.Engine {
@@ -213,6 +215,96 @@ func TestCommercialTermsAuthMatrix(t *testing.T) {
 
 			if w.Code != tt.statusCode {
 				t.Fatalf("expected %d, got %d", tt.statusCode, w.Code)
+			}
+		})
+	}
+}
+
+type productionAuthTermsService struct {
+	calls int
+}
+
+func (s *productionAuthTermsService) GetTerms(context.Context, commercialterms.GetTermsQuery) (commercialterms.PaginatedTermsResponse, error) {
+	s.calls++
+	return commercialterms.PaginatedTermsResponse{Data: []commercialterms.CommercialTerm{}}, nil
+}
+
+func (s *productionAuthTermsService) Preview(context.Context, commercialterms.PreviewRequest) (commercialterms.PreviewResponse, error) {
+	return commercialterms.PreviewResponse{}, nil
+}
+
+func (s *productionAuthTermsService) CreateTerm(context.Context, commercialterms.CreateTermRequest, string, string, string, string) (*commercialterms.CommercialTerm, error) {
+	return nil, nil
+}
+
+type productionAuthStatusRepo struct {
+	statuses map[string]string
+	calls    int
+}
+
+func (r *productionAuthStatusRepo) GetUserStatus(_ context.Context, userID string) (string, error) {
+	r.calls++
+	return r.statuses[userID], nil
+}
+
+func TestCommercialTermsReadProductionAuthMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name                 string
+		userID               string
+		role                 string
+		status               string
+		expectedStatus       int
+		expectedServiceCalls int
+		expectedStatusChecks int
+	}{
+		{name: "anonymous", expectedStatus: http.StatusUnauthorized},
+		{name: "active customer", userID: "customer-1", role: "CUSTOMER", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active owner", userID: "owner-1", role: "OWNER", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active staff", userID: "staff-1", role: "STAFF", status: "ACTIVE", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "suspended super admin", userID: "super-admin-suspended", role: "SUPER_ADMIN", status: "SUSPENDED", expectedStatus: http.StatusForbidden, expectedStatusChecks: 1},
+		{name: "active super admin", userID: "super-admin-active", role: "SUPER_ADMIN", status: "ACTIVE", expectedStatus: http.StatusOK, expectedServiceCalls: 1, expectedStatusChecks: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &productionAuthTermsService{}
+			statusRepo := &productionAuthStatusRepo{statuses: map[string]string{}}
+			tokenService := auth.NewTokenService("task-2c-06-test-secret", 1)
+			router := gin.New()
+			commercialterms.RegisterRoutes(
+				router,
+				middleware.Auth(tokenService),
+				middleware.RequireActiveUser(statusRepo),
+				middleware.RequireRole,
+				service,
+			)
+
+			req := httptest.NewRequest(http.MethodGet, "/admin/commercial-terms?scope=ALL", nil)
+			if tt.role != "" {
+				statusRepo.statuses[tt.userID] = tt.status
+				token, err := tokenService.Generate(auth.UserResponse{
+					ID:     tt.userID,
+					Email:  tt.userID + "@example.test",
+					Role:   tt.role,
+					Status: tt.status,
+				})
+				if err != nil {
+					t.Fatalf("generate test token: %v", err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != tt.expectedStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.expectedStatus, resp.Code, resp.Body.String())
+			}
+			if service.calls != tt.expectedServiceCalls {
+				t.Fatalf("expected service calls %d, got %d", tt.expectedServiceCalls, service.calls)
+			}
+			if statusRepo.calls != tt.expectedStatusChecks {
+				t.Fatalf("expected active-user status checks %d, got %d", tt.expectedStatusChecks, statusRepo.calls)
 			}
 		})
 	}

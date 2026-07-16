@@ -5,6 +5,7 @@ import {
   Briefcase, 
   MapPin, 
   Activity, 
+  BadgePercent,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -28,6 +29,7 @@ export const AdminLayout: React.FC = () => {
     { name: 'Users', path: '/admin/users', icon: Users },
     { name: 'Owners', path: '/admin/owners', icon: Briefcase },
     { name: 'Venues', path: '/admin/venues', icon: MapPin },
+    { name: 'Commercial Terms', path: '/admin/commercial-terms', icon: BadgePercent },
     { name: 'Audit Logs', path: '/admin/audit-logs', icon: Activity },
   ];
 

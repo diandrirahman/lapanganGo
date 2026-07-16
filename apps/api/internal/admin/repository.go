@@ -314,22 +314,30 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 		return []AuditLogResponse{}, 0, fmt.Errorf("invalid audit scope")
 	}
 
+	auditRows := strings.Join(branches, "\nUNION ALL\n")
+	countQuery := fmt.Sprintf(`
+		SELECT count(*)
+		FROM (
+			%s
+		) AS audit_rows
+	`, auditRows)
+	var total int
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	limitArg := len(args) + 1
 	offsetArg := len(args) + 2
 	sqlQuery := fmt.Sprintf(`
-		WITH audit_rows AS (
-			%s
-		), counted AS (
-			SELECT *, count(*) OVER() AS total_items
-			FROM audit_rows
-		)
 		SELECT id, scope, owner_profile_id, actor_user_id, actor_role, action,
 		       entity_type, entity_id, venue_id, metadata, ip_address, user_agent,
-		       created_at, total_items
-		FROM counted
+		       created_at
+		FROM (
+			%s
+		) AS audit_rows
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
-	`, strings.Join(branches, "\nUNION ALL\n"), limitArg, offsetArg)
+	`, auditRows, limitArg, offsetArg)
 	args = append(args, limit, offset)
 
 	rows, err := r.db.Query(ctx, sqlQuery, args...)
@@ -339,16 +347,11 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 	defer rows.Close()
 
 	logs := make([]AuditLogResponse, 0)
-	total := 0
 	for rows.Next() {
 		var l AuditLogResponse
 		var metadataJSON string
-		var rowTotal int
-		if err := rows.Scan(&l.ID, &l.Scope, &l.OwnerProfileID, &l.ActorUserID, &l.ActorRole, &l.Action, &l.EntityType, &l.EntityID, &l.VenueID, &metadataJSON, &l.IPAddress, &l.UserAgent, &l.CreatedAt, &rowTotal); err != nil {
+		if err := rows.Scan(&l.ID, &l.Scope, &l.OwnerProfileID, &l.ActorUserID, &l.ActorRole, &l.Action, &l.EntityType, &l.EntityID, &l.VenueID, &metadataJSON, &l.IPAddress, &l.UserAgent, &l.CreatedAt); err != nil {
 			return nil, 0, err
-		}
-		if rowTotal > total {
-			total = rowTotal
 		}
 		metadata := make(map[string]any)
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil || metadata == nil {
@@ -357,7 +360,7 @@ func (r *repository) GetAuditLogs(ctx context.Context, query AuditLogQuery) ([]A
 		if l.Scope == "PLATFORM" {
 			metadata = audit.SanitizePlatformAuditMetadata(l.Action, metadata)
 		} else {
-			metadata = audit.SanitizeAuditMetadata(metadata)
+			metadata = audit.SanitizeAuditMetadata(l.Action, metadata)
 		}
 		l.Metadata = metadata
 		logs = append(logs, l)

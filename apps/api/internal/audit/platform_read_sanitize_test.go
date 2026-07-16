@@ -37,11 +37,12 @@ func TestSanitizePlatformAuditMetadataInvalidValuesAreOmitted(t *testing.T) {
 }
 
 func TestSanitizeAuditMetadataRejectsSensitiveAndNestedValues(t *testing.T) {
-	metadata := SanitizeAuditMetadata(map[string]any{
+	metadata := SanitizeAuditMetadata("UPDATE_OWNER_STATUS", map[string]any{
 		"new_status": "ACTIVE",
 		"payload":    "raw payload",
 		"nested":     map[string]any{"safe": "value"},
 		"token_hint": "secret",
+		"api_key":    "sk_live_123",
 	})
 	if len(metadata) != 1 || metadata["new_status"] != "ACTIVE" {
 		t.Fatalf("unexpected sanitized legacy metadata: %#v", metadata)

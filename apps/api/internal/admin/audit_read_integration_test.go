@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"lapangango-api/internal/admin"
 	"lapangango-api/internal/database"
@@ -70,4 +71,56 @@ func TestAdminRepositoryAuditReadScopes(t *testing.T) {
 	require.Equal(t, 0, emptyTotal)
 	require.NotNil(t, empty)
 	require.Empty(t, empty)
+}
+
+func TestAdminRepositoryAuditOutOfRangePagePreservesTotal(t *testing.T) {
+	if os.Getenv("TEST_INTEGRATION") != "1" {
+		t.Skip("set TEST_INTEGRATION=1 to run audit pagination verification")
+	}
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := database.NewPostgresPool(ctx, databaseURL)
+	if err != nil {
+		t.Skipf("database unavailable: %v", err)
+	}
+
+	firstID := uuid.NewString()
+	secondID := uuid.NewString()
+	action := "TASK_2C_06_PAGINATION_" + firstID
+	const entityType = "TASK_2C_06_AUDIT_FIXTURE"
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := pool.Exec(cleanupCtx, "DELETE FROM platform_audit_logs WHERE id IN ($1, $2)", firstID, secondID)
+		if cleanupErr != nil {
+			t.Errorf("failed to clean audit pagination fixtures: %v", cleanupErr)
+		}
+		pool.Close()
+	}()
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO platform_audit_logs (id, actor_role, action, entity_type, metadata, created_at)
+		VALUES ($1, 'SUPER_ADMIN', $3, $4, '{}'::jsonb, now() - interval '1 millisecond'),
+		       ($2, 'SUPER_ADMIN', $3, $4, '{}'::jsonb, now())
+	`, firstID, secondID, action, entityType)
+	require.NoError(t, err)
+
+	repo := admin.NewRepository(pool)
+	logs, total, err := repo.GetAuditLogs(ctx, admin.AuditLogQuery{
+		Scope:      "PLATFORM",
+		Action:     action,
+		EntityType: entityType,
+		PaginationQuery: admin.PaginationQuery{
+			Page:  3,
+			Limit: 1,
+		},
+	})
+	require.NoError(t, err)
+	require.Empty(t, logs)
+	require.Equal(t, 2, total)
 }
