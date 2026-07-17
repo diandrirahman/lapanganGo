@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node scripts/test_platform_expense_form.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

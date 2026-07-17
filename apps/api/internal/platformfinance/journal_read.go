@@ -43,37 +43,37 @@ type JournalReadService interface {
 }
 
 type JournalListItem struct {
-	ID                  string
-	EventKey            string
-	EventType           string
-	BookingID           *string
-	OwnerProfileID      *string
-	VenueID             *string
-	Currency            string
-	EffectiveAt         time.Time
-	PostedAt            time.Time
-	ReversesJournalID   *string
-	ReversalReason      *string
-	ReversedByJournalID *string
-	EntryCount          int
-	DebitTotalRupiah    string
-	CreditTotalRupiah   string
+	ID                  string    `json:"id"`
+	EventKey            string    `json:"event_key"`
+	EventType           string    `json:"event_type"`
+	BookingID           *string   `json:"booking_id"`
+	OwnerProfileID      *string   `json:"owner_profile_id"`
+	VenueID             *string   `json:"venue_id"`
+	Currency            string    `json:"currency"`
+	EffectiveAt         time.Time `json:"effective_at"`
+	PostedAt            time.Time `json:"posted_at"`
+	ReversesJournalID   *string   `json:"reverses_journal_id"`
+	ReversalReason      *string   `json:"reversal_reason"`
+	ReversedByJournalID *string   `json:"reversed_by_journal_id"`
+	EntryCount          int       `json:"entry_count"`
+	DebitTotalRupiah    string    `json:"debit_total_rupiah"`
+	CreditTotalRupiah   string    `json:"credit_total_rupiah"`
 }
 
 type JournalPage struct {
-	Items      []JournalListItem
-	TotalItems int
-	TotalPages int
-	Page       int
-	Limit      int
+	Items      []JournalListItem `json:"data"`
+	TotalItems int               `json:"total_items"`
+	TotalPages int               `json:"total_pages"`
+	Page       int               `json:"page"`
+	Limit      int               `json:"limit"`
 }
 
 type JournalSummary struct {
-	Currency          string
-	JournalCount      int
-	ReversalCount     int
-	TotalDebitRupiah  string
-	TotalCreditRupiah string
+	Currency          string `json:"currency"`
+	JournalCount      int    `json:"journal_count"`
+	ReversalCount     int    `json:"reversal_count"`
+	TotalDebitRupiah  string `json:"total_debit_rupiah"`
+	TotalCreditRupiah string `json:"total_credit_rupiah"`
 }
 
 type journalReadRepositoryData struct {

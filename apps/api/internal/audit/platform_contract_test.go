@@ -21,6 +21,29 @@ func TestPlatformFinanceAuditContract(t *testing.T) {
 		wantOK bool
 	}{
 		{
+			name: "expense creation accepts bounded safe metadata",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpenseCreated, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{
+					"category": "INFRASTRUCTURE", "amount_rupiah": "250000", "currency": "IDR",
+					"occurred_at": validEffectiveAt, "payment_account": "FUNDING_CLEARING", "vendor": "Cloud Vendor", "external_reference": "INV-1",
+				},
+			},
+			wantOK: true,
+		},
+		{
+			name: "expense creation rejects secret metadata",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpenseCreated, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{
+					"category": "INFRASTRUCTURE", "amount_rupiah": "250000", "currency": "IDR",
+					"occurred_at": validEffectiveAt, "payment_account": "FUNDING_CLEARING", "vendor": "token=bad",
+				},
+			},
+		},
+		{
 			name: "reversal requires exact safe metadata",
 			params: CreatePlatformAuditLogParams{
 				ActorRole:     "SYSTEM",

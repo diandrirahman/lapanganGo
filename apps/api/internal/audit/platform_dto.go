@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,9 +17,11 @@ const (
 	ActionPlatformCommercialTermLiveRejected = "PLATFORM_COMMERCIAL_TERM_LIVE_REJECTED"
 	ActionPlatformFinanceJournalReversed     = "PLATFORM_FINANCE_JOURNAL_REVERSED"
 	ActionPlatformFinanceLiveWriteRejected   = "PLATFORM_FINANCE_LIVE_WRITE_REJECTED"
+	ActionPlatformExpenseCreated             = "PLATFORM_EXPENSE_CREATED"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
+	EntityPlatformExpense        = "PLATFORM_EXPENSE"
 )
 
 var allowedPlatformActions = map[string]bool{
@@ -27,11 +30,13 @@ var allowedPlatformActions = map[string]bool{
 	ActionPlatformCommercialTermLiveRejected: true,
 	ActionPlatformFinanceJournalReversed:     true,
 	ActionPlatformFinanceLiveWriteRejected:   true,
+	ActionPlatformExpenseCreated:             true,
 }
 
 var allowedPlatformEntities = map[string]bool{
 	EntityPlatformCommercialTerm: true,
 	EntityPlatformFinanceJournal: true,
+	EntityPlatformExpense:        true,
 }
 
 var platformActionEntity = map[string]string{
@@ -40,6 +45,7 @@ var platformActionEntity = map[string]string{
 	ActionPlatformCommercialTermLiveRejected: EntityPlatformCommercialTerm,
 	ActionPlatformFinanceJournalReversed:     EntityPlatformFinanceJournal,
 	ActionPlatformFinanceLiveWriteRejected:   EntityPlatformFinanceJournal,
+	ActionPlatformExpenseCreated:             EntityPlatformExpense,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -65,6 +71,15 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"reason":              true,
 		"write_kind":          true,
 		"request_fingerprint": true,
+	},
+	ActionPlatformExpenseCreated: {
+		"category":           true,
+		"amount_rupiah":      true,
+		"currency":           true,
+		"occurred_at":        true,
+		"payment_account":    true,
+		"vendor":             true,
+		"external_reference": true,
 	},
 }
 
@@ -185,6 +200,9 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if p.Action == ActionPlatformFinanceLiveWriteRejected && p.EntityID != nil {
 		return errors.New("live rejection audit entity id must be nil")
 	}
+	if p.Action == ActionPlatformExpenseCreated && p.EntityID == nil {
+		return errors.New("expense audit entity id is required")
+	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
 	}
@@ -282,6 +300,38 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				if !ok || !allowedLiveWriteKinds[v] {
 					return errors.New("write_kind must be a supported finance write kind")
 				}
+			case "category":
+				v, ok := val.(string)
+				if !ok || !expenseAuditCategories[v] {
+					return errors.New("category must be a supported platform expense category")
+				}
+			case "amount_rupiah":
+				v, ok := val.(string)
+				if !ok || !expenseAuditDigits.MatchString(v) || len(v) > 19 {
+					return errors.New("amount_rupiah must be a digit string")
+				}
+			case "currency":
+				if val != "IDR" {
+					return errors.New("currency must be IDR")
+				}
+			case "occurred_at":
+				v, ok := val.(string)
+				if !ok {
+					return errors.New("occurred_at must be an RFC3339 timestamp")
+				}
+				if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
+					return errors.New("occurred_at must be an RFC3339 timestamp")
+				}
+			case "payment_account":
+				v, ok := val.(string)
+				if !ok || (v != "FUNDING_CLEARING" && v != "ACCOUNTS_PAYABLE") {
+					return errors.New("payment_account must be a supported account")
+				}
+			case "vendor", "external_reference":
+				v, ok := val.(string)
+				if !ok || len([]byte(v)) > 191 || containsSecret(v) {
+					return errors.New(key + " must be a safe bounded string")
+				}
 			}
 		}
 	} else {
@@ -366,10 +416,44 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			if value, ok := value.(string); ok && allowedLiveWriteKinds[value] {
 				out[key] = value
 			}
+		case "category":
+			if value, ok := value.(string); ok && expenseAuditCategories[value] {
+				out[key] = value
+			}
+		case "amount_rupiah":
+			if value, ok := value.(string); ok && value != "" && len(value) <= 19 && expenseAuditDigits.MatchString(value) {
+				out[key] = value
+			}
+		case "currency":
+			if value == "IDR" {
+				out[key] = value
+			}
+		case "occurred_at":
+			if value, ok := value.(string); ok {
+				if _, err := time.Parse(time.RFC3339Nano, value); err == nil {
+					out[key] = value
+				}
+			}
+		case "payment_account":
+			if value, ok := value.(string); ok && (value == "FUNDING_CLEARING" || value == "ACCOUNTS_PAYABLE") {
+				out[key] = value
+			}
+		case "vendor", "external_reference":
+			if value, ok := value.(string); ok && len([]byte(value)) <= 191 && !containsSecret(value) {
+				out[key] = value
+			}
 		}
 	}
 	return out
 }
+
+var expenseAuditCategories = map[string]bool{
+	"INFRASTRUCTURE": true, "MARKETING": true, "CUSTOMER_SUPPORT": true,
+	"SALARY_CONTRACTOR": true, "LEGAL_COMPLIANCE": true, "PAYMENT_OPERATIONS": true,
+	"OFFICE_ADMIN": true, "OTHER": true,
+}
+
+var expenseAuditDigits = regexp.MustCompile(`^[0-9]+$`)
 
 // SanitizeAuditMetadata applies an action-specific, scalar-only projection to
 // legacy owner audit metadata before it crosses the admin read boundary.

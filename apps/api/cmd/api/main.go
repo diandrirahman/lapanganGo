@@ -215,6 +215,14 @@ func main() {
 	platformAuditRepository := audit.NewPlatformRepository()
 	platformAuditService := audit.NewPlatformService(platformAuditRepository)
 
+	expenseRepository := platformfinance.NewExpenseRepository(dbPool)
+	expenseService := platformfinance.NewExpenseService(expenseRepository, dbPool, platformAuditService)
+	journalReadService, err := platformfinance.NewJournalReadService(platformfinance.NewJournalReadRepository(dbPool))
+	if err != nil {
+		log.Fatal("Failed to initialize platform finance read services:", err)
+	}
+	platformfinance.RegisterExpenseRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, expenseService, journalReadService)
+
 	ctRepo := commercialterms.NewRepository(dbPool)
 	ctService := commercialterms.NewService(ctRepo, dbPool, platformAuditService)
 	commercialterms.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, ctService)

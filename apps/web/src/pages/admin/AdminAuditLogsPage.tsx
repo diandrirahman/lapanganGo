@@ -16,6 +16,7 @@ const entityOptions = [
   { value: 'FINANCE_TRANSACTION', label: 'Finance transaction', scope: 'OWNER' },
   { value: 'PLATFORM_COMMERCIAL_TERM', label: 'Platform commercial term', scope: 'PLATFORM' },
   { value: 'PLATFORM_FINANCE_JOURNAL', label: 'Platform finance journal', scope: 'PLATFORM' },
+  { value: 'PLATFORM_EXPENSE', label: 'Platform expense', scope: 'PLATFORM' },
 ] as const;
 
 const actionOptions = [
@@ -45,6 +46,7 @@ const actionOptions = [
   { value: 'PLATFORM_COMMERCIAL_TERM_LIVE_REJECTED', scope: 'PLATFORM' },
   { value: 'PLATFORM_FINANCE_JOURNAL_REVERSED', scope: 'PLATFORM' },
   { value: 'PLATFORM_FINANCE_LIVE_WRITE_REJECTED', scope: 'PLATFORM' },
+  { value: 'PLATFORM_EXPENSE_CREATED', scope: 'PLATFORM' },
 ] as const;
 
 const isAbortError = (error: unknown): boolean => (

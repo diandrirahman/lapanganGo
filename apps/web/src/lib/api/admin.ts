@@ -1,4 +1,12 @@
 import { apiFetch, API_BASE_URL } from '../api';
+import type {
+  CreatePlatformExpenseRequest,
+  FinanceApiErrorBody,
+  PlatformExpense,
+  PlatformExpenseQuery,
+  PlatformJournal,
+  PlatformJournalQuery,
+} from '../../types/platformExpense';
 
 export interface PaginationQuery {
   page?: number;
@@ -114,6 +122,21 @@ export interface DashboardStatsResponse {
   total_bookings: number;
 }
 
+export type PlatformExpensePage = PaginatedResponse<PlatformExpense>;
+export type PlatformJournalPage = PaginatedResponse<PlatformJournal>;
+
+export class AdminApiError extends Error {
+  readonly status: number;
+  readonly body: FinanceApiErrorBody;
+
+  constructor(status: number, body: FinanceApiErrorBody, fallback: string) {
+    super(body.message || fallback);
+    this.name = 'AdminApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 const ADMIN_REQUEST_TIMEOUT_MS = 10000;
 
 const mutationDeadline = (): string => String(Date.now() + ADMIN_REQUEST_TIMEOUT_MS);
@@ -219,6 +242,75 @@ export const adminApi = {
       headers: { 'Authorization': `Bearer ${token}` },
     });
     if (!response.ok) throw new Error('Failed to fetch commercial terms');
+    return response.json();
+  },
+
+  getPlatformExpenses: async (
+    params?: PlatformExpenseQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformExpensePage> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') searchParams.set(key, String(value));
+    });
+    const token = localStorage.getItem('auth_token');
+    const query = searchParams.toString();
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/expenses${query ? `?${query}` : ''}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new AdminApiError(response.status, body, 'Platform expenses could not be loaded');
+    }
+    return response.json();
+  },
+
+  getPlatformJournals: async (
+    params?: PlatformJournalQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformJournalPage> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') searchParams.set(key, String(value));
+    });
+    const token = localStorage.getItem('auth_token');
+    const query = searchParams.toString();
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/journals${query ? `?${query}` : ''}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new AdminApiError(response.status, body, 'Platform journals could not be loaded');
+    }
+    return response.json();
+  },
+
+  createPlatformExpense: async (
+    request: CreatePlatformExpenseRequest,
+    idempotencyKey: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformExpense> => {
+    const token = localStorage.getItem('auth_token');
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/expenses`, {
+      method: 'POST',
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+        'X-Request-Deadline-Ms': mutationDeadline(),
+      },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new AdminApiError(response.status, body, 'Platform expense could not be created');
+    }
     return response.json();
   },
 
