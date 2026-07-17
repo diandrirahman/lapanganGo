@@ -1178,12 +1178,12 @@ Tambahkan pada migration Phase 3B (contoh `022_platform_expenses.{up,down}.sql`;
 ```text
 id UUID PK
 category VARCHAR NOT NULL
-vendor VARCHAR NULL
-amount_rupiah BIGINT NOT NULL CHECK > 0
+vendor VARCHAR(160) NULL
+amount_rupiah BIGINT NOT NULL CHECK (amount_rupiah BETWEEN 1 AND 1000000000)
 currency CHAR(3) NOT NULL DEFAULT IDR CHECK currency='IDR'
 occurred_at TIMESTAMPTZ NOT NULL
 payment_account VARCHAR NOT NULL CHECK FUNDING_CLEARING|ACCOUNTS_PAYABLE
-external_reference VARCHAR NULL
+external_reference VARCHAR(191) NULL
 description TEXT NOT NULL
 status VARCHAR NOT NULL CHECK DRAFT|APPROVED|POSTED|VOID|CANCELLED
 posted_journal_id UUID NULL UNIQUE FK platform_journals ON DELETE RESTRICT
@@ -1267,6 +1267,96 @@ Void body untuk expense yang sudah posted:
 - Handler tidak menerima journal side/account/status/created_by dari client; server menetapkannya.
 - Bila maker-checker admin belum tersedia, approve/post membutuhkan explicit confirm dan audit tetapi readiness document harus mencatat residual risk. Nilai material wajib `created_by/approved_by` berbeda sebelum production LIVE.
 
+#### Task 3B1-00 — Frozen Expense Contract
+
+Keputusan berikut adalah kontrak normatif untuk migration dan service Phase 3B1. Nilai
+relatif terhadap waktu memakai `clock_timestamp()` dari database pada saat mutation;
+`occurred_at` disimpan sebagai `TIMESTAMPTZ` UTC dan kebijakan tanggal dibaca dalam
+zona `Asia/Jakarta`.
+
+1. **Amount dan temporal boundary**
+
+   - `amount_rupiah` wajib berupa canonical decimal-digit string, diparse checked ke
+     `int64`, `1 <= amount_rupiah <= 1_000_000_000`, dan tidak boleh memakai tanda,
+     desimal, exponent, atau `float64`.
+   - Pada saat create DRAFT, `occurred_at` harus berada pada interval inklusif
+     `[clock_timestamp() - interval '90 days', clock_timestamp()]`. Nilai future
+     maupun lebih tua dari 90 hari ditolak.
+   - Window 90 hari dievaluasi pada create, sehingga DRAFT/APPROVED yang menunggu
+     proses tidak menjadi state yatim hanya karena waktu berlalu. Approve/post tetap
+     memeriksa `occurred_at <= clock_timestamp()` dan tidak mengubah nilai yang sudah
+     dibekukan.
+   - Backdated ditandai pada audit bila tanggal lokal `occurred_at` lebih tua dari
+     tanggal lokal `created_at`. Relative-time validation tidak boleh memakai
+     `now()` di CHECK constraint; migration memakai trigger/transaction guard, dan
+     service mengulangi validasi pada boundary mutation.
+
+2. **Vendor dan external reference**
+
+   - `vendor` optional, maksimum 160 karakter; `external_reference` optional,
+     maksimum 191 karakter. Bila dikirim, keduanya di-trim dengan aturan whitespace
+     request dan nilai kosong ditolak.
+   - `external_reference` hanya boleh diisi bila `vendor` terisi. Kedua field menjadi
+     immutable setelah create.
+   - Uniqueness memakai key `lower(btrim(vendor))` +
+     `lower(btrim(external_reference))` ketika `external_reference IS NOT NULL`.
+     Key ini unik lintas semua status, termasuk `CANCELLED` dan `VOID`; reference
+     invoice tidak dapat dipakai ulang.
+   - Migration wajib memiliki partial unique index dan constraint dependency
+     `external_reference IS NULL OR vendor IS NOT NULL`; service melakukan
+     canonicalization yang sama sebelum menghitung fingerprint idempotency.
+
+   - `description` wajib trimmed, non-empty, dan maksimum 500 bytes. Untuk kategori
+     `OTHER`, service tetap wajib memastikan isi cukup deskriptif.
+
+3. **Exact state/timestamp/journal invariant**
+
+   Field inti (`category`, `vendor`, `amount_rupiah`, `currency`, `occurred_at`,
+   `payment_account`, `external_reference`, `description`) diisi saat create dan
+   tidak dapat diedit setelahnya. `created_by_user_id` dan `created_at` selalu ada.
+
+   ```text
+   DRAFT:
+     approved_at/approved_by, posted_at/posted_by, voided_at/voided_by,
+     cancelled_at/cancelled_by, cancel_reason, void_reason,
+     posted_journal_id, void_journal_id = NULL
+
+   APPROVED:
+     approved_at = NOT NULL;
+     posted_*, voided_*, cancelled_*, reasons, journal ids = NULL
+
+   POSTED:
+     approved_at, posted_at, posted_journal_id = NOT NULL;
+     voided_*, cancelled_*, reasons, void_journal_id = NULL
+
+   VOID:
+     approved_at, posted_at, voided_at, posted_journal_id, void_journal_id,
+     void_reason = NOT NULL;
+     cancelled_* dan cancel_reason = NULL
+
+   CANCELLED:
+     cancelled_at dan cancel_reason = NOT NULL;
+     approved_*, posted_*, voided_*, journal ids, void_reason = NULL
+   ```
+
+   `approved_by_user_id`, `posted_by_user_id`, `voided_by_user_id`, dan
+   `cancelled_by_user_id` wajib diisi pada saat action berhasil, tetapi boleh menjadi
+   `NULL` kemudian karena FK `ON DELETE SET NULL`; state validity ditentukan oleh
+    timestamp, reason, dan journal link. Timestamp mutation harus monotonic:
+    `created_at <= approved_at <= posted_at <= voided_at` dan
+    `created_at <= cancelled_at`. Setiap transition dilakukan atomically dengan
+    row lock, audit, dan journal bila berlaku. Database write guard hanya mengizinkan
+    actor, timestamp, reason, dan journal link milik transition aktif untuk diisi;
+    seluruh nilai historis immutable lintas transition. Timestamp action tidak boleh
+    future-dated. `posted_journal_id` dan `void_journal_id` masing-masing unique,
+    memakai FK `ON DELETE RESTRICT`, dan tidak boleh menunjuk journal yang sama.
+
+   Idempotency record expense disimpan pada companion table
+   `platform_expense_idempotency` dengan unique scope
+   `(actor_user_id, action, idempotency_key)`, request hash, expense reference,
+   response status, dan safe response snapshot. Record tersebut immutable dan
+   berada dalam migration yang sama sebelum endpoint mutation dibuat.
+
 ### Phase 3B2 — Expense UI
 
 Tambahkan tab `Pengeluaran Platform`:
@@ -1308,6 +1398,9 @@ Phase 3B juga wajib mengubah summary repository/types/UI secara vertical slice: 
 11. Tidak ada edit/delete action untuk APPROVED/POSTED data di API maupun UI.
 12. Backdated posting dan void lintas bulan mengikuti `effective_at` rules.
 13. Summary/trend/UI berubah ke OPEX `AVAILABLE`; hanya POSTED net reversal yang terhitung.
+14. Migration menolak kombinasi state/timestamp/reason/journal yang tidak sesuai matrix; penghapusan actor dengan `ON DELETE SET NULL` tidak merusak state historis.
+15. Temporal boundary memakai clock database: tepat 90 hari diterima, lebih tua dan future ditolak pada create; approve/post menolak future tanpa mengubah `occurred_at`.
+16. Vendor/reference memakai canonical trim + case-insensitive key; duplicate dengan variasi case/whitespace, reference tanpa vendor, dan empty value ditolak lintas seluruh status.
 
 ### Acceptance Criteria
 
