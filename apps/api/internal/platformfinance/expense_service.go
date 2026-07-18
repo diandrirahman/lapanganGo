@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"lapangango-api/internal/audit"
@@ -16,6 +17,8 @@ import (
 type ExpenseService interface {
 	ListExpenses(ctx context.Context, query ExpenseListQuery) (*ExpensePage, error)
 	CreateDraft(ctx context.Context, req CreateExpenseRequest, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
+	CancelDraft(ctx context.Context, expenseID, reason, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
+	ApproveDraft(ctx context.Context, expenseID, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
 }
 
 type expenseService struct {
@@ -99,6 +102,165 @@ func (s *expenseService) CreateDraft(ctx context.Context, req CreateExpenseReque
 		return nil, false, err
 	}
 	if err := s.repo.InsertIdempotency(ctx, tx, actorID, "CREATE", idempotencyKey, requestHash, item.ID, 201, responseBody); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return item, false, nil
+}
+
+type expenseActionFingerprint struct {
+	ExpenseID string `json:"expense_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func expenseActionHash(expenseID, reason string) string {
+	payload, _ := json.Marshal(expenseActionFingerprint{ExpenseID: expenseID, Reason: reason})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *expenseService) validateActionInputs(expenseID, idempotencyKey, actorID string) (string, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return "", ErrExpenseMissingKey
+	}
+	if len(idempotencyKey) > 255 {
+		return "", ErrExpenseInvalidKey
+	}
+	if strings.TrimSpace(actorID) == "" || strings.TrimSpace(expenseID) == "" {
+		return "", ErrExpenseValidation
+	}
+	if _, err := uuid.Parse(expenseID); err != nil {
+		return "", ErrExpenseValidation
+	}
+	if s == nil || s.dbPool == nil || s.repo == nil || s.auditService == nil {
+		return "", ErrExpensePersistence
+	}
+	return idempotencyKey, nil
+}
+
+func (s *expenseService) replayExpenseAction(record *ExpenseIdempotencyRecord, requestHash, expenseID string) (*PlatformExpense, bool, error) {
+	if record.RequestHash != requestHash {
+		return nil, false, ErrExpenseConflict
+	}
+	var item PlatformExpense
+	if err := json.Unmarshal(record.ResponseBody, &item); err != nil || item.ID == "" || item.ID != expenseID {
+		return nil, false, ErrExpenseIntegrity
+	}
+	return &item, true, nil
+}
+
+func (s *expenseService) CancelDraft(ctx context.Context, expenseID, reason, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error) {
+	var err error
+	reason, err = normalizeExpenseReason(reason)
+	if err != nil {
+		return nil, false, err
+	}
+	idempotencyKey, err = s.validateActionInputs(expenseID, idempotencyKey, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	requestHash := expenseActionHash(expenseID, reason)
+	tx, err := s.dbPool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.repo.LockIdempotency(ctx, tx, actorID, "CANCEL", idempotencyKey); err != nil {
+		return nil, false, err
+	}
+	record, err := s.repo.GetIdempotency(ctx, tx, actorID, "CANCEL", idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if record != nil {
+		return s.replayExpenseAction(record, requestHash, expenseID)
+	}
+	locked, err := s.repo.GetExpenseForUpdate(ctx, tx, expenseID)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.Status != "DRAFT" {
+		return nil, false, ErrExpenseConflict
+	}
+	item, err := s.repo.CancelDraft(ctx, tx, expenseID, actorID, reason)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+		ActorUserID: &actorID, ActorRole: actorRole, Action: audit.ActionPlatformExpenseCancelled,
+		EntityType: audit.EntityPlatformExpense, EntityID: &item.ID, CorrelationID: &idempotencyKey,
+		Metadata: map[string]any{"reason": reason}, IPAddress: expenseStringPointer(ipAddress), UserAgent: expenseStringPointer(userAgent),
+	}); err != nil {
+		return nil, false, err
+	}
+	responseBody, err := json.Marshal(item)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.repo.InsertIdempotency(ctx, tx, actorID, "CANCEL", idempotencyKey, requestHash, item.ID, 200, responseBody); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return item, false, nil
+}
+
+func (s *expenseService) ApproveDraft(ctx context.Context, expenseID, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error) {
+	var err error
+	idempotencyKey, err = s.validateActionInputs(expenseID, idempotencyKey, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	requestHash := expenseActionHash(expenseID, "")
+	tx, err := s.dbPool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.repo.LockIdempotency(ctx, tx, actorID, "APPROVE", idempotencyKey); err != nil {
+		return nil, false, err
+	}
+	record, err := s.repo.GetIdempotency(ctx, tx, actorID, "APPROVE", idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if record != nil {
+		return s.replayExpenseAction(record, requestHash, expenseID)
+	}
+	locked, err := s.repo.GetExpenseForUpdate(ctx, tx, expenseID)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.Status != "DRAFT" {
+		return nil, false, ErrExpenseConflict
+	}
+	databaseNow, err := s.repo.DatabaseNow(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.OccurredAt.After(databaseNow) {
+		return nil, false, &ExpenseValidationError{Fields: map[string]string{"occurred_at": "cannot be future-dated"}}
+	}
+	item, err := s.repo.ApproveDraft(ctx, tx, expenseID, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+		ActorUserID: &actorID, ActorRole: actorRole, Action: audit.ActionPlatformExpenseApproved,
+		EntityType: audit.EntityPlatformExpense, EntityID: &item.ID, CorrelationID: &idempotencyKey,
+		Metadata: map[string]any{"transition": "DRAFT_TO_APPROVED"}, IPAddress: expenseStringPointer(ipAddress), UserAgent: expenseStringPointer(userAgent),
+	}); err != nil {
+		return nil, false, err
+	}
+	responseBody, err := json.Marshal(item)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.repo.InsertIdempotency(ctx, tx, actorID, "APPROVE", idempotencyKey, requestHash, item.ID, 200, responseBody); err != nil {
 		return nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {

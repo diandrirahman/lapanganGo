@@ -15,6 +15,9 @@ assert.equal(form.isRetryableExpenseSubmissionError(new Error('Request timeout')
 assert.equal(form.isRetryableExpenseSubmissionError(new TypeError('Failed to fetch')), true);
 assert.equal(form.isRetryableExpenseSubmissionError({ status: 500 }), true);
 assert.equal(form.isRetryableExpenseSubmissionError({ status: 409 }), false);
+assert.equal(form.validateExpenseCancelReason('  duplicate invoice  '), null);
+assert.match(form.validateExpenseCancelReason(''), /required/);
+assert.match(form.validateExpenseCancelReason('x'.repeat(501)), /500 bytes/);
 
 const timeoutState = form.createExpenseAttemptState();
 const timeoutPayload = '{"amount_rupiah":"400000"}';

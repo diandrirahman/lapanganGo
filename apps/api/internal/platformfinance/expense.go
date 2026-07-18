@@ -28,6 +28,8 @@ var (
 	ErrExpenseInvalidKey  = errors.New("EXPENSE_IDEMPOTENCY_KEY_INVALID")
 )
 
+const ExpenseMaxReasonBytes = 500
+
 var expenseAmountPattern = regexp.MustCompile(`^[0-9]+$`)
 
 var expenseCategories = map[string]bool{
@@ -54,6 +56,28 @@ type CreateExpenseRequest struct {
 	Vendor            string `json:"vendor"`
 	ExternalReference string `json:"external_reference"`
 	Description       string `json:"description"`
+}
+
+type ExpenseCancelRequest struct {
+	Reason string `json:"reason"`
+}
+
+func normalizeExpenseReason(reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len([]byte(reason)) > ExpenseMaxReasonBytes || expenseReasonContainsSecret(reason) {
+		return "", &ExpenseValidationError{Fields: map[string]string{"reason": "is required and must be at most 500 bytes"}}
+	}
+	return reason, nil
+}
+
+func expenseReasonContainsSecret(reason string) bool {
+	lower := strings.ToLower(reason)
+	for _, marker := range []string{"secret", "token", "password", "authorization", "credential", "bearer"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type ExpenseListQuery struct {

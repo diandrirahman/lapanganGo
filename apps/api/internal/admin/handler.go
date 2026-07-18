@@ -69,6 +69,8 @@ var platformAuditActions = map[string]struct{}{
 	audit.ActionPlatformFinanceJournalReversed:     {},
 	audit.ActionPlatformFinanceLiveWriteRejected:   {},
 	audit.ActionPlatformExpenseCreated:             {},
+	audit.ActionPlatformExpenseCancelled:           {},
+	audit.ActionPlatformExpenseApproved:            {},
 }
 
 type Handler struct {

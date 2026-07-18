@@ -314,6 +314,57 @@ export const adminApi = {
     return response.json();
   },
 
+  cancelPlatformExpense: async (
+    expenseID: string,
+    reason: string,
+    idempotencyKey: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformExpense> => {
+    const token = localStorage.getItem('auth_token');
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/expenses/${encodeURIComponent(expenseID)}/cancel`, {
+      method: 'POST',
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+        'X-Request-Deadline-Ms': mutationDeadline(),
+      },
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new AdminApiError(response.status, body, 'Platform expense could not be cancelled');
+    }
+    return response.json();
+  },
+
+  approvePlatformExpense: async (
+    expenseID: string,
+    idempotencyKey: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformExpense> => {
+    const token = localStorage.getItem('auth_token');
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/expenses/${encodeURIComponent(expenseID)}/approve`, {
+      method: 'POST',
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+        'X-Request-Deadline-Ms': mutationDeadline(),
+      },
+      body: '{}',
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new AdminApiError(response.status, body, 'Platform expense could not be approved');
+    }
+    return response.json();
+  },
+
   getDashboardStats: async (): Promise<DashboardStatsResponse> => {
     const token = localStorage.getItem('auth_token');
     const response = await apiFetch(`${API_BASE_URL}/admin/dashboard`, {

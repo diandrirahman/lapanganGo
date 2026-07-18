@@ -18,6 +18,8 @@ const (
 	ActionPlatformFinanceJournalReversed     = "PLATFORM_FINANCE_JOURNAL_REVERSED"
 	ActionPlatformFinanceLiveWriteRejected   = "PLATFORM_FINANCE_LIVE_WRITE_REJECTED"
 	ActionPlatformExpenseCreated             = "PLATFORM_EXPENSE_CREATED"
+	ActionPlatformExpenseCancelled           = "PLATFORM_EXPENSE_CANCELLED"
+	ActionPlatformExpenseApproved            = "PLATFORM_EXPENSE_APPROVED"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
@@ -31,6 +33,8 @@ var allowedPlatformActions = map[string]bool{
 	ActionPlatformFinanceJournalReversed:     true,
 	ActionPlatformFinanceLiveWriteRejected:   true,
 	ActionPlatformExpenseCreated:             true,
+	ActionPlatformExpenseCancelled:           true,
+	ActionPlatformExpenseApproved:            true,
 }
 
 var allowedPlatformEntities = map[string]bool{
@@ -46,6 +50,8 @@ var platformActionEntity = map[string]string{
 	ActionPlatformFinanceJournalReversed:     EntityPlatformFinanceJournal,
 	ActionPlatformFinanceLiveWriteRejected:   EntityPlatformFinanceJournal,
 	ActionPlatformExpenseCreated:             EntityPlatformExpense,
+	ActionPlatformExpenseCancelled:           EntityPlatformExpense,
+	ActionPlatformExpenseApproved:            EntityPlatformExpense,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -80,6 +86,12 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"payment_account":    true,
 		"vendor":             true,
 		"external_reference": true,
+	},
+	ActionPlatformExpenseCancelled: {
+		"reason": true,
+	},
+	ActionPlatformExpenseApproved: {
+		"transition": true,
 	},
 }
 
@@ -200,8 +212,14 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if p.Action == ActionPlatformFinanceLiveWriteRejected && p.EntityID != nil {
 		return errors.New("live rejection audit entity id must be nil")
 	}
-	if p.Action == ActionPlatformExpenseCreated && p.EntityID == nil {
+	if (p.Action == ActionPlatformExpenseCreated || p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved) && p.EntityID == nil {
 		return errors.New("expense audit entity id is required")
+	}
+	if p.Action == ActionPlatformExpenseCancelled && p.CorrelationID == nil {
+		return errors.New("correlation id is required for expense cancellation")
+	}
+	if p.Action == ActionPlatformExpenseApproved && p.CorrelationID == nil {
+		return errors.New("correlation id is required for expense approval")
 	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
@@ -269,7 +287,14 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				}
 				// Strict enum for reason
 				if v != "LIVE_NOT_ALLOWED" && v != "BPS_OUT_OF_BOUNDS" && v != "OVERLAP" && v != "INVALID_TIME" && v != "VALIDATION_ERROR" {
-					return errors.New("reason must be an allowed code")
+					if p.Action != ActionPlatformExpenseCancelled || strings.TrimSpace(v) == "" || len([]byte(v)) > 500 || containsSecret(v) {
+						return errors.New("reason must be an allowed code")
+					}
+				}
+			case "transition":
+				v, ok := val.(string)
+				if !ok || v != "DRAFT_TO_APPROVED" {
+					return errors.New("transition must be DRAFT_TO_APPROVED")
 				}
 			case "request_fingerprint":
 				v, ok := val.(string)
@@ -397,8 +422,12 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 				}
 			}
 		case "reason":
-			if value, ok := value.(string); ok && (value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR") {
-				out[key] = value
+			if value, ok := value.(string); ok {
+				if action == ActionPlatformExpenseCancelled && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
+					out[key] = value
+				} else if value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR" {
+					out[key] = value
+				}
 			}
 		case "source_journal_id":
 			if value, ok := value.(string); ok {
@@ -414,6 +443,10 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			}
 		case "write_kind":
 			if value, ok := value.(string); ok && allowedLiveWriteKinds[value] {
+				out[key] = value
+			}
+		case "transition":
+			if value == "DRAFT_TO_APPROVED" {
 				out[key] = value
 			}
 		case "category":

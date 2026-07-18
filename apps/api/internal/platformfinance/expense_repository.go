@@ -31,6 +31,10 @@ type ExpenseRepository interface {
 	LockIdempotency(ctx context.Context, db ExpenseDBTX, actorID, action, key string) error
 	GetIdempotency(ctx context.Context, db ExpenseDBTX, actorID, action, key string) (*ExpenseIdempotencyRecord, error)
 	CreateDraft(ctx context.Context, db ExpenseDBTX, actorID string, req CreateExpenseRequest, amount int64, occurredAt time.Time) (*PlatformExpense, error)
+	GetExpenseForUpdate(ctx context.Context, db ExpenseDBTX, expenseID string) (*PlatformExpense, error)
+	DatabaseNow(ctx context.Context, db ExpenseDBTX) (time.Time, error)
+	CancelDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID, reason string) (*PlatformExpense, error)
+	ApproveDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID string) (*PlatformExpense, error)
 	InsertIdempotency(ctx context.Context, db ExpenseDBTX, actorID, action, key, requestHash, expenseID string, responseStatus int, responseBody []byte) error
 }
 
@@ -131,6 +135,56 @@ func (r *expenseRepository) CreateDraft(ctx context.Context, db ExpenseDBTX, act
 	return &item, nil
 }
 
+const expenseSelectColumns = `id, category, vendor, amount_rupiah, currency, occurred_at,
+       payment_account, external_reference, description, status,
+       posted_journal_id, void_journal_id, created_by_user_id,
+       approved_by_user_id, posted_by_user_id, voided_by_user_id,
+       cancelled_by_user_id, cancel_reason, void_reason, created_at,
+       approved_at, posted_at, voided_at, cancelled_at, 0::bigint`
+
+func (r *expenseRepository) GetExpenseForUpdate(ctx context.Context, db ExpenseDBTX, expenseID string) (*PlatformExpense, error) {
+	row := db.QueryRow(ctx, `SELECT `+expenseSelectColumns+` FROM platform_expenses WHERE id = $1 FOR UPDATE`, expenseID)
+	item, _, err := scanPlatformExpense(row)
+	if err != nil {
+		return nil, mapExpenseRepositoryError(err)
+	}
+	return &item, nil
+}
+
+func (r *expenseRepository) DatabaseNow(ctx context.Context, db ExpenseDBTX) (time.Time, error) {
+	var now time.Time
+	if err := db.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return time.Time{}, mapExpenseRepositoryError(err)
+	}
+	return now, nil
+}
+
+func (r *expenseRepository) CancelDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID, reason string) (*PlatformExpense, error) {
+	row := db.QueryRow(ctx, `
+		UPDATE platform_expenses
+		SET status = 'CANCELLED', cancelled_at = clock_timestamp(), cancelled_by_user_id = $2, cancel_reason = $3
+		WHERE id = $1 AND status = 'DRAFT'
+		RETURNING `+expenseSelectColumns, expenseID, actorID, reason)
+	item, _, err := scanPlatformExpense(row)
+	if err != nil {
+		return nil, mapExpenseRepositoryError(err)
+	}
+	return &item, nil
+}
+
+func (r *expenseRepository) ApproveDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID string) (*PlatformExpense, error) {
+	row := db.QueryRow(ctx, `
+		UPDATE platform_expenses
+		SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by_user_id = $2
+		WHERE id = $1 AND status = 'DRAFT'
+		RETURNING `+expenseSelectColumns, expenseID, actorID)
+	item, _, err := scanPlatformExpense(row)
+	if err != nil {
+		return nil, mapExpenseRepositoryError(err)
+	}
+	return &item, nil
+}
+
 func (r *expenseRepository) InsertIdempotency(ctx context.Context, db ExpenseDBTX, actorID, action, key, requestHash, expenseID string, responseStatus int, responseBody []byte) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO platform_expense_idempotency (
@@ -183,6 +237,9 @@ func mapExpenseRepositoryError(err error) error {
 		if pgErr.Code == "23514" || pgErr.Code == "22003" {
 			return ErrExpenseValidation
 		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrExpenseNotFound
 	}
 	return err
 }

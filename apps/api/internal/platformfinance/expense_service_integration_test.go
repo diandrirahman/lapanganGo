@@ -55,3 +55,51 @@ func TestExpenseServiceCreateDraftUsesAuditAndIdempotency(t *testing.T) {
 	var validationErr *ExpenseValidationError
 	assert.True(t, errors.As(err, &validationErr))
 }
+
+func TestExpenseServiceCancelAndApproveAreAtomicAndIdempotent(t *testing.T) {
+	_, _, pool := newExpenseMigrationDatabase(t, expenseMigrationVersion)
+	actorID := insertExpenseUser(t, pool, "SUPER_ADMIN")
+	service := NewExpenseService(NewExpenseRepository(pool), pool, audit.NewPlatformService(audit.NewPlatformRepository()))
+	baseRequest := func(reference string) CreateExpenseRequest {
+		return CreateExpenseRequest{
+			AmountRupiah: "125000", Currency: "IDR", OccurredAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+			Category: "OFFICE_ADMIN", PaymentAccount: "FUNDING_CLEARING", Vendor: "Action Vendor", ExternalReference: reference, Description: "Action test expense",
+		}
+	}
+
+	cancelled, _, err := service.CreateDraft(context.Background(), baseRequest("CANCEL-"+actorID[:8]), "create-cancel-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	firstCancel, replayed, err := service.CancelDraft(context.Background(), cancelled.ID, "duplicate invoice", "cancel-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	assert.False(t, replayed)
+	assert.Equal(t, "CANCELLED", firstCancel.Status)
+	assert.Equal(t, "duplicate invoice", *firstCancel.CancelReason)
+	secondCancel, replayed, err := service.CancelDraft(context.Background(), cancelled.ID, "duplicate invoice", "cancel-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	assert.True(t, replayed)
+	assert.Equal(t, firstCancel.ID, secondCancel.ID)
+	_, _, err = service.CancelDraft(context.Background(), cancelled.ID, "different reason", "cancel-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	assert.ErrorIs(t, err, ErrExpenseConflict)
+
+	approved, _, err := service.CreateDraft(context.Background(), baseRequest("APPROVE-"+actorID[:8]), "create-approve-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	firstApprove, replayed, err := service.ApproveDraft(context.Background(), approved.ID, "approve-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	assert.False(t, replayed)
+	assert.Equal(t, "APPROVED", firstApprove.Status)
+	assert.NotNil(t, firstApprove.ApprovedAt)
+	secondApprove, replayed, err := service.ApproveDraft(context.Background(), approved.ID, "approve-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	require.NoError(t, err)
+	assert.True(t, replayed)
+	assert.Equal(t, firstApprove.ID, secondApprove.ID)
+	_, _, err = service.CancelDraft(context.Background(), approved.ID, "too late", "cancel-after-approve-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
+	assert.ErrorIs(t, err, ErrExpenseConflict)
+
+	var cancelledAudit, approvedAudit, idempotencyCount int
+	require.NoError(t, pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM platform_audit_logs WHERE entity_id = $1 AND action = $2`, cancelled.ID, audit.ActionPlatformExpenseCancelled).Scan(&cancelledAudit))
+	require.NoError(t, pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM platform_audit_logs WHERE entity_id = $1 AND action = $2`, approved.ID, audit.ActionPlatformExpenseApproved).Scan(&approvedAudit))
+	require.NoError(t, pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM platform_expense_idempotency WHERE expense_id = $1`, cancelled.ID).Scan(&idempotencyCount))
+	assert.Equal(t, 1, cancelledAudit)
+	assert.Equal(t, 1, approvedAudit)
+	assert.Equal(t, 2, idempotencyCount)
+}

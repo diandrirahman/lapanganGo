@@ -67,6 +67,68 @@ func (h *ExpenseHandler) CreateExpense(c *gin.Context) {
 	c.JSON(http.StatusCreated, item)
 }
 
+func (h *ExpenseHandler) CancelExpense(c *gin.Context) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		writeExpenseHTTPError(c, ErrExpenseMissingKey)
+		return
+	}
+	if len(key) > 255 {
+		writeExpenseHTTPError(c, ErrExpenseInvalidKey)
+		return
+	}
+	var req ExpenseCancelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_BODY", "message": "Invalid request body", "field_errors": gin.H{}})
+		return
+	}
+	actorID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "UNAUTHORIZED", "message": "Missing or invalid authentication"})
+		return
+	}
+	item, replayed, err := h.expenseService.CancelDraft(c.Request.Context(), c.Param("id"), req.Reason, key, actorID, c.GetString("auth_role"), c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		writeExpenseHTTPError(c, err)
+		return
+	}
+	if replayed {
+		c.Header("Idempotent-Replay", "true")
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (h *ExpenseHandler) ApproveExpense(c *gin.Context) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		writeExpenseHTTPError(c, ErrExpenseMissingKey)
+		return
+	}
+	if len(key) > 255 {
+		writeExpenseHTTPError(c, ErrExpenseInvalidKey)
+		return
+	}
+	var req struct{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_BODY", "message": "Invalid request body", "field_errors": gin.H{}})
+		return
+	}
+	actorID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "UNAUTHORIZED", "message": "Missing or invalid authentication"})
+		return
+	}
+	item, replayed, err := h.expenseService.ApproveDraft(c.Request.Context(), c.Param("id"), key, actorID, c.GetString("auth_role"), c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		writeExpenseHTTPError(c, err)
+		return
+	}
+	if replayed {
+		c.Header("Idempotent-Replay", "true")
+	}
+	c.JSON(http.StatusOK, item)
+}
+
 func (h *ExpenseHandler) ListJournals(c *gin.Context) {
 	var raw struct {
 		StartDate   string `form:"start_date"`
@@ -124,6 +186,8 @@ func writeExpenseHTTPError(c *gin.Context, err error) {
 		}
 	case errors.Is(err, ErrExpenseValidation), errors.Is(err, ErrInvalidJournalReadQuery):
 		status, code, message = http.StatusBadRequest, "INVALID_QUERY", "Invalid finance query"
+	case errors.Is(err, ErrExpenseNotFound):
+		status, code, message = http.StatusNotFound, "NOT_FOUND", "Expense was not found"
 	case errors.Is(err, ErrExpenseConflict):
 		status, code, message = http.StatusConflict, "CONFLICT", "Request conflicts with an existing finance operation"
 	}
@@ -136,5 +200,7 @@ func RegisterExpenseRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, r
 	group.Use(authMiddleware, requireActiveUser, requireRole("SUPER_ADMIN"))
 	group.GET("/expenses", h.ListExpenses)
 	group.POST("/expenses", h.CreateExpense)
+	group.POST("/expenses/:id/cancel", h.CancelExpense)
+	group.POST("/expenses/:id/approve", h.ApproveExpense)
 	group.GET("/journals", h.ListJournals)
 }

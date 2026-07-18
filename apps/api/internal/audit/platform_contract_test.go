@@ -44,6 +44,24 @@ func TestPlatformFinanceAuditContract(t *testing.T) {
 			},
 		},
 		{
+			name: "expense cancellation accepts an operator reason",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpenseCancelled, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{"reason": "duplicate invoice"},
+			},
+			wantOK: true,
+		},
+		{
+			name: "expense approval records the exact transition",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpenseApproved, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{"transition": "DRAFT_TO_APPROVED"},
+			},
+			wantOK: true,
+		},
+		{
 			name: "reversal requires exact safe metadata",
 			params: CreatePlatformAuditLogParams{
 				ActorRole:     "SYSTEM",
