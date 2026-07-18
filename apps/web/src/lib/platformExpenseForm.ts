@@ -30,7 +30,7 @@ export const isRetryableExpenseSubmissionError = (error: unknown): boolean => {
     if (typeof status === 'number') return status >= 500 || status === 408 || status === 429;
   }
   if (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Request timeout')) return true;
+  if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Request timeout' || error instanceof SyntaxError)) return true;
   return error instanceof TypeError;
 };
 

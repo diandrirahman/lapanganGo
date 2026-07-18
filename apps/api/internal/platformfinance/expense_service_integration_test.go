@@ -145,7 +145,8 @@ func TestExpenseServicePostAndVoidAreAtomicExactAndIdempotent(t *testing.T) {
 		Dimension:    "owner",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "125000", postedBreakdown.PlatformOperatingExpense)
+	require.NotNil(t, postedBreakdown.PlatformOperatingExpense)
+	assert.Equal(t, "125000", *postedBreakdown.PlatformOperatingExpense)
 	assert.Equal(t, "AVAILABLE", postedBreakdown.DataAvailability.PlatformOperatingExpense)
 
 	replayedPosted, replayed, err := service.PostExpense(context.Background(), created.ID, "post-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")

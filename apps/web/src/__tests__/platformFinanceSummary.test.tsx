@@ -93,6 +93,26 @@ describe('AdminPlatformFinancePage OPEX summary contract', () => {
     await waitFor(() => expect(screen.queryByTestId('platform-finance-stale')).toBeNull());
   });
 
+  it('removes the previous summary when a new filter request fails and replaces it after retry', async () => {
+    vi.mocked(adminApi.getPlatformFinanceSummary)
+      .mockResolvedValueOnce(summary('10000', '-3000'))
+      .mockRejectedValueOnce(new Error('Finance summary could not be loaded.'))
+      .mockResolvedValueOnce(summary('20000', '-13000'));
+
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+    expect((await screen.findByTestId('platform-opex-value')).textContent).toContain('Rp 10.000');
+
+    fireEvent.change(screen.getByLabelText('Granularity'), { target: { value: 'month' } });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Finance summary could not be loaded.');
+    expect(screen.queryByTestId('platform-opex-value')).toBeNull();
+    expect(screen.queryByTestId('platform-finance-stale')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect((await screen.findByTestId('platform-opex-value')).textContent).toContain('Rp 20.000');
+    expect(screen.getByText('Projected Operating Result').parentElement?.textContent).toContain('Rp -13.000');
+  });
+
   it('keeps the newest filter result when an older request resolves late', async () => {
     let resolveOlder: (value: PlatformFinanceSummaryResponse) => void = () => undefined;
     let resolveNewest: (value: PlatformFinanceSummaryResponse) => void = () => undefined;

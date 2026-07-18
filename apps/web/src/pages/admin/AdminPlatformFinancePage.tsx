@@ -122,6 +122,7 @@ export const AdminPlatformFinancePage: React.FC = () => {
       if (requestID === requestIDRef.current) setSummary(response);
     }).catch((requestError: unknown) => {
       if (controller.signal.aborted || requestID !== requestIDRef.current) return;
+      setSummary(null);
       setError(requestError instanceof Error ? requestError.message : 'Finance summary could not be loaded.');
     }).finally(() => {
       if (requestID === requestIDRef.current) setLoading(false);

@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExpenseActionModal } from '../components/admin/ExpenseActionModal';
+import { CreateExpenseModal } from '../components/admin/CreateExpenseModal';
 import { AdminPlatformExpensesPage } from '../pages/admin/AdminPlatformExpensesPage';
 import { AdminApiError, adminApi } from '../lib/api/admin';
 import type { PlatformExpense, PlatformJournal } from '../types/platformExpense';
@@ -14,6 +15,7 @@ vi.mock('../lib/api/admin', async () => {
       ...actual.adminApi,
       getPlatformExpenses: vi.fn(),
       getPlatformJournals: vi.fn(),
+      createPlatformExpense: vi.fn(),
       postPlatformExpense: vi.fn(),
       voidPlatformExpense: vi.fn(),
     },
@@ -92,6 +94,7 @@ const journalPage = {
 
 const postPlatformExpense = vi.mocked(adminApi.postPlatformExpense);
 const voidPlatformExpense = vi.mocked(adminApi.voidPlatformExpense);
+const createPlatformExpense = vi.mocked(adminApi.createPlatformExpense);
 const getPlatformExpenses = vi.mocked(adminApi.getPlatformExpenses);
 const getPlatformJournals = vi.mocked(adminApi.getPlatformJournals);
 
@@ -201,6 +204,36 @@ describe('ExpenseActionModal executable mutation QA', () => {
   });
 });
 
+describe('CreateExpenseModal idempotency ambiguity QA', () => {
+  it('keeps the same key after a successful response body parse failure and retry', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    createPlatformExpense
+      .mockRejectedValueOnce(new SyntaxError('Unexpected end of JSON input'))
+      .mockResolvedValueOnce({ ...expense, status: 'DRAFT' });
+    const { rerender } = render(<CreateExpenseModal isOpen onClose={onClose} onCreated={onCreated} />);
+
+    await user.type(screen.getByLabelText('Amount (IDR)'), '250000');
+    await user.type(screen.getByLabelText('Description'), 'Ambiguous response QA');
+    await user.click(screen.getByRole('button', { name: 'Review summary' }));
+    await user.click(screen.getByRole('button', { name: 'Create DRAFT' }));
+    await screen.findByText('The request timed out or the connection was interrupted. Retry with the same request.');
+    const firstKey = createPlatformExpense.mock.calls[0]?.[1];
+    expect(firstKey).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    rerender(<CreateExpenseModal isOpen={false} onClose={onClose} onCreated={onCreated} />);
+    rerender(<CreateExpenseModal isOpen onClose={onClose} onCreated={onCreated} />);
+
+    await user.click(screen.getByRole('button', { name: 'Create DRAFT' }));
+    await waitFor(() => expect(createPlatformExpense).toHaveBeenCalledTimes(2));
+    expect(createPlatformExpense.mock.calls[1]?.[1]).toBe(firstKey);
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('AdminPlatformExpensesPage executable refresh and link QA', () => {
   it('refetches and renders the new status after a successful post', async () => {
     const user = userEvent.setup();
@@ -274,10 +307,82 @@ describe('AdminPlatformExpensesPage executable refresh and link QA', () => {
     await screen.findAllByText('VOID');
     const reversalLinks = container.querySelectorAll('a[href="#journal-journal-reversal-1"]');
     expect(reversalLinks).toHaveLength(2);
-    await user.click(reversalLinks[0] as HTMLAnchorElement);
+    await user.click(reversalLinks[1] as HTMLAnchorElement);
 
     await waitFor(() => expect(getPlatformJournals).toHaveBeenCalled());
     expect(getPlatformJournals.mock.calls.at(-1)?.[0]).toMatchObject({ journal_id: journal.id, page: 1 });
     await screen.findByText(/Showing linked journal/);
+  });
+
+  it('renders accounting timestamps in Jakarta time regardless of browser timezone', async () => {
+    getPlatformExpenses.mockResolvedValue(expensePage(expense));
+    const previousTimezone = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      render(<AdminPlatformExpensesPage />);
+
+      await screen.findAllByText('APPROVED');
+      expect(screen.getAllByText('17 Jul 2026, 20:00 WIB').length).toBeGreaterThan(0);
+      expect(screen.queryByText('17 Jul 2026, 13:00')).toBeNull();
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+    }
+  });
+
+  it('supports both mobile reversal directions through exact journal links', async () => {
+    const user = userEvent.setup();
+    const originalJournal: PlatformJournal = {
+      ...journal,
+      id: 'journal-posted-1',
+      event_key: 'expense.posted:expense-1',
+      event_type: 'PLATFORM_FINANCE_EXPENSE_POSTED',
+      reverses_journal_id: null,
+      reversed_by_journal_id: 'journal-reversal-1',
+    };
+    getPlatformExpenses.mockResolvedValue(expensePage(reversalExpense));
+    getPlatformJournals.mockResolvedValueOnce({ ...journalPage, data: [journal] }).mockResolvedValueOnce({ ...journalPage, data: [originalJournal] }).mockResolvedValue({ ...journalPage, data: [journal] });
+
+    const { container } = render(<AdminPlatformExpensesPage />);
+    await screen.findAllByText('VOID');
+    const mobileExpenseLink = container.querySelectorAll('a[href="#journal-journal-reversal-1"]')[1] as HTMLAnchorElement;
+    await user.click(mobileExpenseLink);
+    await waitFor(() => expect(getPlatformJournals.mock.calls.at(-1)?.[0]).toMatchObject({ journal_id: journal.id, page: 1 }));
+
+    const mobileOriginalLink = screen.getAllByRole('link', { name: /Reversal of/ })[1];
+    await user.click(mobileOriginalLink);
+    await waitFor(() => expect(getPlatformJournals.mock.calls.at(-1)?.[0]).toMatchObject({ journal_id: 'journal-posted-1', page: 1 }));
+
+    const mobileReversalLink = screen.getAllByRole('link', { name: /Reversed by/ })[1];
+    await user.click(mobileReversalLink);
+    await waitFor(() => expect(getPlatformJournals.mock.calls.at(-1)?.[0]).toMatchObject({ journal_id: 'journal-reversal-1', page: 1 }));
+  });
+
+  it('clears previous rows when a new filter request fails', async () => {
+    const user = userEvent.setup();
+    getPlatformExpenses.mockResolvedValueOnce(expensePage(expense)).mockRejectedValueOnce(new Error('network failure'));
+
+    render(<AdminPlatformExpensesPage />);
+    await screen.findAllByText('APPROVED');
+    await user.selectOptions(screen.getByLabelText('Status'), 'POSTED');
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Finance data could not be loaded'));
+    expect(screen.queryByText('QA Vendor')).toBeNull();
+    expect(screen.queryByText('No platform expenses match the current filters.')).toBeNull();
+  });
+
+  it('keeps journal error state separate from journal empty state', async () => {
+    const user = userEvent.setup();
+    getPlatformExpenses.mockResolvedValue(expensePage(expense));
+    getPlatformJournals.mockResolvedValueOnce(journalPage).mockRejectedValueOnce(new Error('network failure'));
+
+    render(<AdminPlatformExpensesPage />);
+    await screen.findAllByText('APPROVED');
+    await user.click(screen.getByRole('button', { name: 'Journals' }));
+    await screen.findAllByText('PLATFORM_FINANCE_JOURNAL_REVERSED');
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Finance data could not be loaded'));
+    expect(screen.queryByText('No posted journals match the current filters.')).toBeNull();
   });
 });

@@ -23,6 +23,7 @@ const workflow = await import(`data:text/javascript,${encodeURIComponent(workflo
 
 assert.equal(form.isRetryableExpenseSubmissionError(new Error('Request timeout')), true);
 assert.equal(form.isRetryableExpenseSubmissionError(new TypeError('Failed to fetch')), true);
+assert.equal(form.isRetryableExpenseSubmissionError(new SyntaxError('Unexpected end of JSON input')), true);
 assert.equal(form.isRetryableExpenseSubmissionError({ status: 500 }), true);
 assert.equal(form.isRetryableExpenseSubmissionError({ status: 409 }), false);
 assert.equal(form.validateExpenseCancelReason('  duplicate invoice  '), null);
