@@ -1,0 +1,85 @@
+{
+  "period": { "start_date": "2026-06-01", "end_date": "2026-06-02" },
+  "mode": "SIMULATION",
+  "currency": "IDR",
+  "timezone": "Asia/Jakarta",
+  "generated_at": "2026-06-02T10:00:00+07:00",
+  "as_of": "2026-06-02T10:00:00+07:00",
+  "granularity": "day",
+  "default_commission_bps": 700,
+  "metric_source_version": "booking-snapshot-projection-v1",
+  "projection_basis": "BOOKING_SNAPSHOT",
+  "metrics": {
+    "online_gmv_gross": "100000",
+    "refund_principal": "0",
+    "online_gmv_net": "100000",
+    "projected_commission": "7000",
+    "projected_owner_net_after_hypothetical_commission": "93000",
+    "projected_take_rate_bps": 700,
+    "realized_online_booking_count": 1,
+    "refunded_booking_count": 0,
+    "legacy_manual_realized_gmv": "0",
+    "gateway_captured_gmv": null,
+    "actual_commission_revenue": null,
+    "payment_processing_expense": null,
+    "platform_operating_expense": "125000",
+    "projected_operating_result_before_transaction_costs": "-118000",
+    "platform_revenue": null,
+    "transaction_contribution": null,
+    "operating_result": null,
+    "gross_take_rate_bps": null,
+    "net_take_rate_bps": null
+  },
+  "data_availability": {
+    "platform_operating_expense": "AVAILABLE",
+    "actual_platform_revenue": "UNAVAILABLE_UNTIL_LIVE",
+    "payment_processing_expense": "UNAVAILABLE_UNTIL_GATEWAY",
+    "owner_payable": "UNAVAILABLE_UNTIL_PLATFORM_COLLECTED"
+  },
+  "data_quality": {
+    "paid_without_ledger_count": 0,
+    "ledger_without_booking_count": 0,
+    "legacy_scenario_count": 0,
+    "snapshot_projection_count": 1,
+    "non_billable_projection_amount": "0",
+    "snapshot_projection_amount": "7000",
+    "duplicate_ledger_count": 0
+  },
+  "trend": [
+    {
+      "period_start": "2026-06-01",
+      "period_end": "2026-06-01",
+      "online_gmv_gross": "100000",
+      "refund_principal": "0",
+      "online_gmv_net": "100000",
+      "projected_commission": "7000",
+      "projection_basis": "BOOKING_SNAPSHOT",
+      "legacy_scenario_count": 0,
+      "snapshot_projection_count": 1,
+      "non_billable_projection_amount": "0",
+      "snapshot_projection_amount": "7000",
+      "platform_operating_expense": "125000"
+    },
+    {
+      "period_start": "2026-06-02",
+      "period_end": "2026-06-02",
+      "online_gmv_gross": "0",
+      "refund_principal": "0",
+      "online_gmv_net": "0",
+      "projected_commission": "0",
+      "projection_basis": "HISTORICAL_SCENARIO",
+      "legacy_scenario_count": 0,
+      "snapshot_projection_count": 0,
+      "non_billable_projection_amount": "0",
+      "snapshot_projection_amount": "0",
+      "platform_operating_expense": "0"
+    }
+  ],
+  "top_owner_breakdown": [],
+  "top_venue_breakdown": [],
+  "caveats": [
+    "Proyeksi komisi bukan pendapatan aktual dan belum ditagihkan kepada owner.",
+    "LEGACY_NO_COMMISSION ditampilkan sebagai skenario historis 7% non-billable; POLICY memakai nilai booking_fee_snapshots.",
+    "OPEX adalah biaya platform global dan belum dialokasikan ke owner atau venue."
+  ]
+}

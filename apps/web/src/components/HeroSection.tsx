@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CalendarCheck, MapPin, Search, Sparkles } from 'lucide-react';
+import { CalendarCheck, MapPin, Search } from 'lucide-react';
 import { Button } from './ui/Button';
 import { useNavigate } from 'react-router-dom';
 import heroIndoorVenue from '../assets/hero-sports-venue.webp';
@@ -39,7 +39,7 @@ export const HeroSection: React.FC = () => {
           <div className="relative z-10 flex flex-col justify-between px-5 pb-10 pt-9 text-white sm:px-9 sm:pb-12 sm:pt-12 lg:px-12 lg:pb-[190px] lg:pt-16 xl:px-16">
             <div>
               <div className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/[0.06] px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white/80 sm:text-xs">
-                <Sparkles className="h-4 w-4 text-secondary" /> Cari. Booking. Main.
+                Cari Venue Olahraga
               </div>
 
               <h1 className="animate-fade-up delay-75 mt-7 max-w-[680px] text-[clamp(3.35rem,6.4vw,6.4rem)] font-extrabold uppercase leading-[0.84] tracking-[-0.07em] text-white">

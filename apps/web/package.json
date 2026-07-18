@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node scripts/test_platform_expense_form.mjs && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx src/__tests__/platformFinanceSummary.test.tsx",
+    "test": "node scripts/test_platform_expense_form.mjs && npm run test:responsive && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx src/__tests__/platformFinanceSummary.test.tsx src/__tests__/platformFinanceApiUiContract.test.tsx src/__tests__/superAdminRoute.test.tsx",
+    "test:responsive": "node scripts/test_platform_finance_responsive.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -33,6 +34,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "jsdom": "^26.1.0",
     "oxlint": "^1.69.0",
+    "playwright-core": "^1.52.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.0",
     "vitest": "^3.2.7"

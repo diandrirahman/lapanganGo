@@ -78,6 +78,9 @@ export const AdminPlatformFinancePage: React.FC = () => {
   const [owners, setOwners] = useState<OwnerResponse[]>([]);
   const [ownerTotalPages, setOwnerTotalPages] = useState(0);
   const [venues, setVenues] = useState<VenueResponse[]>([]);
+  const [ownerOptionsError, setOwnerOptionsError] = useState<string | null>(null);
+  const [venueOptionsError, setVenueOptionsError] = useState<string | null>(null);
+  const [optionsRetryToken, setOptionsRetryToken] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -86,21 +89,27 @@ export const AdminPlatformFinancePage: React.FC = () => {
 
   useEffect(() => {
     let active = true;
+    setOwnerOptionsError(null);
     const timer = window.setTimeout(() => {
       void adminApi.getOwners({ page: ownerPage, limit: 25, ...(ownerSearch.trim() ? { search: ownerSearch.trim() } : {}) }).then((response) => {
         if (!active) return;
         setOwners(response.data);
         setOwnerTotalPages(response.total_pages ?? 0);
-      }).catch(() => undefined);
+      }).catch(() => {
+        if (active) setOwnerOptionsError('Daftar owner tidak dapat dimuat.');
+      });
     }, 250);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [ownerPage, ownerSearch]);
+  }, [ownerPage, ownerSearch, optionsRetryToken]);
 
   useEffect(() => {
     let active = true;
-    void adminApi.getVenues({ page: 1, limit: 100, ...(filters.owner_profile_id ? { owner_profile_id: filters.owner_profile_id } : {}) }).then((response) => { if (active) setVenues(response.data); }).catch(() => undefined);
+    setVenueOptionsError(null);
+    void adminApi.getVenues({ page: 1, limit: 100, ...(filters.owner_profile_id ? { owner_profile_id: filters.owner_profile_id } : {}) }).then((response) => { if (active) setVenues(response.data); }).catch(() => {
+      if (active) setVenueOptionsError('Daftar venue tidak dapat dimuat.');
+    });
     return () => { active = false; };
-  }, [filters.owner_profile_id]);
+  }, [filters.owner_profile_id, optionsRetryToken]);
 
   useEffect(() => {
     controllerRef.current?.abort();
@@ -131,15 +140,23 @@ export const AdminPlatformFinancePage: React.FC = () => {
   };
 
   const refresh = () => setRefreshToken((current) => current + 1);
+  const retryOptions = () => {
+    setOwnerOptionsError(null);
+    setVenueOptionsError(null);
+    setOptionsRetryToken((current) => current + 1);
+  };
 
   const ownerSelectionMissing = filters.owner_profile_id && !owners.some((owner) => owner.id === filters.owner_profile_id);
   const scopedProjectionUnavailable = Boolean(filters.owner_profile_id || filters.venue_id) && summary?.metrics.projected_operating_result_before_transaction_costs === null;
+  const optionsError = ownerOptionsError ?? venueOptionsError;
 
   return <div className="mx-auto max-w-7xl space-y-6">
     <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700"><CircleDollarSign className="h-6 w-6" /></div><div><h1 className="text-2xl font-bold text-slate-900">Keuangan Platform</h1><p className="mt-1 text-sm text-slate-500">Ringkasan OPEX dan tren berdasarkan journal immutable.</p></div></div><div className="flex flex-wrap gap-2"><Link to="/admin/finance/expenses" className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Pengeluaran <ExternalLink className="ml-2 h-4 w-4" /></Link><button type="button" onClick={refresh} disabled={loading} className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"><RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />Refresh</button></div></header>
     <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-950"><p className="font-semibold">MODE SIMULASI</p><p className="mt-1">Komisi dan operating result pada halaman ini adalah proyeksi. LapangGo belum memotong atau menerima komisi dari owner.</p></div>
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><Filter className="h-4 w-4" />Filter laporan</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><label className="text-sm font-medium text-slate-700">Mulai<input type="date" value={filters.start_date ?? ''} onChange={(event) => updateFilters({ start_date: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2" /></label><label className="text-sm font-medium text-slate-700">Sampai<input type="date" value={filters.end_date ?? ''} onChange={(event) => updateFilters({ end_date: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2" /></label><div><label className="text-sm font-medium text-slate-700" htmlFor="owner-search">Cari owner</label><input id="owner-search" aria-label="Owner search" value={ownerSearch} onChange={(event) => { setOwnerSearch(event.target.value); setOwnerPage(1); }} placeholder="Nama owner" className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" /><label className="mt-2 block text-sm font-medium text-slate-700">Owner<select aria-label="Owner" value={filters.owner_profile_id ?? ''} onChange={(event) => updateFilters({ owner_profile_id: event.target.value, venue_id: undefined })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2"><option value="">Semua owner</option>{ownerSelectionMissing && <option value={filters.owner_profile_id}>Owner terpilih</option>}{owners.map((owner) => <option key={owner.id} value={owner.id}>{owner.business_name}</option>)}</select></label><div className="mt-2 flex items-center justify-between text-xs text-slate-500"><button type="button" aria-label="Previous owner page" disabled={ownerPage <= 1} onClick={() => setOwnerPage((page) => page - 1)} className="rounded border border-slate-200 px-2 py-1 disabled:opacity-40">Sebelumnya</button><span>{ownerTotalPages > 0 ? `Halaman ${ownerPage} dari ${ownerTotalPages}` : `Halaman ${ownerPage}`}</span><button type="button" aria-label="Next owner page" disabled={ownerTotalPages > 0 && ownerPage >= ownerTotalPages} onClick={() => setOwnerPage((page) => page + 1)} className="rounded border border-slate-200 px-2 py-1 disabled:opacity-40">Berikutnya</button></div></div><label className="text-sm font-medium text-slate-700">Venue<select value={filters.venue_id ?? ''} onChange={(event) => updateFilters({ venue_id: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2"><option value="">Semua venue</option>{venues.map((venue) => <option key={venue.id} value={venue.id}>{venue.name}</option>)}</select></label><label className="text-sm font-medium text-slate-700">Granularity<select value={filters.granularity ?? 'auto'} onChange={(event) => updateFilters({ granularity: event.target.value as PlatformFinanceSummaryQuery['granularity'] })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2"><option value="auto">Otomatis</option><option value="day">Harian</option><option value="week">Mingguan</option><option value="month">Bulanan</option></select></label></div><p className="mt-3 text-xs text-slate-500">Tanggal kosong memakai periode MTD dari server dalam timezone Asia/Jakarta.</p></section>
+    {optionsError && <div role="alert" data-testid="platform-finance-options-error" className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" /><span>{optionsError}</span><button type="button" aria-label="Retry finance filter options" onClick={retryOptions} className="ml-auto font-semibold underline">Coba lagi</button></div>}
     {error && <div role="alert" className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" /><span>{error}</span><button type="button" onClick={refresh} className="ml-auto font-semibold underline">Retry</button></div>}
+    {summary && loading && <div role="status" data-testid="platform-finance-stale" className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">Memuat filter baru; ringkasan yang tampil masih berasal dari request sebelumnya.</div>}
     {summary && scopedProjectionUnavailable && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Projected operating result belum tersedia untuk filter owner/venue karena OPEX belum memiliki alokasi per scope.</p>}
     {summary && <><section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><MetricCard label="OPEX Platform" value={summary.data_availability.platform_operating_expense === 'AVAILABLE' ? formatIntegerRupiah(summary.metrics.platform_operating_expense) : 'Belum tersedia'} tone="actual" testID="platform-opex-value" hint="POSTED net exact reversal" /><MetricCard label="Proyeksi Komisi" value={formatIntegerRupiah(summary.metrics.projected_commission)} tone="projection" /><MetricCard label="Projected Operating Result" value={formatIntegerRupiah(summary.metrics.projected_operating_result_before_transaction_costs)} tone="projection" hint="Simulasi komisi dikurangi OPEX; bukan hasil aktual" /><MetricCard label="Pendapatan Aktual" value={formatActual(summary.metrics.platform_revenue)} tone="neutral" hint="Belum ada sumber kebenaran LIVE" /><MetricCard label="Transaction Contribution" value={formatActual(summary.metrics.transaction_contribution)} tone="neutral" hint="Belum ada sumber kebenaran LIVE" /><MetricCard label="Operating Result Aktual" value={formatActual(summary.metrics.operating_result)} tone="neutral" hint="Belum ada sumber kebenaran LIVE" /></section><TrendPanel summary={summary} /><section className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600"><p className="font-semibold text-slate-800">Catatan data</p><ul className="mt-2 list-disc space-y-1 pl-5">{summary.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}<li>OPEX adalah biaya platform global dan tidak dialokasikan ke owner atau venue.</li></ul><p className="mt-3 text-xs text-slate-400">As of {formatCalendarDate(summary.period.end_date)} · snapshot {summary.as_of}</p></section></>}
     {!summary && loading && <div role="status" className="rounded-xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">Memuat ringkasan finance…</div>}

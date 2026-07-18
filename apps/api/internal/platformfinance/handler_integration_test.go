@@ -1,106 +1,94 @@
 package platformfinance_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"lapangango-api/internal/auth"
+	"lapangango-api/internal/middleware"
 	"lapangango-api/internal/platformfinance"
 )
 
-func mockAuth(t *testing.T, expectedToken string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		reqToken := c.GetHeader("Authorization")
-		if reqToken == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "missing token"})
-			return
-		}
-		if reqToken != expectedToken {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "invalid token"})
-			return
-		}
-		c.Next()
-	}
+type financeAuthStatusRepo struct {
+	statuses map[string]string
+	checks   int
 }
 
-func mockRequireActiveUser(t *testing.T, active bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !active {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "suspended"})
-			return
-		}
-		c.Next()
-	}
+func (r *financeAuthStatusRepo) GetUserStatus(_ context.Context, userID string) (string, error) {
+	r.checks++
+	return r.statuses[userID], nil
 }
 
-func mockRequireRole(t *testing.T, expectedRole, actualRole string) func(...string) gin.HandlerFunc {
-	return func(roles ...string) gin.HandlerFunc {
-		return func(c *gin.Context) {
-			expectedRoleRequested := false
-			for _, role := range roles {
-				if role == expectedRole {
-					expectedRoleRequested = true
-					break
-				}
-			}
-			if !expectedRoleRequested || actualRole != expectedRole {
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "forbidden"})
-				return
-			}
-			c.Next()
-		}
-	}
-}
-
-func TestHandler_Integration_Auth(t *testing.T) {
+func TestHandler_Integration_UsesProductionAuthChain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	repo := &mockRepo{err: nil}
-	svc := platformfinance.NewService(repo)
+	const secret = "task-3b2-06-finance-auth-test-secret"
 
 	tests := []struct {
-		name           string
-		token          string
-		active         bool
-		actualRole     string
-		expectedStatus int
+		name          string
+		withToken     bool
+		validToken    bool
+		role          string
+		status        string
+		wantStatus    int
+		wantStatusHit int
 	}{
-		{"tanpa token", "", true, "SUPER_ADMIN", http.StatusUnauthorized},
-		{"invalid token", "Bearer invalid", true, "SUPER_ADMIN", http.StatusUnauthorized},
-		{"customer", "Bearer valid", true, "CUSTOMER", http.StatusForbidden},
-		{"owner", "Bearer valid", true, "OWNER", http.StatusForbidden},
-		{"staff", "Bearer valid", true, "STAFF", http.StatusForbidden},
-		{"suspended superadmin", "Bearer valid", false, "SUPER_ADMIN", http.StatusForbidden},
-		{"active superadmin", "Bearer valid", true, "SUPER_ADMIN", http.StatusOK},
+		{name: "tanpa token", wantStatus: http.StatusUnauthorized},
+		{name: "invalid jwt", withToken: true, wantStatus: http.StatusUnauthorized},
+		{name: "customer role", withToken: true, validToken: true, role: "CUSTOMER", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusHit: 2},
+		{name: "owner role", withToken: true, validToken: true, role: "OWNER", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusHit: 2},
+		{name: "staff role", withToken: true, validToken: true, role: "STAFF", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusHit: 2},
+		{name: "suspended superadmin", withToken: true, validToken: true, role: "SUPER_ADMIN", status: "SUSPENDED", wantStatus: http.StatusForbidden, wantStatusHit: 2},
+		{name: "active superadmin", withToken: true, validToken: true, role: "SUPER_ADMIN", status: "ACTIVE", wantStatus: http.StatusOK, wantStatusHit: 2},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := gin.Default()
+			repo := &mockRepo{err: nil}
+			service := platformfinance.NewService(repo)
+			statusRepo := &financeAuthStatusRepo{statuses: map[string]string{}}
+			tokenService := auth.NewTokenService(secret, 1)
+			router := gin.New()
+			platformfinance.RegisterRoutes(
+				router,
+				middleware.Auth(tokenService),
+				middleware.RequireActiveUser(statusRepo),
+				middleware.RequireRole,
+				service,
+			)
 
-			authMW := mockAuth(t, "Bearer valid")
-			if tt.name == "tanpa token" {
-				authMW = func(c *gin.Context) {
-					if c.GetHeader("Authorization") == "" {
-						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "missing token"})
-						return
-					}
-					c.Next()
+			var authorization string
+			if tt.withToken {
+				if tt.validToken {
+					userID := uuid.NewString()
+					statusRepo.statuses[userID] = tt.status
+					token, err := tokenService.Generate(auth.UserResponse{ID: userID, Email: "finance-auth@example.com", Role: tt.role, Status: tt.status})
+					require.NoError(t, err)
+					authorization = "Bearer " + token
+				} else {
+					authorization = "Bearer invalid"
 				}
 			}
 
-			platformfinance.RegisterRoutes(r, authMW, mockRequireActiveUser(t, tt.active), mockRequireRole(t, "SUPER_ADMIN", tt.actualRole), svc)
-
-			req, _ := http.NewRequest(http.MethodGet, "/admin/finance/summary?start_date=2026-06-01&end_date=2026-06-30", nil)
-			if tt.token != "" {
-				req.Header.Set("Authorization", tt.token)
+			for _, path := range []string{
+				"/admin/finance/summary?start_date=2026-06-01&end_date=2026-06-30",
+				"/admin/finance/breakdown?start_date=2026-06-01&end_date=2026-06-30&dimension=owner",
+			} {
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				if authorization != "" {
+					req.Header.Set("Authorization", authorization)
+				}
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, req)
+				assert.Equal(t, tt.wantStatus, response.Code, path)
 			}
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
+			assert.Equal(t, tt.wantStatusHit, statusRepo.checks)
 		})
 	}
 }

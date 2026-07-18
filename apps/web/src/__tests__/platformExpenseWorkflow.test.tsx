@@ -221,6 +221,32 @@ describe('AdminPlatformExpensesPage executable refresh and link QA', () => {
     expect(postPlatformExpense).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the newest list filter result when an older request resolves late', async () => {
+    let resolveOlder!: (value: ReturnType<typeof expensePage>) => void;
+    let resolveNewest!: (value: ReturnType<typeof expensePage>) => void;
+    const olderRequest = new Promise<ReturnType<typeof expensePage>>((resolve) => { resolveOlder = resolve; });
+    const newestRequest = new Promise<ReturnType<typeof expensePage>>((resolve) => { resolveNewest = resolve; });
+    getPlatformExpenses
+      .mockResolvedValueOnce(expensePage(expense))
+      .mockReturnValueOnce(olderRequest)
+      .mockReturnValueOnce(newestRequest);
+
+    render(<AdminPlatformExpensesPage />);
+    await screen.findAllByText('APPROVED');
+    const statusFilter = screen.getByLabelText('Status');
+    const categoryFilter = screen.getByLabelText('Category');
+    await userEvent.setup().selectOptions(statusFilter, 'POSTED');
+    await userEvent.setup().selectOptions(categoryFilter, 'OFFICE_ADMIN');
+    await waitFor(() => expect(getPlatformExpenses).toHaveBeenCalledTimes(3));
+
+    resolveNewest(expensePage(postedExpense));
+    await waitFor(() => expect(screen.getAllByText('POSTED').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('APPROVED')).toHaveLength(1);
+    resolveOlder(expensePage(expense));
+    await waitFor(() => expect(screen.getAllByText('APPROVED')).toHaveLength(1));
+    expect(screen.getAllByText('POSTED').length).toBeGreaterThan(0);
+  });
+
   it('refetches after a 409 conflict and keeps the authoritative status', async () => {
     const user = userEvent.setup();
     getPlatformExpenses

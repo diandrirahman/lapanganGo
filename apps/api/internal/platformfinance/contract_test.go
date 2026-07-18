@@ -5,11 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/stretchr/testify/require"
 )
 
 type mismatchedFilterRepo struct{}
@@ -38,6 +46,31 @@ func (contractResponseRepo) GetSummaryData(context.Context, time.Time, time.Time
 
 func (contractResponseRepo) GetPaginatedBreakdown(context.Context, time.Time, time.Time, string, string, string, int, int) (*BreakdownResult, error) {
 	return &BreakdownResult{AsOf: time.Now(), Rows: []BreakdownRow{}, PlatformOperatingExpense: 123}, nil
+}
+
+type sharedContractResponseRepo struct{}
+
+func (sharedContractResponseRepo) OwnerMatchesVenue(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (sharedContractResponseRepo) GetSummaryData(context.Context, time.Time, time.Time, string, string) (*SummaryDataResult, error) {
+	return &SummaryDataResult{
+		AsOf:                     time.Date(2026, time.June, 2, 10, 0, 0, 0, jakartaLocation),
+		Gross:                    100000,
+		RealizedBookingCount:     1,
+		ProjectedCommGross:       7000,
+		IncomeBuckets:            []BucketResult{{Bucket: time.Date(2026, time.June, 1, 0, 0, 0, 0, jakartaLocation), Amount: 100000, Comm: 7000, Source: ProjectionBasisSnapshot}},
+		OpexBuckets:              []BucketResult{{Bucket: time.Date(2026, time.June, 1, 0, 0, 0, 0, jakartaLocation), Amount: 125000}},
+		PlatformOperatingExpense: 125000,
+		ProjectionBasis:          ProjectionBasisSnapshot,
+		SnapshotProjectionCount:  1,
+		SnapshotProjectionAmount: 7000,
+	}, nil
+}
+
+func (sharedContractResponseRepo) GetPaginatedBreakdown(ctx context.Context, start, end time.Time, ownerID, venueID, dimension string, page, limit int) (*BreakdownResult, error) {
+	return contractResponseRepo{}.GetPaginatedBreakdown(ctx, start, end, ownerID, venueID, dimension, page, limit)
 }
 
 func TestCalculateBpsUsesExactIntegerRounding(t *testing.T) {
@@ -129,6 +162,46 @@ func TestResponseContractUsesCanonicalAvailabilityAndSimulationMode(t *testing.T
 	}
 	if breakdown.DataAvailability.PlatformOperatingExpense != "AVAILABLE" {
 		t.Fatalf("breakdown OPEX availability = %q, want AVAILABLE", breakdown.DataAvailability.PlatformOperatingExpense)
+	}
+}
+
+func sharedSummaryContract(t *testing.T) map[string]any {
+	t.Helper()
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	contractPath := filepath.Join(filepath.Dir(sourceFile), "../../../../apps/web/src/test-fixtures/platformFinanceApiUiContract.json")
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read shared API/UI contract: %v", err)
+	}
+	var contract map[string]any
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatalf("decode shared API/UI contract: %v", err)
+	}
+	return contract
+}
+
+func TestHandler_SummaryMatchesSharedAPIUIContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(NewService(sharedContractResponseRepo{}))
+	r := gin.New()
+	r.GET("/summary", handler.GetSummary)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/summary?start_date=2026-06-01&end_date=2026-06-02", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var actual map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &actual))
+	expected := sharedSummaryContract(t)
+	// generated_at is server time by contract; all other serialized fields must
+	// equal the same payload consumed by the frontend API/UI test.
+	actual["generated_at"] = expected["generated_at"]
+	if !reflect.DeepEqual(actual, expected) {
+		actualJSON, _ := json.MarshalIndent(actual, "", "  ")
+		expectedJSON, _ := json.MarshalIndent(expected, "", "  ")
+		t.Fatalf("backend response differs from shared frontend contract\nactual:\n%s\nexpected:\n%s", actualJSON, expectedJSON)
 	}
 }
 

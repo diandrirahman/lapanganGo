@@ -2,6 +2,7 @@ package platformfinance_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"lapangango-api/internal/platformfinance"
 )
@@ -31,7 +33,10 @@ func (m *mockRepo) GetSummaryData(ctx context.Context, start, end time.Time, own
 }
 
 func (m *mockRepo) GetPaginatedBreakdown(ctx context.Context, start, end time.Time, ownerID, venueID, dimension string, page, limit int) (*platformfinance.BreakdownResult, error) {
-	return nil, m.err
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &platformfinance.BreakdownResult{Rows: []platformfinance.BreakdownRow{}}, nil
 }
 
 func TestHandler_Summary_DuplicateLedger(t *testing.T) {
@@ -83,6 +88,35 @@ func TestHandler_Summary_Success(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestHandler_Summary_JSONContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := platformfinance.NewHandler(platformfinance.NewService(&mockRepo{err: nil}))
+	r := gin.New()
+	r.GET("/summary", handler.GetSummary)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/summary?start_date=2026-06-01&end_date=2026-06-30", nil))
+
+	var payload struct {
+		Metrics struct {
+			PlatformOperatingExpense *string `json:"platform_operating_expense"`
+			PlatformRevenue          *string `json:"platform_revenue"`
+			TransactionContribution  *string `json:"transaction_contribution"`
+			OperatingResult          *string `json:"operating_result"`
+		} `json:"metrics"`
+		DataAvailability struct {
+			PlatformOperatingExpense string `json:"platform_operating_expense"`
+			ActualPlatformRevenue    string `json:"actual_platform_revenue"`
+		} `json:"data_availability"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
+	assert.Equal(t, "0", *payload.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "AVAILABLE", payload.DataAvailability.PlatformOperatingExpense)
+	assert.Equal(t, "UNAVAILABLE_UNTIL_LIVE", payload.DataAvailability.ActualPlatformRevenue)
+	assert.Nil(t, payload.Metrics.PlatformRevenue)
+	assert.Nil(t, payload.Metrics.TransactionContribution)
+	assert.Nil(t, payload.Metrics.OperatingResult)
 }
 
 func TestHandler_Summary_SanitizesInternalError(t *testing.T) {

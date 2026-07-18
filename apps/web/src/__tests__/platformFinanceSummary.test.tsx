@@ -77,12 +77,62 @@ describe('AdminPlatformFinancePage OPEX summary contract', () => {
     expect(screen.getByText('Projected Operating Result').parentElement?.textContent).toContain('Rp -13.000');
   });
 
+  it('marks the previous summary as stale while a new filter request is pending', async () => {
+    let resolveNext: (value: PlatformFinanceSummaryResponse) => void = () => undefined;
+    const pendingSummary = new Promise<PlatformFinanceSummaryResponse>((resolve) => { resolveNext = resolve; });
+    vi.mocked(adminApi.getPlatformFinanceSummary)
+      .mockResolvedValueOnce(summary('10000', '-3000'))
+      .mockReturnValueOnce(pendingSummary);
+
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+    await screen.findByTestId('platform-opex-value');
+    fireEvent.change(screen.getByLabelText('Granularity'), { target: { value: 'month' } });
+
+    expect((await screen.findByTestId('platform-finance-stale')).textContent).toContain('ringkasan yang tampil masih berasal dari request sebelumnya');
+    resolveNext(summary('20000', '-13000'));
+    await waitFor(() => expect(screen.queryByTestId('platform-finance-stale')).toBeNull());
+  });
+
+  it('keeps the newest filter result when an older request resolves late', async () => {
+    let resolveOlder: (value: PlatformFinanceSummaryResponse) => void = () => undefined;
+    let resolveNewest: (value: PlatformFinanceSummaryResponse) => void = () => undefined;
+    const olderRequest = new Promise<PlatformFinanceSummaryResponse>((resolve) => { resolveOlder = resolve; });
+    const newestRequest = new Promise<PlatformFinanceSummaryResponse>((resolve) => { resolveNewest = resolve; });
+    vi.mocked(adminApi.getPlatformFinanceSummary)
+      .mockResolvedValueOnce(summary('10000', '-3000'))
+      .mockReturnValueOnce(olderRequest)
+      .mockReturnValueOnce(newestRequest);
+
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+    await screen.findByTestId('platform-opex-value');
+    fireEvent.change(screen.getByLabelText('Granularity'), { target: { value: 'month' } });
+    fireEvent.change(screen.getByLabelText('Mulai'), { target: { value: '2026-05-01' } });
+    await waitFor(() => expect(vi.mocked(adminApi.getPlatformFinanceSummary).mock.calls.length).toBeGreaterThanOrEqual(3));
+
+    resolveNewest(summary('30000', '-27000'));
+    await waitFor(() => expect(screen.getByTestId('platform-opex-value').textContent).toContain('Rp 30.000'));
+    resolveOlder(summary('12000', '-18000'));
+    await waitFor(() => expect(screen.getByTestId('platform-opex-value').textContent).toContain('Rp 30.000'));
+    expect(screen.getByText('Projected Operating Result').parentElement?.textContent).toContain('Rp -27.000');
+  });
+
   it('does not display a mixed-scope projected result when an owner filter is active', async () => {
     vi.mocked(adminApi.getPlatformFinanceSummary).mockResolvedValue(summary('10000', null));
     render(<MemoryRouter initialEntries={['/admin/finance?owner_profile_id=00000000-0000-0000-0000-000000000001']}><AdminPlatformFinancePage /></MemoryRouter>);
     await screen.findByTestId('platform-opex-value');
     expect(screen.getByText('Projected Operating Result').parentElement?.textContent).toContain('Belum tersedia');
     expect(screen.getByRole('status').textContent).toContain('OPEX belum memiliki alokasi per scope');
+  });
+
+  it('keeps mobile and desktop responsive layout contracts explicit', async () => {
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+    await screen.findByTestId('platform-opex-value');
+
+    const filterSection = screen.getByText('Filter laporan').closest('section');
+    const filterGrid = filterSection?.querySelector('div.grid');
+    expect(filterGrid?.className).toContain('sm:grid-cols-2');
+    expect(filterGrid?.className).toContain('lg:grid-cols-5');
+    expect(screen.getByTestId('platform-finance-trend').querySelector('div.overflow-x-auto')).not.toBeNull();
   });
 
   it('uses URL state for browser history navigation', async () => {
@@ -105,5 +155,29 @@ describe('AdminPlatformFinancePage OPEX summary contract', () => {
     await waitFor(() => expect(vi.mocked(adminApi.getOwners).mock.calls.some(([params]) => params?.page === 1 && params.limit === 25)).toBe(true));
     fireEvent.click(screen.getByRole('button', { name: 'Next owner page' }));
     await waitFor(() => expect(vi.mocked(adminApi.getOwners).mock.calls.some(([params]) => params?.page === 2 && params.limit === 25)).toBe(true));
+  });
+
+  it('surfaces owner option failures and retries the request', async () => {
+    vi.mocked(adminApi.getOwners)
+      .mockRejectedValueOnce(new Error('owner service unavailable'))
+      .mockResolvedValue({ data: [], total_pages: 1, total_items: 0, page: 1, limit: 25 });
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+
+    await waitFor(() => expect(screen.getByTestId('platform-finance-options-error').textContent).toContain('Daftar owner tidak dapat dimuat'));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry finance filter options' }));
+    await waitFor(() => expect(vi.mocked(adminApi.getOwners).mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.queryByTestId('platform-finance-options-error')).toBeNull());
+  });
+
+  it('surfaces venue option failures and retries the request', async () => {
+    vi.mocked(adminApi.getVenues)
+      .mockRejectedValueOnce(new Error('venue service unavailable'))
+      .mockResolvedValue({ data: [], total_pages: 1, total_items: 0, page: 1, limit: 100 });
+    render(<MemoryRouter><AdminPlatformFinancePage /></MemoryRouter>);
+
+    await waitFor(() => expect(screen.getByTestId('platform-finance-options-error').textContent).toContain('Daftar venue tidak dapat dimuat'));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry finance filter options' }));
+    await waitFor(() => expect(vi.mocked(adminApi.getVenues).mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.queryByTestId('platform-finance-options-error')).toBeNull());
   });
 });
