@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"lapangango-api/internal/audit"
@@ -19,16 +21,23 @@ type ExpenseService interface {
 	CreateDraft(ctx context.Context, req CreateExpenseRequest, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
 	CancelDraft(ctx context.Context, expenseID, reason, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
 	ApproveDraft(ctx context.Context, expenseID, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
+	PostExpense(ctx context.Context, expenseID, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
+	VoidExpense(ctx context.Context, expenseID, reason, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error)
 }
 
 type expenseService struct {
 	repo         ExpenseRepository
 	dbPool       *pgxpool.Pool
 	auditService audit.PlatformService
+	journal      JournalService
 }
 
-func NewExpenseService(repo ExpenseRepository, dbPool *pgxpool.Pool, auditService audit.PlatformService) ExpenseService {
-	return &expenseService{repo: repo, dbPool: dbPool, auditService: auditService}
+func NewExpenseService(repo ExpenseRepository, dbPool *pgxpool.Pool, auditService audit.PlatformService, journalServices ...JournalService) ExpenseService {
+	var journal JournalService
+	if len(journalServices) > 0 {
+		journal = journalServices[0]
+	}
+	return &expenseService{repo: repo, dbPool: dbPool, auditService: auditService, journal: journal}
 }
 
 func (s *expenseService) ListExpenses(ctx context.Context, query ExpenseListQuery) (*ExpensePage, error) {
@@ -267,6 +276,223 @@ func (s *expenseService) ApproveDraft(ctx context.Context, expenseID, idempotenc
 		return nil, false, err
 	}
 	return item, false, nil
+}
+
+func (s *expenseService) PostExpense(ctx context.Context, expenseID, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error) {
+	if s == nil || s.journal == nil {
+		return nil, false, ErrExpensePersistence
+	}
+	var err error
+	idempotencyKey, err = s.validateActionInputs(expenseID, idempotencyKey, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	requestHash := expenseActionHash(expenseID, "")
+	tx, err := s.dbPool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.repo.LockIdempotency(ctx, tx, actorID, "POST", idempotencyKey); err != nil {
+		return nil, false, err
+	}
+	record, err := s.repo.GetIdempotency(ctx, tx, actorID, "POST", idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if record != nil {
+		return s.replayExpenseAction(record, requestHash, expenseID)
+	}
+	locked, err := s.repo.GetExpenseForUpdate(ctx, tx, expenseID)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.Status != "APPROVED" {
+		return nil, false, ErrExpenseConflict
+	}
+	databaseNow, err := s.repo.DatabaseNow(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.OccurredAt.After(databaseNow) {
+		return nil, false, &ExpenseValidationError{Fields: map[string]string{"occurred_at": "cannot be future-dated"}}
+	}
+	amount, err := parseExpenseAmount(locked.AmountRupiah)
+	if err != nil {
+		return nil, false, err
+	}
+	postedJournal, err := s.journal.PostJournal(ctx, tx, PostJournalParams{
+		EventKey:        "expense.posted:" + locked.ID,
+		EventType:       "PLATFORM_EXPENSE_POSTED",
+		EffectiveAt:     locked.OccurredAt,
+		CreatedByUserID: &actorID,
+		Description:     expenseDescriptionPointer(locked.Description),
+		Metadata: map[string]string{
+			"source_type":      "PLATFORM_EXPENSE",
+			"source_reference": locked.ID,
+		},
+		Entries: []PostJournalEntry{
+			{AccountCode: "OPEX_" + locked.Category, Side: JournalSideDebit, AmountRupiah: amount},
+			{AccountCode: locked.PaymentAccount, Side: JournalSideCredit, AmountRupiah: amount},
+		},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	item, err := s.repo.PostApproved(ctx, tx, locked.ID, postedJournal.ID, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+		ActorUserID: &actorID, ActorRole: actorRole, Action: audit.ActionPlatformExpensePosted,
+		EntityType: audit.EntityPlatformExpense, EntityID: &item.ID, CorrelationID: &idempotencyKey,
+		Metadata: map[string]any{
+			"category": locked.Category, "amount_rupiah": locked.AmountRupiah, "currency": locked.Currency,
+			"occurred_at": locked.OccurredAt.Format(time.RFC3339Nano), "payment_account": locked.PaymentAccount,
+			"posted_journal_id": postedJournal.ID,
+		}, IPAddress: expenseStringPointer(ipAddress), UserAgent: expenseStringPointer(userAgent),
+	}); err != nil {
+		return nil, false, err
+	}
+	responseBody, err := json.Marshal(item)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.repo.InsertIdempotency(ctx, tx, actorID, "POST", idempotencyKey, requestHash, item.ID, 200, responseBody); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return item, false, nil
+}
+
+func (s *expenseService) VoidExpense(ctx context.Context, expenseID, reason, idempotencyKey, actorID, actorRole, ipAddress, userAgent string) (*PlatformExpense, bool, error) {
+	if s == nil || s.journal == nil {
+		return nil, false, ErrExpensePersistence
+	}
+	var err error
+	reason, err = normalizeExpenseReason(reason)
+	if err != nil {
+		return nil, false, err
+	}
+	idempotencyKey, err = s.validateActionInputs(expenseID, idempotencyKey, actorID)
+	if err != nil {
+		return nil, false, err
+	}
+	requestHash := expenseActionHash(expenseID, reason)
+	tx, err := s.dbPool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.repo.LockIdempotency(ctx, tx, actorID, "VOID", idempotencyKey); err != nil {
+		return nil, false, err
+	}
+	record, err := s.repo.GetIdempotency(ctx, tx, actorID, "VOID", idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if record != nil {
+		return s.replayExpenseAction(record, requestHash, expenseID)
+	}
+	locked, err := s.repo.GetExpenseForUpdate(ctx, tx, expenseID)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked.Status != "POSTED" || locked.PostedJournalID == nil {
+		return nil, false, ErrExpenseConflict
+	}
+	voidedAt, err := s.repo.DatabaseNow(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
+	reversal, err := s.journal.ReverseJournal(ctx, tx, ReverseJournalParams{
+		JournalID:       *locked.PostedJournalID,
+		Reason:          reason,
+		EffectiveAt:     voidedAt,
+		CreatedByUserID: &actorID,
+		Metadata: map[string]string{
+			"source_type":      "PLATFORM_EXPENSE_VOID",
+			"source_reference": locked.ID,
+		},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	item, err := s.repo.VoidPosted(ctx, tx, locked.ID, reversal.ID, actorID, reason, voidedAt)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+		ActorUserID: &actorID, ActorRole: actorRole, Action: audit.ActionPlatformExpenseVoided,
+		EntityType: audit.EntityPlatformExpense, EntityID: &item.ID, CorrelationID: &idempotencyKey,
+		Metadata: map[string]any{
+			"reason": reason, "source_journal_id": *locked.PostedJournalID,
+			"void_journal_id": reversal.ID, "effective_at": reversal.EffectiveAt.Format(time.RFC3339Nano),
+		}, IPAddress: expenseStringPointer(ipAddress), UserAgent: expenseStringPointer(userAgent),
+	}); err != nil {
+		return nil, false, err
+	}
+	if err := s.recordJournalReversalAudit(ctx, tx, reversal, *locked.PostedJournalID, actorID, actorRole, ipAddress, userAgent); err != nil {
+		return nil, false, err
+	}
+	responseBody, err := json.Marshal(item)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.repo.InsertIdempotency(ctx, tx, actorID, "VOID", idempotencyKey, requestHash, item.ID, 200, responseBody); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return item, false, nil
+}
+
+func parseExpenseAmount(value string) (int64, error) {
+	amount, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || amount < 1 || amount > ExpenseMaxAmountRupiah {
+		return 0, ErrExpenseIntegrity
+	}
+	return amount, nil
+}
+
+func expenseDescriptionPointer(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func (s *expenseService) recordJournalReversalAudit(ctx context.Context, tx pgx.Tx, reversal *PostedJournal, sourceJournalID, actorID, actorRole, ipAddress, userAgent string) error {
+	correlationID := reversal.EventKey
+	marker, err := findFinanceAuditMarker(ctx, tx, audit.ActionPlatformFinanceJournalReversed, correlationID)
+	if err != nil {
+		return err
+	}
+	if marker != nil {
+		return validateReversalAuditMarker(marker, reversal, sourceJournalID, correlationID)
+	}
+	entityID := reversal.ID
+	correlation := correlationID
+	return s.auditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+		ActorUserID:    &actorID,
+		ActorRole:      actorRole,
+		Action:         audit.ActionPlatformFinanceJournalReversed,
+		EntityType:     audit.EntityPlatformFinanceJournal,
+		EntityID:       &entityID,
+		OwnerProfileID: reversal.OwnerProfileID,
+		VenueID:        reversal.VenueID,
+		CorrelationID:  &correlation,
+		Metadata: map[string]any{
+			"source_journal_id": sourceJournalID,
+			"effective_at":      reversal.EffectiveAt.UTC().Format(time.RFC3339Nano),
+		},
+		IPAddress: expenseStringPointer(ipAddress),
+		UserAgent: expenseStringPointer(userAgent),
+	})
 }
 
 type ExpenseValidationError struct{ Fields map[string]string }

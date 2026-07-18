@@ -69,7 +69,8 @@ export interface PlatformJournal {
 }
 
 export interface PlatformJournalQuery {
-  start_date?: string;
+	journal_id?: string;
+	start_date?: string;
   end_date?: string;
   event_type?: string;
   account_code?: string;

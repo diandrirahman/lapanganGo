@@ -216,7 +216,11 @@ func main() {
 	platformAuditService := audit.NewPlatformService(platformAuditRepository)
 
 	expenseRepository := platformfinance.NewExpenseRepository(dbPool)
-	expenseService := platformfinance.NewExpenseService(expenseRepository, dbPool, platformAuditService)
+	journalService, err := platformfinance.NewJournalService(platformfinance.NewJournalRepository())
+	if err != nil {
+		log.Fatal("Failed to initialize platform finance journal services:", err)
+	}
+	expenseService := platformfinance.NewExpenseService(expenseRepository, dbPool, platformAuditService, journalService)
 	journalReadService, err := platformfinance.NewJournalReadService(platformfinance.NewJournalReadRepository(dbPool))
 	if err != nil {
 		log.Fatal("Failed to initialize platform finance read services:", err)

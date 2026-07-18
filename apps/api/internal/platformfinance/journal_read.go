@@ -28,6 +28,7 @@ type JournalListQuery struct {
 	EffectiveTo    *time.Time
 	EventType      string
 	AccountCode    string
+	JournalID      string
 	OwnerProfileID string
 	VenueID        string
 	BookingID      string
@@ -240,13 +241,16 @@ func normalizeJournalListQuery(query JournalListQuery) (JournalListQuery, error)
 	if query.AccountCode != "" && !journalReadAccountCodePattern.MatchString(query.AccountCode) {
 		return JournalListQuery{}, ErrInvalidJournalReadQuery
 	}
-	for _, value := range []string{query.OwnerProfileID, query.VenueID, query.BookingID} {
+	for _, value := range []string{query.JournalID, query.OwnerProfileID, query.VenueID, query.BookingID} {
 		if value == "" {
 			continue
 		}
 		if _, err := parseJournalReadUUID(value); err != nil {
 			return JournalListQuery{}, ErrInvalidJournalReadQuery
 		}
+	}
+	if query.JournalID != "" {
+		query.JournalID = canonicalJournalReadUUID(query.JournalID)
 	}
 	if query.OwnerProfileID != "" {
 		query.OwnerProfileID = canonicalJournalReadUUID(query.OwnerProfileID)

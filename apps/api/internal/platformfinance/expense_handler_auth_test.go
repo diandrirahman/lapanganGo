@@ -29,6 +29,8 @@ func (r *expenseMutationStatusRepo) GetUserStatus(_ context.Context, userID stri
 type expenseMutationServiceStub struct {
 	cancelCalls  int
 	approveCalls int
+	postCalls    int
+	voidCalls    int
 }
 
 func (s *expenseMutationServiceStub) ListExpenses(context.Context, platformfinance.ExpenseListQuery) (*platformfinance.ExpensePage, error) {
@@ -47,6 +49,16 @@ func (s *expenseMutationServiceStub) CancelDraft(_ context.Context, expenseID, _
 func (s *expenseMutationServiceStub) ApproveDraft(_ context.Context, expenseID, _, _, _, _, _ string) (*platformfinance.PlatformExpense, bool, error) {
 	s.approveCalls++
 	return &platformfinance.PlatformExpense{ID: expenseID, Status: "APPROVED"}, false, nil
+}
+
+func (s *expenseMutationServiceStub) PostExpense(_ context.Context, expenseID, _, _, _, _, _ string) (*platformfinance.PlatformExpense, bool, error) {
+	s.postCalls++
+	return &platformfinance.PlatformExpense{ID: expenseID, Status: "POSTED"}, false, nil
+}
+
+func (s *expenseMutationServiceStub) VoidExpense(_ context.Context, expenseID, _, _, _, _, _, _ string) (*platformfinance.PlatformExpense, bool, error) {
+	s.voidCalls++
+	return &platformfinance.PlatformExpense{ID: expenseID, Status: "VOID"}, false, nil
 }
 
 type expenseMutationJournalStub struct{}
@@ -73,6 +85,8 @@ func TestExpenseMutationRoutesUseProductionAuthChain(t *testing.T) {
 		wantStatusCall  int
 		wantCancelCall  int
 		wantApproveCall int
+		wantPostCall    int
+		wantVoidCall    int
 	}{
 		{name: "missing jwt", wantStatus: http.StatusUnauthorized},
 		{name: "invalid jwt", token: true, wantStatus: http.StatusUnauthorized},
@@ -80,7 +94,7 @@ func TestExpenseMutationRoutesUseProductionAuthChain(t *testing.T) {
 		{name: "customer role", token: true, validToken: true, role: "CUSTOMER", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusCall: 1},
 		{name: "owner role", token: true, validToken: true, role: "OWNER", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusCall: 1},
 		{name: "staff role", token: true, validToken: true, role: "STAFF", status: "ACTIVE", wantStatus: http.StatusForbidden, wantStatusCall: 1},
-		{name: "active superadmin", token: true, validToken: true, role: "SUPER_ADMIN", status: "ACTIVE", wantStatus: http.StatusOK, wantStatusCall: 1, wantCancelCall: 1, wantApproveCall: 1},
+		{name: "active superadmin", token: true, validToken: true, role: "SUPER_ADMIN", status: "ACTIVE", wantStatus: http.StatusOK, wantStatusCall: 1, wantCancelCall: 1, wantApproveCall: 1, wantPostCall: 1, wantVoidCall: 1},
 	}
 
 	for _, tt := range tests {
@@ -147,6 +161,58 @@ func TestExpenseMutationRoutesUseProductionAuthChain(t *testing.T) {
 			}
 			if service.approveCalls != tt.wantApproveCall {
 				t.Fatalf("approve expected service calls %d, got %d", tt.wantApproveCall, service.approveCalls)
+			}
+
+			statusRepo.checks = 0
+			req = httptest.NewRequest(http.MethodPost, "/admin/finance/expenses/"+expenseID+"/post", strings.NewReader(`{}`))
+			req.Header.Set("Idempotency-Key", "post-auth-test-key")
+			if tt.token {
+				if tt.validToken {
+					userID := uuid.NewString()
+					statusRepo.statuses[userID] = tt.status
+					token, err := tokenService.Generate(auth.UserResponse{ID: userID, Email: "test@example.com", Role: tt.role, Status: tt.status})
+					require.NoError(t, err)
+					req.Header.Set("Authorization", "Bearer "+token)
+				} else {
+					req.Header.Set("Authorization", "Bearer invalid")
+				}
+			}
+			response = httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tt.wantStatus {
+				t.Fatalf("post expected status %d, got %d: %s", tt.wantStatus, response.Code, response.Body.String())
+			}
+			if statusRepo.checks != tt.wantStatusCall {
+				t.Fatalf("post expected active-user checks %d, got %d", tt.wantStatusCall, statusRepo.checks)
+			}
+			if service.postCalls != tt.wantPostCall {
+				t.Fatalf("post expected service calls %d, got %d", tt.wantPostCall, service.postCalls)
+			}
+
+			statusRepo.checks = 0
+			req = httptest.NewRequest(http.MethodPost, "/admin/finance/expenses/"+expenseID+"/void", strings.NewReader(`{"reason":"correction"}`))
+			req.Header.Set("Idempotency-Key", "void-auth-test-key")
+			if tt.token {
+				if tt.validToken {
+					userID := uuid.NewString()
+					statusRepo.statuses[userID] = tt.status
+					token, err := tokenService.Generate(auth.UserResponse{ID: userID, Email: "test@example.com", Role: tt.role, Status: tt.status})
+					require.NoError(t, err)
+					req.Header.Set("Authorization", "Bearer "+token)
+				} else {
+					req.Header.Set("Authorization", "Bearer invalid")
+				}
+			}
+			response = httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tt.wantStatus {
+				t.Fatalf("void expected status %d, got %d: %s", tt.wantStatus, response.Code, response.Body.String())
+			}
+			if statusRepo.checks != tt.wantStatusCall {
+				t.Fatalf("void expected active-user checks %d, got %d", tt.wantStatusCall, statusRepo.checks)
+			}
+			if service.voidCalls != tt.wantVoidCall {
+				t.Fatalf("void expected service calls %d, got %d", tt.wantVoidCall, service.voidCalls)
 			}
 		})
 	}

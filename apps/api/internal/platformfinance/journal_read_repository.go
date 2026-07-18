@@ -160,6 +160,9 @@ func buildJournalReadCTE(query JournalListQuery, firstArg int) (string, []any, i
 	if query.AccountCode != "" {
 		add("EXISTS (SELECT 1 FROM platform_ledger_entries account_filter WHERE account_filter.journal_id = j.id AND account_filter.account_code = $%d)", query.AccountCode)
 	}
+	if query.JournalID != "" {
+		add("j.id = $%d", query.JournalID)
+	}
 	if query.OwnerProfileID != "" {
 		add("j.owner_profile_id = $%d", query.OwnerProfileID)
 	}

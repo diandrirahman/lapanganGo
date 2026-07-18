@@ -20,6 +20,8 @@ const (
 	ActionPlatformExpenseCreated             = "PLATFORM_EXPENSE_CREATED"
 	ActionPlatformExpenseCancelled           = "PLATFORM_EXPENSE_CANCELLED"
 	ActionPlatformExpenseApproved            = "PLATFORM_EXPENSE_APPROVED"
+	ActionPlatformExpensePosted              = "PLATFORM_EXPENSE_POSTED"
+	ActionPlatformExpenseVoided              = "PLATFORM_EXPENSE_VOIDED"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
@@ -35,6 +37,8 @@ var allowedPlatformActions = map[string]bool{
 	ActionPlatformExpenseCreated:             true,
 	ActionPlatformExpenseCancelled:           true,
 	ActionPlatformExpenseApproved:            true,
+	ActionPlatformExpensePosted:              true,
+	ActionPlatformExpenseVoided:              true,
 }
 
 var allowedPlatformEntities = map[string]bool{
@@ -52,6 +56,8 @@ var platformActionEntity = map[string]string{
 	ActionPlatformExpenseCreated:             EntityPlatformExpense,
 	ActionPlatformExpenseCancelled:           EntityPlatformExpense,
 	ActionPlatformExpenseApproved:            EntityPlatformExpense,
+	ActionPlatformExpensePosted:              EntityPlatformExpense,
+	ActionPlatformExpenseVoided:              EntityPlatformExpense,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -92,6 +98,20 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 	},
 	ActionPlatformExpenseApproved: {
 		"transition": true,
+	},
+	ActionPlatformExpensePosted: {
+		"category":          true,
+		"amount_rupiah":     true,
+		"currency":          true,
+		"occurred_at":       true,
+		"payment_account":   true,
+		"posted_journal_id": true,
+	},
+	ActionPlatformExpenseVoided: {
+		"reason":            true,
+		"source_journal_id": true,
+		"void_journal_id":   true,
+		"effective_at":      true,
 	},
 }
 
@@ -212,14 +232,11 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if p.Action == ActionPlatformFinanceLiveWriteRejected && p.EntityID != nil {
 		return errors.New("live rejection audit entity id must be nil")
 	}
-	if (p.Action == ActionPlatformExpenseCreated || p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved) && p.EntityID == nil {
+	if (p.Action == ActionPlatformExpenseCreated || p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved || p.Action == ActionPlatformExpensePosted || p.Action == ActionPlatformExpenseVoided) && p.EntityID == nil {
 		return errors.New("expense audit entity id is required")
 	}
-	if p.Action == ActionPlatformExpenseCancelled && p.CorrelationID == nil {
-		return errors.New("correlation id is required for expense cancellation")
-	}
-	if p.Action == ActionPlatformExpenseApproved && p.CorrelationID == nil {
-		return errors.New("correlation id is required for expense approval")
+	if (p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved || p.Action == ActionPlatformExpensePosted || p.Action == ActionPlatformExpenseVoided) && p.CorrelationID == nil {
+		return errors.New("correlation id is required for expense action")
 	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
@@ -287,7 +304,7 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				}
 				// Strict enum for reason
 				if v != "LIVE_NOT_ALLOWED" && v != "BPS_OUT_OF_BOUNDS" && v != "OVERLAP" && v != "INVALID_TIME" && v != "VALIDATION_ERROR" {
-					if p.Action != ActionPlatformExpenseCancelled || strings.TrimSpace(v) == "" || len([]byte(v)) > 500 || containsSecret(v) {
+					if (p.Action != ActionPlatformExpenseCancelled && p.Action != ActionPlatformExpenseVoided) || strings.TrimSpace(v) == "" || len([]byte(v)) > 500 || containsSecret(v) {
 						return errors.New("reason must be an allowed code")
 					}
 				}
@@ -319,6 +336,14 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				}
 				if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
 					return errors.New("effective_at must be an RFC3339 timestamp")
+				}
+			case "posted_journal_id", "void_journal_id":
+				v, ok := val.(string)
+				if !ok {
+					return errors.New(key + " must be a UUID string")
+				}
+				if _, err := uuid.Parse(v); err != nil {
+					return errors.New(key + " must be a valid UUID")
 				}
 			case "write_kind":
 				v, ok := val.(string)
@@ -423,7 +448,7 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			}
 		case "reason":
 			if value, ok := value.(string); ok {
-				if action == ActionPlatformExpenseCancelled && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
+				if (action == ActionPlatformExpenseCancelled || action == ActionPlatformExpenseVoided) && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
 					out[key] = value
 				} else if value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR" {
 					out[key] = value
@@ -438,6 +463,12 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 		case "effective_at":
 			if value, ok := value.(string); ok {
 				if _, err := time.Parse(time.RFC3339Nano, value); err == nil {
+					out[key] = value
+				}
+			}
+		case "posted_journal_id", "void_journal_id":
+			if value, ok := value.(string); ok {
+				if _, err := uuid.Parse(value); err == nil {
 					out[key] = value
 				}
 			}

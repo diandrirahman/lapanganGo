@@ -62,6 +62,10 @@ type ExpenseCancelRequest struct {
 	Reason string `json:"reason"`
 }
 
+type ExpenseVoidRequest struct {
+	Reason string `json:"reason"`
+}
+
 func normalizeExpenseReason(reason string) (string, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || len([]byte(reason)) > ExpenseMaxReasonBytes || expenseReasonContainsSecret(reason) {

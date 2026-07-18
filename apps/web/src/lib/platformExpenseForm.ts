@@ -123,3 +123,10 @@ export const validateExpenseCancelReason = (reason: string): string | null => {
   if (new TextEncoder().encode(normalized).length > 500) return 'Reason must be at most 500 bytes.';
   return null;
 };
+
+export const validateExpenseVoidReason = (reason: string): string | null => {
+  const normalized = reason.trim();
+  if (!normalized) return 'A void reason is required.';
+  if (new TextEncoder().encode(normalized).length > 500) return 'Reason must be at most 500 bytes.';
+  return null;
+};

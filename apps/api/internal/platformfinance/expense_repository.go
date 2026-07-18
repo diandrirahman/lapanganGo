@@ -35,6 +35,8 @@ type ExpenseRepository interface {
 	DatabaseNow(ctx context.Context, db ExpenseDBTX) (time.Time, error)
 	CancelDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID, reason string) (*PlatformExpense, error)
 	ApproveDraft(ctx context.Context, db ExpenseDBTX, expenseID, actorID string) (*PlatformExpense, error)
+	PostApproved(ctx context.Context, db ExpenseDBTX, expenseID, journalID, actorID string) (*PlatformExpense, error)
+	VoidPosted(ctx context.Context, db ExpenseDBTX, expenseID, journalID, actorID, reason string, voidedAt time.Time) (*PlatformExpense, error)
 	InsertIdempotency(ctx context.Context, db ExpenseDBTX, actorID, action, key, requestHash, expenseID string, responseStatus int, responseBody []byte) error
 }
 
@@ -178,6 +180,32 @@ func (r *expenseRepository) ApproveDraft(ctx context.Context, db ExpenseDBTX, ex
 		SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by_user_id = $2
 		WHERE id = $1 AND status = 'DRAFT'
 		RETURNING `+expenseSelectColumns, expenseID, actorID)
+	item, _, err := scanPlatformExpense(row)
+	if err != nil {
+		return nil, mapExpenseRepositoryError(err)
+	}
+	return &item, nil
+}
+
+func (r *expenseRepository) PostApproved(ctx context.Context, db ExpenseDBTX, expenseID, journalID, actorID string) (*PlatformExpense, error) {
+	row := db.QueryRow(ctx, `
+		UPDATE platform_expenses
+		SET status = 'POSTED', posted_at = clock_timestamp(), posted_journal_id = $2, posted_by_user_id = $3
+		WHERE id = $1 AND status = 'APPROVED'
+		RETURNING `+expenseSelectColumns, expenseID, journalID, actorID)
+	item, _, err := scanPlatformExpense(row)
+	if err != nil {
+		return nil, mapExpenseRepositoryError(err)
+	}
+	return &item, nil
+}
+
+func (r *expenseRepository) VoidPosted(ctx context.Context, db ExpenseDBTX, expenseID, journalID, actorID, reason string, voidedAt time.Time) (*PlatformExpense, error) {
+	row := db.QueryRow(ctx, `
+		UPDATE platform_expenses
+		SET status = 'VOID', voided_at = $5, void_journal_id = $2, voided_by_user_id = $3, void_reason = $4
+		WHERE id = $1 AND status = 'POSTED'
+		RETURNING `+expenseSelectColumns, expenseID, journalID, actorID, reason, voidedAt)
 	item, _, err := scanPlatformExpense(row)
 	if err != nil {
 		return nil, mapExpenseRepositoryError(err)

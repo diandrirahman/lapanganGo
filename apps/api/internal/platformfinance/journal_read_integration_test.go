@@ -76,6 +76,12 @@ func TestJournalReadPrimitivesListSummaryFiltersAndReversalLinks(t *testing.T) {
 	assert.Equal(t, source.ID, *findReadItem(page.Items, reversal.ID).ReversesJournalID)
 	assert.Equal(t, "manual correction", *findReadItem(page.Items, reversal.ID).ReversalReason)
 
+	focused, err := readService.ListJournals(ctx, JournalListQuery{JournalID: reversal.ID, Page: 1, Limit: 20})
+	require.NoError(t, err)
+	assert.Equal(t, 1, focused.TotalItems)
+	require.Len(t, focused.Items, 1)
+	assert.Equal(t, reversal.ID, focused.Items[0].ID, "journal links must be able to focus a row regardless of its normal page")
+
 	pageOne, err := readService.ListJournals(ctx, JournalListQuery{Page: 1, Limit: 2})
 	require.NoError(t, err)
 	pageTwo, err := readService.ListJournals(ctx, JournalListQuery{Page: 2, Limit: 2})

@@ -129,12 +129,75 @@ func (h *ExpenseHandler) ApproveExpense(c *gin.Context) {
 	c.JSON(http.StatusOK, item)
 }
 
+func (h *ExpenseHandler) PostExpense(c *gin.Context) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		writeExpenseHTTPError(c, ErrExpenseMissingKey)
+		return
+	}
+	if len(key) > 255 {
+		writeExpenseHTTPError(c, ErrExpenseInvalidKey)
+		return
+	}
+	var req struct{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_BODY", "message": "Invalid request body", "field_errors": gin.H{}})
+		return
+	}
+	actorID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "UNAUTHORIZED", "message": "Missing or invalid authentication"})
+		return
+	}
+	item, replayed, err := h.expenseService.PostExpense(c.Request.Context(), c.Param("id"), key, actorID, c.GetString("auth_role"), c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		writeExpenseHTTPError(c, err)
+		return
+	}
+	if replayed {
+		c.Header("Idempotent-Replay", "true")
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (h *ExpenseHandler) VoidExpense(c *gin.Context) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		writeExpenseHTTPError(c, ErrExpenseMissingKey)
+		return
+	}
+	if len(key) > 255 {
+		writeExpenseHTTPError(c, ErrExpenseInvalidKey)
+		return
+	}
+	var req ExpenseVoidRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_BODY", "message": "Invalid request body", "field_errors": gin.H{}})
+		return
+	}
+	actorID, ok := httputil.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "UNAUTHORIZED", "message": "Missing or invalid authentication"})
+		return
+	}
+	item, replayed, err := h.expenseService.VoidExpense(c.Request.Context(), c.Param("id"), req.Reason, key, actorID, c.GetString("auth_role"), c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		writeExpenseHTTPError(c, err)
+		return
+	}
+	if replayed {
+		c.Header("Idempotent-Replay", "true")
+	}
+	c.JSON(http.StatusOK, item)
+}
+
 func (h *ExpenseHandler) ListJournals(c *gin.Context) {
 	var raw struct {
 		StartDate   string `form:"start_date"`
 		EndDate     string `form:"end_date"`
 		EventType   string `form:"event_type"`
 		AccountCode string `form:"account_code"`
+		JournalID   string `form:"journal_id"`
 		Page        int    `form:"page"`
 		Limit       int    `form:"limit"`
 	}
@@ -142,7 +205,7 @@ func (h *ExpenseHandler) ListJournals(c *gin.Context) {
 		writeExpenseHTTPError(c, ErrInvalidJournalReadQuery)
 		return
 	}
-	query := JournalListQuery{EventType: strings.ToUpper(strings.TrimSpace(raw.EventType)), AccountCode: strings.ToUpper(strings.TrimSpace(raw.AccountCode)), Page: raw.Page, Limit: raw.Limit}
+	query := JournalListQuery{EventType: strings.ToUpper(strings.TrimSpace(raw.EventType)), AccountCode: strings.ToUpper(strings.TrimSpace(raw.AccountCode)), JournalID: strings.TrimSpace(raw.JournalID), Page: raw.Page, Limit: raw.Limit}
 	if raw.StartDate != "" {
 		value, err := time.Parse("2006-01-02", raw.StartDate)
 		if err != nil {
@@ -190,6 +253,8 @@ func writeExpenseHTTPError(c *gin.Context, err error) {
 		status, code, message = http.StatusNotFound, "NOT_FOUND", "Expense was not found"
 	case errors.Is(err, ErrExpenseConflict):
 		status, code, message = http.StatusConflict, "CONFLICT", "Request conflicts with an existing finance operation"
+	case errors.Is(err, ErrInvalidJournalRequest), errors.Is(err, ErrJournalRequiresTwoEntries), errors.Is(err, ErrJournalUnbalanced), errors.Is(err, ErrJournalEventKeyConflict), errors.Is(err, ErrInvalidJournalReference), errors.Is(err, ErrInvalidJournalOwnerDimension):
+		status, code, message = http.StatusConflict, "JOURNAL_CONFLICT", "The accounting journal conflicts with the expense state"
 	}
 	c.JSON(status, gin.H{"code": code, "message": message, "field_errors": fields})
 }
@@ -202,5 +267,7 @@ func RegisterExpenseRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, r
 	group.POST("/expenses", h.CreateExpense)
 	group.POST("/expenses/:id/cancel", h.CancelExpense)
 	group.POST("/expenses/:id/approve", h.ApproveExpense)
+	group.POST("/expenses/:id/post", h.PostExpense)
+	group.POST("/expenses/:id/void", h.VoidExpense)
 	group.GET("/journals", h.ListJournals)
 }

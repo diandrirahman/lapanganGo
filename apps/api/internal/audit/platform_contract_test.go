@@ -62,6 +62,30 @@ func TestPlatformFinanceAuditContract(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name: "expense posting records the journal link",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpensePosted, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{
+					"category": "OFFICE_ADMIN", "amount_rupiah": "125000", "currency": "IDR",
+					"occurred_at": validEffectiveAt, "payment_account": "ACCOUNTS_PAYABLE", "posted_journal_id": reversalID,
+				},
+			},
+			wantOK: true,
+		},
+		{
+			name: "expense void records reason and reversal evidence",
+			params: CreatePlatformAuditLogParams{
+				ActorRole: "SUPER_ADMIN", Action: ActionPlatformExpenseVoided, EntityType: EntityPlatformExpense,
+				EntityID: &sourceID, CorrelationID: &liveCorrelationID,
+				Metadata: map[string]any{
+					"reason": "supplier correction", "source_journal_id": reversalID,
+					"void_journal_id": sourceID, "effective_at": validEffectiveAt,
+				},
+			},
+			wantOK: true,
+		},
+		{
 			name: "reversal requires exact safe metadata",
 			params: CreatePlatformAuditLogParams{
 				ActorRole:     "SYSTEM",

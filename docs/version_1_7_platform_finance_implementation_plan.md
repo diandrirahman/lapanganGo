@@ -1204,7 +1204,7 @@ Attachment/reference bukti dapat ditambahkan setelah storage policy tersedia; ja
 Semua mutation di bawah wajib header `Idempotency-Key`. Key yang sama disimpan sepanjang retry satu user action.
 
 ```http
-GET  /admin/finance/journals?start_date=&end_date=&event_type=&account_code=&page=&limit=
+GET  /admin/finance/journals?journal_id=&start_date=&end_date=&event_type=&account_code=&page=&limit=
 GET  /admin/finance/expenses?status=&category=&page=&limit=
 POST /admin/finance/expenses
 POST /admin/finance/expenses/:id/cancel

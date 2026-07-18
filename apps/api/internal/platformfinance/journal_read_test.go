@@ -34,11 +34,13 @@ func TestNormalizeJournalListQueryDefaultsClampAndCanonicalizes(t *testing.T) {
 	from := time.Date(2026, time.July, 16, 10, 0, 0, 123456789, time.FixedZone("WIB", 7*60*60))
 	to := from.Add(time.Hour)
 	ownerID := uuid.NewString()
+	journalID := uuid.NewString()
 	query, err := normalizeJournalListQuery(JournalListQuery{
 		EffectiveFrom:  &from,
 		EffectiveTo:    &to,
 		EventType:      "TEST_JOURNAL",
 		AccountCode:    "BANK_CASH",
+		JournalID:      journalID,
 		OwnerProfileID: ownerID,
 		Page:           2,
 		Limit:          101,
@@ -49,6 +51,7 @@ func TestNormalizeJournalListQueryDefaultsClampAndCanonicalizes(t *testing.T) {
 	assert.Equal(t, from.UTC(), *query.EffectiveFrom)
 	assert.Equal(t, to.UTC(), *query.EffectiveTo)
 	assert.Equal(t, ownerID, query.OwnerProfileID)
+	assert.Equal(t, journalID, query.JournalID)
 
 	defaults, err := normalizeJournalListQuery(JournalListQuery{})
 	require.NoError(t, err)
@@ -67,6 +70,7 @@ func TestNormalizeJournalListQueryRejectsInvalidFiltersAndOverflow(t *testing.T)
 		{name: "invalid event type", query: JournalListQuery{EventType: "not-an-event"}},
 		{name: "invalid account code", query: JournalListQuery{AccountCode: "bank cash"}},
 		{name: "invalid owner uuid", query: JournalListQuery{OwnerProfileID: "not-a-uuid"}},
+		{name: "invalid journal uuid", query: JournalListQuery{JournalID: "not-a-uuid"}},
 		{name: "reversed range", query: JournalListQuery{EffectiveFrom: timePtr(time.Now().UTC()), EffectiveTo: timePtr(time.Now().UTC().Add(-time.Second))}},
 		{name: "page overflow", query: JournalListQuery{Page: maxJournalReadInt(), Limit: JournalReadMaxLimit}},
 	}
@@ -80,6 +84,14 @@ func TestNormalizeJournalListQueryRejectsInvalidFiltersAndOverflow(t *testing.T)
 	query, err := normalizeJournalListQuery(JournalListQuery{OwnerProfileID: validID})
 	require.NoError(t, err)
 	assert.Equal(t, validID, query.OwnerProfileID)
+}
+
+func TestBuildJournalReadCTEIncludesExactJournalFilter(t *testing.T) {
+	journalID := uuid.NewString()
+	cte, args, nextArg := buildJournalReadCTE(JournalListQuery{JournalID: journalID}, 3)
+	assert.Contains(t, cte, "j.id = $3")
+	assert.Equal(t, []any{journalID}, args)
+	assert.Equal(t, 4, nextArg)
 }
 
 func TestJournalReadServiceReturnsStableEmptyAndMoneyStrings(t *testing.T) {
