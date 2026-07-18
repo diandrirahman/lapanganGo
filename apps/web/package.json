@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node scripts/test_platform_expense_form.mjs && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx",
+    "test": "node scripts/test_platform_expense_form.mjs && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx src/__tests__/platformFinanceSummary.test.tsx",
     "lint": "oxlint",
     "preview": "vite preview"
   },

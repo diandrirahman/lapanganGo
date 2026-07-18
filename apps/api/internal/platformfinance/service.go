@@ -16,6 +16,10 @@ type service struct {
 	repo Repository
 }
 
+func stringPointer(value string) *string {
+	return &value
+}
+
 func NewService(repo Repository) Service {
 	return &service{repo: repo}
 }
@@ -80,7 +84,7 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		GatewayCapturedGMV:                             nil,
 		ActualCommissionRevenue:                        nil,
 		PaymentProcessingExpense:                       nil,
-		PlatformOperatingExpense:                       nil,
+		PlatformOperatingExpense:                       stringPointer(strconv.FormatInt(data.PlatformOperatingExpense, 10)),
 		ProjectedOperatingResultBeforeTransactionCosts: nil,
 		PlatformRevenue:                                nil,
 		TransactionContribution:                        nil,
@@ -88,9 +92,20 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		GrossTakeRateBps:                               nil,
 		NetTakeRateBps:                                 nil,
 	}
+	// OPEX is currently a platform-global fact.  Do not subtract that global
+	// amount from an owner/venue-scoped commission projection: doing so would
+	// present a projected result for a scope that has no OPEX allocation
+	// contract.  The unfiltered platform report remains exact and available.
+	if query.OwnerProfileID == "" && query.VenueID == "" {
+		projectedOperatingResult, err := checkedSubInt64(netComm, data.PlatformOperatingExpense)
+		if err != nil {
+			return nil, err
+		}
+		metrics.ProjectedOperatingResultBeforeTransactionCosts = stringPointer(strconv.FormatInt(projectedOperatingResult, 10))
+	}
 
 	da := DataAvailability{
-		PlatformOperatingExpense: "PENDING_PHASE_3B",
+		PlatformOperatingExpense: "AVAILABLE",
 		ActualPlatformRevenue:    "UNAVAILABLE_UNTIL_LIVE",
 		PaymentProcessingExpense: "UNAVAILABLE_UNTIL_GATEWAY",
 		OwnerPayable:             "UNAVAILABLE_UNTIL_PLATFORM_COLLECTED",
@@ -109,7 +124,7 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 	generatedAt := time.Now().In(jakartaLocation).Format(time.RFC3339)
 
 	// Build trend
-	trend := buildContinuousBucketsAt(utcStart, utcEndExclusive, granularity, data.IncomeBuckets, data.RefundBuckets, data.CutoverAt)
+	trend := buildContinuousBucketsAtWithOpex(utcStart, utcEndExclusive, granularity, data.IncomeBuckets, data.RefundBuckets, data.OpexBuckets, data.CutoverAt)
 
 	// Build top owners
 	topOwners := make([]TopOwnerItem, 0, len(data.TopOwners))
@@ -145,6 +160,15 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		})
 	}
 
+	caveats := []string{
+		"Proyeksi komisi bukan pendapatan aktual dan belum ditagihkan kepada owner.",
+		"LEGACY_NO_COMMISSION ditampilkan sebagai skenario historis 7% non-billable; POLICY memakai nilai booking_fee_snapshots.",
+		"OPEX adalah biaya platform global dan belum dialokasikan ke owner atau venue.",
+	}
+	if query.OwnerProfileID != "" || query.VenueID != "" {
+		caveats = append(caveats, "Projected operating result tidak tersedia pada filter owner/venue karena OPEX belum memiliki alokasi per scope.")
+	}
+
 	res := &SummaryResponse{
 		Period:               Period{StartDate: startDateStr, EndDate: endDateStr},
 		Mode:                 "SIMULATION",
@@ -162,7 +186,7 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		Trend:                trend,
 		TopOwnerBreakdown:    topOwners,
 		TopVenueBreakdown:    topVenues,
-		Caveats:              []string{"Proyeksi komisi bukan pendapatan aktual dan belum ditagihkan kepada owner.", "LEGACY_NO_COMMISSION ditampilkan sebagai skenario historis 7% non-billable; POLICY memakai nilai booking_fee_snapshots."},
+		Caveats:              caveats,
 	}
 
 	return res, nil
@@ -225,6 +249,10 @@ func buildContinuousBuckets(utcStart, utcEndExclusive time.Time, granularity str
 }
 
 func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity string, income, refund []BucketResult, cutover time.Time) []TrendItem {
+	return buildContinuousBucketsAtWithOpex(utcStart, utcEndExclusive, granularity, income, refund, nil, cutover)
+}
+
+func buildContinuousBucketsAtWithOpex(utcStart, utcEndExclusive time.Time, granularity string, income, refund, opex []BucketResult, cutover time.Time) []TrendItem {
 	// Aggregate bucket days into requested granularity
 	// Map data by day
 	dayGross := make(map[string]int64)
@@ -233,6 +261,11 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 		dStr := b.Bucket.In(jakartaLocation).Format("2006-01-02")
 		dayGross[dStr] += b.Amount
 		dayCommGross[dStr] += b.Comm
+	}
+	dayOpex := make(map[string]int64)
+	for _, b := range opex {
+		dStr := b.Bucket.In(jakartaLocation).Format("2006-01-02")
+		dayOpex[dStr] += b.Amount
 	}
 	dayRefund := make(map[string]int64)
 	dayCommRefund := make(map[string]int64)
@@ -290,7 +323,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				RefundPrincipal:          strconv.FormatInt(ref, 10),
 				OnlineGMVNet:             strconv.FormatInt(gross-ref, 10),
 				ProjectedCommission:      strconv.FormatInt(cGross-cRef, 10),
-				PlatformOperatingExpense: nil,
+				PlatformOperatingExpense: stringPointer(strconv.FormatInt(dayOpex[dStr], 10)),
 			})
 			curr = curr.AddDate(0, 0, 1)
 		}
@@ -317,7 +350,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				iterEnd = endWIB.AddDate(0, 0, -1)
 			}
 
-			var g, r, cg, cr int64
+			var g, r, cg, cr, o int64
 			iter := iterStart
 			for !iter.After(iterEnd) {
 				dStr := iter.Format("2006-01-02")
@@ -325,6 +358,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				r += dayRefund[dStr]
 				cg += dayCommGross[dStr]
 				cr += dayCommRefund[dStr]
+				o += dayOpex[dStr]
 				iter = iter.AddDate(0, 0, 1)
 			}
 
@@ -335,7 +369,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				RefundPrincipal:          strconv.FormatInt(r, 10),
 				OnlineGMVNet:             strconv.FormatInt(g-r, 10),
 				ProjectedCommission:      strconv.FormatInt(cg-cr, 10),
-				PlatformOperatingExpense: nil,
+				PlatformOperatingExpense: stringPointer(strconv.FormatInt(o, 10)),
 			})
 			curr = pStart.AddDate(0, 0, 7)
 		}
@@ -354,7 +388,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				iterEnd = endWIB.AddDate(0, 0, -1)
 			}
 
-			var g, r, cg, cr int64
+			var g, r, cg, cr, o int64
 			iter := iterStart
 			for !iter.After(iterEnd) {
 				dStr := iter.Format("2006-01-02")
@@ -362,6 +396,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				r += dayRefund[dStr]
 				cg += dayCommGross[dStr]
 				cr += dayCommRefund[dStr]
+				o += dayOpex[dStr]
 				iter = iter.AddDate(0, 0, 1)
 			}
 
@@ -372,7 +407,7 @@ func buildContinuousBucketsAt(utcStart, utcEndExclusive time.Time, granularity s
 				RefundPrincipal:          strconv.FormatInt(r, 10),
 				OnlineGMVNet:             strconv.FormatInt(g-r, 10),
 				ProjectedCommission:      strconv.FormatInt(cg-cr, 10),
-				PlatformOperatingExpense: nil,
+				PlatformOperatingExpense: stringPointer(strconv.FormatInt(o, 10)),
 			})
 			curr = pStart.AddDate(0, 1, 0)
 		}
@@ -483,6 +518,17 @@ func (s *service) GetBreakdown(ctx context.Context, query FinanceBreakdownQuery)
 		totalPages = (data.TotalItems-1)/limit + 1
 	}
 
+	var platformOperatingExpense *string
+	opexAvailability := "AVAILABLE"
+	if query.OwnerProfileID == "" && query.VenueID == "" {
+		platformOperatingExpense = stringPointer(strconv.FormatInt(data.PlatformOperatingExpense, 10))
+	} else {
+		// OPEX is a platform-global fact and has no owner/venue allocation
+		// contract yet. Fail closed instead of presenting the global amount as
+		// if it belonged to the filtered breakdown rows.
+		opexAvailability = "UNAVAILABLE_UNTIL_SCOPE_ALLOCATION"
+	}
+
 	return &PaginatedBreakdownResponse{
 		Mode:                        "SIMULATION",
 		Data:                        items,
@@ -498,5 +544,12 @@ func (s *service) GetBreakdown(ctx context.Context, query FinanceBreakdownQuery)
 		SnapshotProjectionCount:     data.SnapshotProjectionCount,
 		NonBillableProjectionAmount: strconv.FormatInt(data.NonBillableProjectionAmount, 10),
 		SnapshotProjectionAmount:    strconv.FormatInt(data.SnapshotProjectionAmount, 10),
+		PlatformOperatingExpense:    platformOperatingExpense,
+		DataAvailability: DataAvailability{
+			PlatformOperatingExpense: opexAvailability,
+			ActualPlatformRevenue:    "UNAVAILABLE_UNTIL_LIVE",
+			PaymentProcessingExpense: "UNAVAILABLE_UNTIL_GATEWAY",
+			OwnerPayable:             "UNAVAILABLE_UNTIL_PLATFORM_COLLECTED",
+		},
 	}, nil
 }

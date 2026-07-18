@@ -39,6 +39,25 @@ func TestService_Summary_CalculationRules(t *testing.T) {
 	assert.Equal(t, "56000", res.DataQuality.NonBillableProjectionAmount)
 }
 
+func TestService_Summary_OPEXIsAvailableAndProjectedResultSubtractsIt(t *testing.T) {
+	bucketTime, _ := time.Parse("2006-01-02", "2026-06-01")
+	repo := &detailedMockRepo{summary: &platformfinance.SummaryDataResult{
+		AsOf: time.Now(), Gross: 1_000_000, ProjectedCommGross: 70_000,
+		PlatformOperatingExpense: 10_000,
+		OpexBuckets:              []platformfinance.BucketResult{{Bucket: bucketTime, Amount: 10_000}},
+		RealizedBookingCount:     1, ProjectionBasis: platformfinance.ProjectionBasisHistorical,
+	}}
+	res, err := platformfinance.NewService(repo).GetSummary(context.Background(), platformfinance.FinanceQuery{
+		StartDate: "2026-06-01", EndDate: "2026-06-01", Granularity: "day",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "10000", *res.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "60000", *res.Metrics.ProjectedOperatingResultBeforeTransactionCosts)
+	assert.Equal(t, "AVAILABLE", res.DataAvailability.PlatformOperatingExpense)
+	assert.Len(t, res.Trend, 1)
+	assert.Equal(t, "10000", *res.Trend[0].PlatformOperatingExpense)
+}
+
 func TestService_Summary_RejectsMissingProjectionBasis(t *testing.T) {
 	repo := &detailedMockRepo{summary: &platformfinance.SummaryDataResult{
 		AsOf:                 time.Now(),
@@ -114,8 +133,10 @@ func TestService_Summary_NegativeGMV_And_Reversal(t *testing.T) {
 	assert.Equal(t, "-100000", res.Metrics.OnlineGMVNet)
 	assert.Equal(t, "-7000", res.Metrics.ProjectedCommission)
 
-	// Test available zero vs unavailable null
-	assert.Nil(t, res.Metrics.PlatformOperatingExpense)
+	// OPEX is available even when the read model has no posted expense rows.
+	assert.Equal(t, "0", *res.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "-7000", *res.Metrics.ProjectedOperatingResultBeforeTransactionCosts)
+	assert.Equal(t, "AVAILABLE", res.DataAvailability.PlatformOperatingExpense)
 	assert.Nil(t, res.Metrics.ActualCommissionRevenue)
 	assert.Nil(t, res.Metrics.PaymentProcessingExpense)
 	assert.Nil(t, res.Metrics.PlatformRevenue)
@@ -157,4 +178,6 @@ func TestService_Summary_EmptyResponse(t *testing.T) {
 
 	assert.Equal(t, "0", res.Trend[0].OnlineGMVNet)
 	assert.Equal(t, "0", res.Trend[1].OnlineGMVNet)
+	assert.Equal(t, "0", *res.Trend[0].PlatformOperatingExpense)
+	assert.Equal(t, "0", *res.Trend[1].PlatformOperatingExpense)
 }

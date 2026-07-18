@@ -31,7 +31,7 @@ export const AdminLayout: React.FC = () => {
     { name: 'Owners', path: '/admin/owners', icon: Briefcase },
     { name: 'Venues', path: '/admin/venues', icon: MapPin },
     { name: 'Commercial Terms', path: '/admin/commercial-terms', icon: BadgePercent },
-    { name: 'Platform Finance', path: '/admin/finance/expenses', icon: CircleDollarSign },
+    { name: 'Platform Finance', path: '/admin/finance', icon: CircleDollarSign },
     { name: 'Audit Logs', path: '/admin/audit-logs', icon: Activity },
   ];
 

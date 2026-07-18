@@ -60,6 +60,11 @@ type SummaryDataResult struct {
 
 	IncomeBuckets []BucketResult
 	RefundBuckets []BucketResult
+	// PlatformOperatingExpense is the net posted OPEX recognized in the
+	// requested effective-time window. OpexBuckets contains signed daily
+	// journal amounts (posting positive, exact reversal negative).
+	OpexBuckets              []BucketResult
+	PlatformOperatingExpense int64
 
 	TopOwners []BreakdownRow
 	TopVenues []BreakdownRow
@@ -116,6 +121,9 @@ type BreakdownResult struct {
 	SnapshotProjectionAmount    int64
 	LegacyProjectionPresent     bool
 	SnapshotProjectionPresent   bool
+	// PlatformOperatingExpense is global/unallocated; it is intentionally
+	// returned at response level rather than mixed into owner/venue rows.
+	PlatformOperatingExpense int64
 }
 
 func buildFilters(ownerProfileID, venueID string, argOffset int) (string, []any) {

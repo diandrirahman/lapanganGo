@@ -33,11 +33,11 @@ func (contractResponseRepo) OwnerMatchesVenue(context.Context, string, string) (
 }
 
 func (contractResponseRepo) GetSummaryData(context.Context, time.Time, time.Time, string, string) (*SummaryDataResult, error) {
-	return &SummaryDataResult{AsOf: time.Now()}, nil
+	return &SummaryDataResult{AsOf: time.Now(), PlatformOperatingExpense: 123}, nil
 }
 
 func (contractResponseRepo) GetPaginatedBreakdown(context.Context, time.Time, time.Time, string, string, string, int, int) (*BreakdownResult, error) {
-	return &BreakdownResult{AsOf: time.Now(), Rows: []BreakdownRow{}}, nil
+	return &BreakdownResult{AsOf: time.Now(), Rows: []BreakdownRow{}, PlatformOperatingExpense: 123}, nil
 }
 
 func TestCalculateBpsUsesExactIntegerRounding(t *testing.T) {
@@ -123,6 +123,60 @@ func TestResponseContractUsesCanonicalAvailabilityAndSimulationMode(t *testing.T
 	}
 	if breakdown.Mode != "SIMULATION" {
 		t.Fatalf("breakdown mode = %q, want SIMULATION", breakdown.Mode)
+	}
+	if breakdown.PlatformOperatingExpense == nil || *breakdown.PlatformOperatingExpense != "123" {
+		t.Fatalf("breakdown platform_operating_expense = %v, want 123", breakdown.PlatformOperatingExpense)
+	}
+	if breakdown.DataAvailability.PlatformOperatingExpense != "AVAILABLE" {
+		t.Fatalf("breakdown OPEX availability = %q, want AVAILABLE", breakdown.DataAvailability.PlatformOperatingExpense)
+	}
+}
+
+func TestServiceScopedBreakdownDoesNotExposeGlobalOPEX(t *testing.T) {
+	svc := NewService(contractResponseRepo{})
+	for name, query := range map[string]FinanceBreakdownQuery{
+		"owner": {
+			FinanceQuery: FinanceQuery{StartDate: "2026-06-01", EndDate: "2026-06-01", OwnerProfileID: "00000000-0000-0000-0000-000000000001"},
+			Dimension:    "owner",
+		},
+		"venue": {
+			FinanceQuery: FinanceQuery{StartDate: "2026-06-01", EndDate: "2026-06-01", VenueID: "00000000-0000-0000-0000-000000000002"},
+			Dimension:    "venue",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			breakdown, err := svc.GetBreakdown(context.Background(), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if breakdown.PlatformOperatingExpense != nil {
+				t.Fatalf("scoped breakdown OPEX = %v, want nil without allocation", *breakdown.PlatformOperatingExpense)
+			}
+			if breakdown.DataAvailability.PlatformOperatingExpense != "UNAVAILABLE_UNTIL_SCOPE_ALLOCATION" {
+				t.Fatalf("scoped breakdown OPEX availability = %q, want UNAVAILABLE_UNTIL_SCOPE_ALLOCATION", breakdown.DataAvailability.PlatformOperatingExpense)
+			}
+		})
+	}
+}
+
+func TestServiceScopedSummaryDoesNotSubtractGlobalOPEX(t *testing.T) {
+	svc := NewService(contractResponseRepo{})
+	for name, query := range map[string]FinanceQuery{
+		"owner": {StartDate: "2026-06-01", EndDate: "2026-06-01", OwnerProfileID: "00000000-0000-0000-0000-000000000001"},
+		"venue": {StartDate: "2026-06-01", EndDate: "2026-06-01", VenueID: "00000000-0000-0000-0000-000000000002"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := svc.GetSummary(context.Background(), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Metrics.ProjectedOperatingResultBeforeTransactionCosts != nil {
+				t.Fatalf("scoped projected operating result = %v, want nil without OPEX allocation", *res.Metrics.ProjectedOperatingResultBeforeTransactionCosts)
+			}
+			if res.Metrics.PlatformOperatingExpense == nil || *res.Metrics.PlatformOperatingExpense != "123" {
+				t.Fatalf("scoped OPEX = %v, want exact global 123", res.Metrics.PlatformOperatingExpense)
+			}
+		})
 	}
 }
 

@@ -589,6 +589,12 @@ func (r *repository) getProjectionSummary(ctx context.Context, start, end time.T
 	for _, row := range refunds {
 		result.RefundBuckets = append(result.RefundBuckets, BucketResult{Bucket: row.Event.At, Amount: row.Event.Amount, Comm: row.Event.Commission, Source: row.Event.Source, BookingCount: 1, CommissionAmount: row.Event.Commission})
 	}
+	opexBuckets, opexTotal, err := r.loadPlatformOperatingExpenses(ctx, tx, start, end)
+	if err != nil {
+		return nil, err
+	}
+	result.OpexBuckets = opexBuckets
+	result.PlatformOperatingExpense = opexTotal
 	for id, a := range owners {
 		result.TopOwners = append(result.TopOwners, BreakdownRow{ID: id, Gross: a.Gross, Refund: a.Refund, Net: a.Gross - a.Refund, BookingCount: a.BookingCount, NetComm: a.CommGross - a.CommRefund, LegacyScenarioCount: a.LegacyCount, SnapshotProjectionCount: a.SnapshotCount, NonBillableProjectionAmount: a.LegacyCommGross - a.LegacyCommRefund, SnapshotProjectionAmount: a.SnapshotCommGross - a.SnapshotCommRefund, LegacyProjectionPresent: a.LegacyPresent, SnapshotProjectionPresent: a.SnapshotPresent, ProjectionBasis: projectionBasisWithPresence(a.LegacyCount, a.SnapshotCount, a.LegacyPresent, a.SnapshotPresent, ProjectionBasisHistorical)})
 	}
@@ -631,6 +637,65 @@ func (r *repository) getProjectionSummary(ctx context.Context, start, end time.T
 		result.TopVenues = result.TopVenues[:10]
 	}
 	return result, nil
+}
+
+// loadPlatformOperatingExpenses reads the immutable journal facts created by
+// the expense workflow. A posted OPEX debit is positive; a VOID exact
+// reversal is a credit and therefore negative. Platform expenses are global
+// facts, so owner/venue filters intentionally do not change this value.
+func (r *repository) loadPlatformOperatingExpenses(ctx context.Context, tx pgx.Tx, start, end time.Time) ([]BucketResult, int64, error) {
+	rows, err := tx.Query(ctx, `
+WITH opex_events AS (
+    SELECT posted.effective_at,
+           SUM(entry.amount_rupiah)::bigint AS amount_rupiah
+    FROM platform_expenses expense
+    JOIN platform_journals posted ON posted.id = expense.posted_journal_id
+    JOIN platform_ledger_entries entry ON entry.journal_id = posted.id
+    WHERE expense.status IN ('POSTED', 'VOID')
+      AND entry.account_code LIKE 'OPEX_%'
+      AND entry.side = 'DEBIT'
+    GROUP BY posted.id, posted.effective_at
+    UNION ALL
+    SELECT reversal.effective_at,
+           -SUM(entry.amount_rupiah)::bigint AS amount_rupiah
+    FROM platform_expenses expense
+    JOIN platform_journals reversal ON reversal.id = expense.void_journal_id
+    JOIN platform_ledger_entries entry ON entry.journal_id = reversal.id
+    WHERE expense.status = 'VOID'
+      AND entry.account_code LIKE 'OPEX_%'
+      AND entry.side = 'CREDIT'
+    GROUP BY reversal.id, reversal.effective_at
+)
+SELECT date_trunc('day', effective_at AT TIME ZONE 'Asia/Jakarta') AS bucket,
+       SUM(amount_rupiah)::bigint AS amount_rupiah
+FROM opex_events
+WHERE effective_at >= $1 AND effective_at < $2
+GROUP BY bucket
+ORDER BY bucket ASC
+`, start, end)
+	if err != nil {
+		return nil, 0, mapRepositoryError(err)
+	}
+	defer rows.Close()
+
+	buckets := make([]BucketResult, 0)
+	var total int64
+	for rows.Next() {
+		var bucket BucketResult
+		if err := rows.Scan(&bucket.Bucket, &bucket.Amount); err != nil {
+			return nil, 0, mapRepositoryError(err)
+		}
+		buckets = append(buckets, bucket)
+		var addErr error
+		total, addErr = checkedAddInt64(total, bucket.Amount)
+		if addErr != nil {
+			return nil, 0, addErr
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, mapRepositoryError(err)
+	}
+	return buckets, total, nil
 }
 
 func ownerProfileForVenue(incomes, refunds []projectionRow, venueID string) string {
@@ -770,6 +835,10 @@ func (r *repository) getProjectionBreakdown(ctx context.Context, start, end time
 	if err != nil {
 		return nil, err
 	}
+	_, opexTotal, err := r.loadPlatformOperatingExpenses(ctx, tx, start, end)
+	if err != nil {
+		return nil, err
+	}
 	groups := make(map[string]*BreakdownRow)
 	var total BreakdownRow
 	for _, cell := range cells {
@@ -836,5 +905,5 @@ func (r *repository) getProjectionBreakdown(ctx context.Context, start, end time
 	if endIdx > len(rows) {
 		endIdx = len(rows)
 	}
-	return &BreakdownResult{AsOf: asOf, CutoverAt: cutover, TotalItems: len(rows), Rows: rows[startIdx:endIdx], ProjectionBasis: total.ProjectionBasis, LegacyScenarioCount: total.LegacyScenarioCount, SnapshotProjectionCount: total.SnapshotProjectionCount, NonBillableProjectionAmount: total.NonBillableProjectionAmount, SnapshotProjectionAmount: total.SnapshotProjectionAmount, LegacyProjectionPresent: total.LegacyProjectionPresent, SnapshotProjectionPresent: total.SnapshotProjectionPresent}, nil
+	return &BreakdownResult{AsOf: asOf, CutoverAt: cutover, TotalItems: len(rows), Rows: rows[startIdx:endIdx], ProjectionBasis: total.ProjectionBasis, LegacyScenarioCount: total.LegacyScenarioCount, SnapshotProjectionCount: total.SnapshotProjectionCount, NonBillableProjectionAmount: total.NonBillableProjectionAmount, SnapshotProjectionAmount: total.SnapshotProjectionAmount, LegacyProjectionPresent: total.LegacyProjectionPresent, SnapshotProjectionPresent: total.SnapshotProjectionPresent, PlatformOperatingExpense: opexTotal}, nil
 }

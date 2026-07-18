@@ -7,6 +7,12 @@ import type {
   PlatformJournal,
   PlatformJournalQuery,
 } from '../../types/platformExpense';
+import type {
+  PlatformFinanceBreakdownQuery,
+  PlatformFinanceBreakdownResponse,
+  PlatformFinanceSummaryQuery,
+  PlatformFinanceSummaryResponse,
+} from '../../types/platformFinance';
 
 export interface PaginationQuery {
   page?: number;
@@ -45,6 +51,7 @@ export interface OwnerResponse {
 export interface VenueQuery extends PaginationQuery {
   search?: string;
   status?: string;
+  owner_profile_id?: string;
 }
 
 export interface VenueResponse {
@@ -243,6 +250,49 @@ export const adminApi = {
     });
     if (!response.ok) throw new Error('Failed to fetch commercial terms');
     return response.json();
+  },
+
+  getPlatformFinanceSummary: async (
+    params?: PlatformFinanceSummaryQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformFinanceSummaryResponse> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') searchParams.set(key, String(value));
+    });
+    const token = localStorage.getItem('auth_token');
+    const query = searchParams.toString();
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/summary${query ? `?${query}` : ''}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as FinanceApiErrorBody;
+      throw new AdminApiError(response.status, body, 'Failed to fetch platform finance summary');
+    }
+    return response.json() as Promise<PlatformFinanceSummaryResponse>;
+  },
+
+  getPlatformFinanceBreakdown: async (
+    params: PlatformFinanceBreakdownQuery,
+    options?: { signal?: AbortSignal },
+  ): Promise<PlatformFinanceBreakdownResponse> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') searchParams.set(key, String(value));
+    });
+    const token = localStorage.getItem('auth_token');
+    const response = await apiFetch(`${API_BASE_URL}/admin/finance/breakdown?${searchParams.toString()}`, {
+      signal: options?.signal,
+      timeoutMs: ADMIN_REQUEST_TIMEOUT_MS,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as FinanceApiErrorBody;
+      throw new AdminApiError(response.status, body, 'Failed to fetch platform finance breakdown');
+    }
+    return response.json() as Promise<PlatformFinanceBreakdownResponse>;
   },
 
   getPlatformExpenses: async (

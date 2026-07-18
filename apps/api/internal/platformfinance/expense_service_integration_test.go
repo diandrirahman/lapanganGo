@@ -109,12 +109,14 @@ func TestExpenseServiceCancelAndApproveAreAtomicAndIdempotent(t *testing.T) {
 func TestExpenseServicePostAndVoidAreAtomicExactAndIdempotent(t *testing.T) {
 	_, _, pool := newExpenseMigrationDatabase(t, expenseMigrationVersion)
 	actorID := insertExpenseUser(t, pool, "SUPER_ADMIN")
+	jakarta := GetJakartaLocation()
+	backdatedOccurredAt := time.Now().In(jakarta).AddDate(0, -1, 0).Add(-time.Minute)
 	journalService, err := NewJournalService(NewJournalRepository())
 	require.NoError(t, err)
 	service := NewExpenseService(NewExpenseRepository(pool), pool, audit.NewPlatformService(audit.NewPlatformRepository()), journalService)
 
 	created, _, err := service.CreateDraft(context.Background(), CreateExpenseRequest{
-		AmountRupiah: "125000", Currency: "IDR", OccurredAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		AmountRupiah: "125000", Currency: "IDR", OccurredAt: backdatedOccurredAt.Format(time.RFC3339Nano),
 		Category: "OFFICE_ADMIN", PaymentAccount: "FUNDING_CLEARING", Vendor: "Post Vendor",
 		ExternalReference: "POST-" + actorID[:8], Description: "Post and void test expense",
 	}, "create-post-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
@@ -128,6 +130,23 @@ func TestExpenseServicePostAndVoidAreAtomicExactAndIdempotent(t *testing.T) {
 	assert.Equal(t, "POSTED", posted.Status)
 	require.NotNil(t, posted.PostedJournalID)
 	require.NotNil(t, posted.PostedAt)
+
+	financeService := NewService(NewRepository(pool))
+	postedPeriod := backdatedOccurredAt.Format("2006-01-02")
+	postedSummary, err := financeService.GetSummary(context.Background(), FinanceQuery{StartDate: postedPeriod, EndDate: postedPeriod})
+	require.NoError(t, err)
+	require.NotNil(t, postedSummary.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "125000", *postedSummary.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "AVAILABLE", postedSummary.DataAvailability.PlatformOperatingExpense)
+	require.Len(t, postedSummary.Trend, 1)
+	assert.Equal(t, "125000", *postedSummary.Trend[0].PlatformOperatingExpense)
+	postedBreakdown, err := financeService.GetBreakdown(context.Background(), FinanceBreakdownQuery{
+		FinanceQuery: FinanceQuery{StartDate: postedPeriod, EndDate: postedPeriod},
+		Dimension:    "owner",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "125000", postedBreakdown.PlatformOperatingExpense)
+	assert.Equal(t, "AVAILABLE", postedBreakdown.DataAvailability.PlatformOperatingExpense)
 
 	replayedPosted, replayed, err := service.PostExpense(context.Background(), created.ID, "post-key-"+actorID, actorID, "SUPER_ADMIN", "127.0.0.1", "integration-test")
 	require.NoError(t, err)
@@ -175,6 +194,15 @@ func TestExpenseServicePostAndVoidAreAtomicExactAndIdempotent(t *testing.T) {
 			SELECT account_code, owner_profile_id, side, amount_rupiah FROM platform_ledger_entries WHERE journal_id = $2
 		) differences`, *posted.PostedJournalID, *voided.VoidJournalID).Scan(&mismatchCount))
 	assert.Equal(t, 0, mismatchCount)
+
+	voidedPeriod := time.Now().In(jakarta).Format("2006-01-02")
+	voidedSummary, err := financeService.GetSummary(context.Background(), FinanceQuery{StartDate: voidedPeriod, EndDate: voidedPeriod})
+	require.NoError(t, err)
+	require.NotNil(t, voidedSummary.Metrics.PlatformOperatingExpense)
+	assert.Equal(t, "-125000", *voidedSummary.Metrics.PlatformOperatingExpense)
+	combinedSummary, err := financeService.GetSummary(context.Background(), FinanceQuery{StartDate: postedPeriod, EndDate: voidedPeriod})
+	require.NoError(t, err)
+	assert.Equal(t, "0", *combinedSummary.Metrics.PlatformOperatingExpense)
 }
 
 func TestExpenseServicePostAndVoidTimeoutAfterCommitReplay(t *testing.T) {

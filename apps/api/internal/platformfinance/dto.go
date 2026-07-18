@@ -107,20 +107,22 @@ type SummaryResponse struct {
 }
 
 type PaginatedBreakdownResponse struct {
-	Mode                        string `json:"mode"`
-	Data                        any    `json:"data"`
-	TotalItems                  int    `json:"total_items"`
-	TotalPages                  int    `json:"total_pages"`
-	Page                        int    `json:"page"`
-	Limit                       int    `json:"limit"`
-	AsOf                        string `json:"as_of"`
-	GeneratedAt                 string `json:"generated_at"`
-	MetricSourceVersion         string `json:"metric_source_version"`
-	ProjectionBasis             string `json:"projection_basis"`
-	LegacyScenarioCount         int    `json:"legacy_scenario_count"`
-	SnapshotProjectionCount     int    `json:"snapshot_projection_count"`
-	NonBillableProjectionAmount string `json:"non_billable_projection_amount"`
-	SnapshotProjectionAmount    string `json:"snapshot_projection_amount"`
+	Mode                        string           `json:"mode"`
+	Data                        any              `json:"data"`
+	TotalItems                  int              `json:"total_items"`
+	TotalPages                  int              `json:"total_pages"`
+	Page                        int              `json:"page"`
+	Limit                       int              `json:"limit"`
+	AsOf                        string           `json:"as_of"`
+	GeneratedAt                 string           `json:"generated_at"`
+	MetricSourceVersion         string           `json:"metric_source_version"`
+	ProjectionBasis             string           `json:"projection_basis"`
+	LegacyScenarioCount         int              `json:"legacy_scenario_count"`
+	SnapshotProjectionCount     int              `json:"snapshot_projection_count"`
+	NonBillableProjectionAmount string           `json:"non_billable_projection_amount"`
+	SnapshotProjectionAmount    string           `json:"snapshot_projection_amount"`
+	PlatformOperatingExpense    *string          `json:"platform_operating_expense"`
+	DataAvailability            DataAvailability `json:"data_availability"`
 }
 
 type FinanceQuery struct {

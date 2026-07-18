@@ -24,6 +24,7 @@ import { AdminAuditLogsPage } from './pages/admin/AdminAuditLogsPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminCommercialTermsPage } from './pages/admin/AdminCommercialTermsPage';
 import { AdminPlatformExpensesPage } from './pages/admin/AdminPlatformExpensesPage';
+import { AdminPlatformFinancePage } from './pages/admin/AdminPlatformFinancePage';
 
 // Owner Pages
 import { OwnerDashboardPage } from './pages/owner/OwnerDashboardPage';
@@ -124,6 +125,7 @@ function App() {
             <Route path="/admin/venues" element={<AdminVenuesPage />} />
             <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
             <Route path="/admin/commercial-terms" element={<AdminCommercialTermsPage />} />
+            <Route path="/admin/finance" element={<AdminPlatformFinancePage />} />
             <Route path="/admin/finance/expenses" element={<AdminPlatformExpensesPage />} />
           </Route>
 
