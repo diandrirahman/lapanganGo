@@ -24,6 +24,28 @@ func NewService(repo Repository) Service {
 	return &service{repo: repo}
 }
 
+// currentPlatformActualMetricsContract is the single production source for
+// nullable actual metrics while the platform remains in simulation mode.
+// Both the public summary and reconciliation gate consume this contract so a
+// future actual field cannot be enabled in one path and silently missed by the
+// other.
+func currentPlatformActualMetricsContract() (Metrics, DataAvailability) {
+	return Metrics{
+			GatewayCapturedGMV:       nil,
+			ActualCommissionRevenue:  nil,
+			PaymentProcessingExpense: nil,
+			PlatformRevenue:          nil,
+			TransactionContribution:  nil,
+			OperatingResult:          nil,
+			GrossTakeRateBps:         nil,
+			NetTakeRateBps:           nil,
+		}, DataAvailability{
+			ActualPlatformRevenue:    "UNAVAILABLE_UNTIL_LIVE",
+			PaymentProcessingExpense: "UNAVAILABLE_UNTIL_GATEWAY",
+			OwnerPayable:             "UNAVAILABLE_UNTIL_PLATFORM_COLLECTED",
+		}
+}
+
 func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryResponse, error) {
 	utcStart, utcEndExclusive, err := ParseAndValidateDates(query.StartDate, query.EndDate)
 	if err != nil {
@@ -71,27 +93,17 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		bpsValue = &v
 	}
 
-	metrics := Metrics{
-		OnlineGMVGross:      strconv.FormatInt(data.Gross, 10),
-		RefundPrincipal:     strconv.FormatInt(data.RefundPrincipal, 10),
-		OnlineGMVNet:        strconv.FormatInt(netGMV, 10),
-		ProjectedCommission: strconv.FormatInt(netComm, 10),
-		ProjectedOwnerNetAfterHypotheticalCommission:   strconv.FormatInt(ownerNetAfterComm, 10),
-		ProjectedTakeRateBps:                           bpsValue,
-		RealizedOnlineBookingCount:                     data.RealizedBookingCount,
-		RefundedBookingCount:                           data.RefundedBookingCount,
-		LegacyManualRealizedGMV:                        strconv.FormatInt(legacyGross, 10),
-		GatewayCapturedGMV:                             nil,
-		ActualCommissionRevenue:                        nil,
-		PaymentProcessingExpense:                       nil,
-		PlatformOperatingExpense:                       stringPointer(strconv.FormatInt(data.PlatformOperatingExpense, 10)),
-		ProjectedOperatingResultBeforeTransactionCosts: nil,
-		PlatformRevenue:                                nil,
-		TransactionContribution:                        nil,
-		OperatingResult:                                nil,
-		GrossTakeRateBps:                               nil,
-		NetTakeRateBps:                                 nil,
-	}
+	metrics, da := currentPlatformActualMetricsContract()
+	metrics.OnlineGMVGross = strconv.FormatInt(data.Gross, 10)
+	metrics.RefundPrincipal = strconv.FormatInt(data.RefundPrincipal, 10)
+	metrics.OnlineGMVNet = strconv.FormatInt(netGMV, 10)
+	metrics.ProjectedCommission = strconv.FormatInt(netComm, 10)
+	metrics.ProjectedOwnerNetAfterHypotheticalCommission = strconv.FormatInt(ownerNetAfterComm, 10)
+	metrics.ProjectedTakeRateBps = bpsValue
+	metrics.RealizedOnlineBookingCount = data.RealizedBookingCount
+	metrics.RefundedBookingCount = data.RefundedBookingCount
+	metrics.LegacyManualRealizedGMV = strconv.FormatInt(legacyGross, 10)
+	metrics.PlatformOperatingExpense = stringPointer(strconv.FormatInt(data.PlatformOperatingExpense, 10))
 	// OPEX is currently a platform-global fact.  Do not subtract that global
 	// amount from an owner/venue-scoped commission projection: doing so would
 	// present a projected result for a scope that has no OPEX allocation
@@ -104,12 +116,7 @@ func (s *service) GetSummary(ctx context.Context, query FinanceQuery) (*SummaryR
 		metrics.ProjectedOperatingResultBeforeTransactionCosts = stringPointer(strconv.FormatInt(projectedOperatingResult, 10))
 	}
 
-	da := DataAvailability{
-		PlatformOperatingExpense: "AVAILABLE",
-		ActualPlatformRevenue:    "UNAVAILABLE_UNTIL_LIVE",
-		PaymentProcessingExpense: "UNAVAILABLE_UNTIL_GATEWAY",
-		OwnerPayable:             "UNAVAILABLE_UNTIL_PLATFORM_COLLECTED",
-	}
+	da.PlatformOperatingExpense = "AVAILABLE"
 
 	dq := DataQuality{
 		PaidWithoutLedgerCount:      data.PaidWithoutLedgerCount,

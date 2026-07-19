@@ -166,9 +166,16 @@ func beginFixtureTx(t *testing.T, ctx context.Context, pool interface {
 		CREATE TEMP TABLE owner_profiles (id uuid PRIMARY KEY, user_id uuid NOT NULL, business_name text NOT NULL);
 		CREATE TEMP TABLE venues (id uuid PRIMARY KEY, owner_profile_id uuid NOT NULL, name text NOT NULL);
 		CREATE TEMP TABLE courts (id uuid PRIMARY KEY, venue_id uuid NOT NULL);
-		CREATE TEMP TABLE bookings (id uuid PRIMARY KEY, court_id uuid NOT NULL, status text NOT NULL, created_at timestamptz NOT NULL);
+		CREATE TEMP TABLE bookings (
+			id uuid PRIMARY KEY,
+			court_id uuid NOT NULL,
+			status text NOT NULL,
+			total_price numeric(12,2) NOT NULL DEFAULT 0,
+			created_at timestamptz NOT NULL
+		);
 		CREATE TEMP TABLE offline_booking_customers (booking_id uuid PRIMARY KEY);
 		CREATE TEMP TABLE owner_finance_transactions (
+			id bigserial PRIMARY KEY,
 			owner_id uuid NOT NULL,
 			venue_id uuid,
 			booking_id uuid,

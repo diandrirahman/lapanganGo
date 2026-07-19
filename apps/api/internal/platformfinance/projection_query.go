@@ -58,9 +58,10 @@ type projectionRow struct {
 type projectionBreakdownCell struct {
 	OwnerProfileID, OwnerName string
 	VenueID, VenueName        string
+	BucketDate                string
 	Gross, Refund             int64
 	NetCommission             int64
-	BookingCount              int
+	BookingCount, RefundCount int
 	LegacyCount               int
 	SnapshotCount             int
 	LegacyNetCommission       int64
@@ -353,17 +354,17 @@ ORDER BY t.created_at, t.booking_id`
 		}
 		money, err := projectionAmount(amount)
 		if err != nil {
-			return nil, nil, time.Time{}, time.Time{}, err
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 		}
 		snap := scanProjectionSnapshot(&source, &channel, &mode, &comm, &final, &commissionBps, &termID)
 		basis, projected, err := classifyProjection(bookingCreated, cutover, snap.Source, snap.FinanceMode, snap.Channel, snap.TermIDValid, snap.CommissionBpsValid, snap.CommissionBps, snap.CommissionAmount, snap.FinalPrice, money)
 		if err != nil {
-			return nil, nil, time.Time{}, time.Time{}, err
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 		}
 		if basis == ProjectionBasisHistorical {
 			projected, err = calculateHistoricalCommission(money)
 			if err != nil {
-				return nil, nil, time.Time{}, time.Time{}, err
+				return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 			}
 		}
 		if collect && len(incomes) >= maxProjectionEvents {
@@ -412,24 +413,24 @@ ORDER BY t.created_at, t.booking_id`
 		}
 		refundAmount, err := projectionAmount(amount)
 		if err != nil {
-			return nil, nil, time.Time{}, time.Time{}, err
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 		}
 		originalAmount, err := projectionAmount(original)
 		if err != nil {
-			return nil, nil, time.Time{}, time.Time{}, err
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 		}
 		if refundAmount != originalAmount {
-			return nil, nil, time.Time{}, time.Time{}, ErrRefundAmountMismatch
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: ErrRefundAmountMismatch}
 		}
 		snap := scanProjectionSnapshot(&source, &channel, &mode, &comm, &final, &commissionBps, &termID)
 		basis, projected, err := classifyProjection(bookingCreated, cutover, snap.Source, snap.FinanceMode, snap.Channel, snap.TermIDValid, snap.CommissionBpsValid, snap.CommissionBps, snap.CommissionAmount, snap.FinalPrice, originalAmount)
 		if err != nil {
-			return nil, nil, time.Time{}, time.Time{}, err
+			return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 		}
 		if basis == ProjectionBasisHistorical {
 			projected, err = calculateHistoricalCommission(originalAmount)
 			if err != nil {
-				return nil, nil, time.Time{}, time.Time{}, err
+				return nil, nil, time.Time{}, time.Time{}, &reconciliationProjectionRowError{At: eventAt, Err: err}
 			}
 		}
 		if collect && len(incomes)+len(refunds) >= maxProjectionEvents {
@@ -708,6 +709,18 @@ func ownerProfileForVenue(incomes, refunds []projectionRow, venueID string) stri
 }
 
 func (r *repository) loadProjectionBreakdownCells(ctx context.Context, tx pgx.Tx, start, end time.Time, ownerID, venueID string) ([]projectionBreakdownCell, error) {
+	return r.loadProjectionBreakdownCellsMode(ctx, tx, start, end, ownerID, venueID, false)
+}
+
+// loadProjectionBreakdownCellsByDay uses the production breakdown query and
+// formulas, but asks PostgreSQL to return Jakarta-day buckets in one query.
+// Reconciliation uses this mode to preserve dated evidence without issuing one
+// production breakdown query per day in the requested range.
+func (r *repository) loadProjectionBreakdownCellsByDay(ctx context.Context, tx pgx.Tx, start, end time.Time, ownerID, venueID string) ([]projectionBreakdownCell, error) {
+	return r.loadProjectionBreakdownCellsMode(ctx, tx, start, end, ownerID, venueID, true)
+}
+
+func (r *repository) loadProjectionBreakdownCellsMode(ctx context.Context, tx pgx.Tx, start, end time.Time, ownerID, venueID string, daily bool) ([]projectionBreakdownCell, error) {
 	filter := ""
 	args := []any{start, end}
 	if ownerID != "" {
@@ -717,6 +730,16 @@ func (r *repository) loadProjectionBreakdownCells(ctx context.Context, tx pgx.Tx
 	if venueID != "" {
 		filter += fmt.Sprintf(" AND v.id = $%d", len(args)+1)
 		args = append(args, venueID)
+	}
+
+	bucketSelect := ""
+	bucketGroup := ""
+	if daily {
+		// event_at is timestamptz. Convert it to the accounting timezone before
+		// deriving the date so UTC-boundary events stay in the correct bucket.
+		const bucketExpression = "to_char(event_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD')"
+		bucketSelect = bucketExpression + " AS bucket_date,\n       "
+		bucketGroup = bucketExpression + ", "
 	}
 
 	query := `
@@ -751,7 +774,7 @@ WITH income_base AS (
       AND t.booking_id IS NOT NULL
       AND obc.booking_id IS NULL` + filter + `
 ), income_rows AS (
-    SELECT *
+    SELECT *, created_at AS event_at
     FROM income_base
     WHERE created_at >= $1 AND created_at < $2
 ), refund_rows AS (
@@ -760,6 +783,7 @@ WITH income_base AS (
            i.owner_name,
            i.venue_id,
            i.venue_name,
+	       t.created_at AS event_at,
            t.amount,
            i.projection_source,
            i.commission
@@ -773,20 +797,21 @@ WITH income_base AS (
       AND t.created_at >= $1 AND t.created_at < $2
 ), events AS (
     SELECT owner_profile_id, owner_name, venue_id, venue_name,
-           amount, commission, projection_source, 'INCOME' AS event_kind
+	       event_at, amount, commission, projection_source, 'INCOME' AS event_kind
     FROM income_rows
     UNION ALL
     SELECT owner_profile_id, owner_name, venue_id, venue_name,
-           amount, commission, projection_source, 'REFUND' AS event_kind
+	       event_at, amount, commission, projection_source, 'REFUND' AS event_kind
     FROM refund_rows
 )
-SELECT owner_profile_id,
+SELECT ` + bucketSelect + `owner_profile_id,
        owner_name,
        venue_id,
        venue_name,
        CAST(COALESCE(SUM(amount) FILTER (WHERE event_kind = 'INCOME'), 0) AS bigint) AS gross,
        CAST(COALESCE(SUM(amount) FILTER (WHERE event_kind = 'REFUND'), 0) AS bigint) AS refund,
        CAST(COUNT(*) FILTER (WHERE event_kind = 'INCOME') AS integer) AS booking_count,
+	   CAST(COUNT(*) FILTER (WHERE event_kind = 'REFUND') AS integer) AS refund_count,
        CAST(COALESCE(SUM(commission) FILTER (WHERE event_kind = 'INCOME'), 0) - COALESCE(SUM(commission) FILTER (WHERE event_kind = 'REFUND'), 0) AS bigint) AS net_commission,
        CAST(COUNT(*) FILTER (WHERE event_kind = 'INCOME' AND projection_source = 'HISTORICAL_SCENARIO') AS integer) AS legacy_count,
        CAST(COUNT(*) FILTER (WHERE event_kind = 'INCOME' AND projection_source = 'BOOKING_SNAPSHOT') AS integer) AS snapshot_count,
@@ -795,7 +820,7 @@ SELECT owner_profile_id,
        COALESCE(BOOL_OR(projection_source = 'HISTORICAL_SCENARIO'), false) AS legacy_present,
        COALESCE(BOOL_OR(projection_source = 'BOOKING_SNAPSHOT'), false) AS snapshot_present
 FROM events
-GROUP BY owner_profile_id, owner_name, venue_id, venue_name`
+GROUP BY ` + bucketGroup + `owner_profile_id, owner_name, venue_id, venue_name`
 
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
@@ -805,12 +830,17 @@ GROUP BY owner_profile_id, owner_name, venue_id, venue_name`
 	var cells []projectionBreakdownCell
 	for rows.Next() {
 		var cell projectionBreakdownCell
-		if err := rows.Scan(
+		destinations := []any{
 			&cell.OwnerProfileID, &cell.OwnerName, &cell.VenueID, &cell.VenueName,
-			&cell.Gross, &cell.Refund, &cell.BookingCount, &cell.NetCommission,
-			&cell.LegacyCount, &cell.SnapshotCount, &cell.LegacyNetCommission,
-			&cell.SnapshotNetCommission, &cell.LegacyPresent, &cell.SnapshotPresent,
-		); err != nil {
+			&cell.Gross, &cell.Refund, &cell.BookingCount, &cell.RefundCount,
+			&cell.NetCommission, &cell.LegacyCount, &cell.SnapshotCount,
+			&cell.LegacyNetCommission, &cell.SnapshotNetCommission,
+			&cell.LegacyPresent, &cell.SnapshotPresent,
+		}
+		if daily {
+			destinations = append([]any{&cell.BucketDate}, destinations...)
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return nil, mapRepositoryError(err)
 		}
 		cells = append(cells, cell)
