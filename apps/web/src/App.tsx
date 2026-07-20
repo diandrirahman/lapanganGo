@@ -15,6 +15,7 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { StaffSetupPasswordPage } from './pages/StaffSetupPasswordPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { SuperAdminRoute } from './components/SuperAdminRoute';
+import { isPlatformFinanceAdminEnabled } from './config/features';
 
 // Admin Pages
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
@@ -125,8 +126,17 @@ function App() {
             <Route path="/admin/venues" element={<AdminVenuesPage />} />
             <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
             <Route path="/admin/commercial-terms" element={<AdminCommercialTermsPage />} />
-            <Route path="/admin/finance" element={<AdminPlatformFinancePage />} />
-            <Route path="/admin/finance/expenses" element={<AdminPlatformExpensesPage />} />
+            {isPlatformFinanceAdminEnabled ? (
+              <>
+                <Route path="/admin/finance" element={<AdminPlatformFinancePage />} />
+                <Route path="/admin/finance/expenses" element={<AdminPlatformExpensesPage />} />
+              </>
+            ) : (
+              <Route
+                path="/admin/finance/*"
+                element={<Navigate to="/admin/dashboard" replace />}
+              />
+            )}
           </Route>
 
           {/* Catch-All / 404 */}

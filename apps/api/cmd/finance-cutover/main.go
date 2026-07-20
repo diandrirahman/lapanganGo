@@ -64,7 +64,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: invalid application configuration")
+		os.Exit(1)
+	}
 
 	// Preflight context is bounded to 15 seconds, separate from apply lock timeout budget
 	preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 15*time.Second)

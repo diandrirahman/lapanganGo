@@ -13,6 +13,7 @@ import {
   X
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { isPlatformFinanceAdminEnabled } from '../../config/features';
 
 export const AdminLayout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -31,7 +32,7 @@ export const AdminLayout: React.FC = () => {
     { name: 'Owners', path: '/admin/owners', icon: Briefcase },
     { name: 'Venues', path: '/admin/venues', icon: MapPin },
     { name: 'Commercial Terms', path: '/admin/commercial-terms', icon: BadgePercent },
-    { name: 'Platform Finance', path: '/admin/finance', icon: CircleDollarSign },
+    ...(isPlatformFinanceAdminEnabled ? [{ name: 'Platform Finance', path: '/admin/finance', icon: CircleDollarSign }] : []),
     { name: 'Audit Logs', path: '/admin/audit-logs', icon: Activity },
   ];
 

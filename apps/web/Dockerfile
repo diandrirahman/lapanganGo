@@ -15,6 +15,10 @@ COPY apps/web/ ./apps/web/
 WORKDIR /app/apps/web
 # Set VITE_API_BASE_URL to /api for nginx proxy
 ENV VITE_API_BASE_URL=/api
+
+ARG VITE_PLATFORM_FINANCE_ADMIN_ENABLED=false
+ENV VITE_PLATFORM_FINANCE_ADMIN_ENABLED=${VITE_PLATFORM_FINANCE_ADMIN_ENABLED}
+
 RUN npm run build
 
 # Production image

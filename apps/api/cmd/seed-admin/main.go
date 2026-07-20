@@ -29,7 +29,10 @@ func main() {
 		log.Fatal("SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD must be provided via environment variables")
 	}
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal("invalid application configuration")
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatal("DATABASE_URL is not set")
 	}

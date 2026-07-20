@@ -41,7 +41,10 @@ func main() {
 	cleanupFlag := flag.Bool("cleanup", false, "Remove all demo data and exit")
 	flag.Parse()
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal("invalid application configuration")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

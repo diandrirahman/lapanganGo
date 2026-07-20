@@ -11,7 +11,10 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal("invalid application configuration")
+	}
 	ctx := context.Background()
 
 	dbPool, err := database.NewPostgresPool(ctx, cfg.DatabaseURL)

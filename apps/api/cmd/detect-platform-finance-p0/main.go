@@ -55,7 +55,11 @@ func run(
 		return 1
 	}
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "invalid application configuration\n")
+		return 1
+	}
 
 	dbUrl := getenv("POST_CUTOVER_DETECTOR_DATABASE_URL")
 	if dbUrl == "" {
