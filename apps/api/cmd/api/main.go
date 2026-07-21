@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -24,51 +24,96 @@ type StartupOperations struct {
 	MigrationRunner   func(dbURL string) error
 	SchemaEnsurer     func(ctx context.Context, dbPool *pgxpool.Pool) error
 	DependencyBuilder func(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool) (*gin.Engine, context.CancelFunc, error)
-	Listener          func(cfg config.Config, engine *gin.Engine, workerCancel context.CancelFunc) error
+	Listener          func(ctx context.Context, cfg config.Config, engine *gin.Engine) error
+}
+
+type httpServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+	Close() error
+}
+
+const serverShutdownTimeout = 5 * time.Second
+
+// runHTTPServer owns only the HTTP server lifecycle. Worker cancellation is
+// deliberately owned by Bootstrap so every post-dependency failure path is
+// cancelled exactly once and can be tested without process exit.
+func runHTTPServer(ctx context.Context, srv httpServer) error {
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New("server_closed_unexpectedly")
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+			select {
+			case <-serveErr:
+			case <-time.After(serverShutdownTimeout):
+			}
+			return err
+		}
+
+		select {
+		case err := <-serveErr:
+			if errors.Is(err, http.ErrServerClosed) {
+				return nil
+			}
+			return err
+		case <-shutdownCtx.Done():
+			_ = srv.Close()
+			return errors.New("server_shutdown_timeout")
+		}
+	}
 }
 
 func Bootstrap(ctx context.Context, ops StartupOperations) error {
 	cfg, err := ops.ConfigLoader()
 	if err != nil {
-		return fmt.Errorf("configuration error: %w", err)
+		return errors.New("configuration_load_failed")
 	}
 	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("configuration validation error: %w", err)
+		return errors.New("configuration_invalid")
 	}
 
 	dbPool, err := ops.DatabaseOpener(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to connect to PostgreSQL: %s", sanitize(err.Error(), cfg.DatabaseURL))
+		return errors.New("database_setup_failed")
 	}
 	if dbPool != nil {
 		defer dbPool.Close()
 	}
 
 	if err := ops.MigrationRunner(cfg.DatabaseURL); err != nil {
-		return fmt.Errorf("migration failed: %s", sanitize(err.Error(), cfg.DatabaseURL))
+		return errors.New("migration_failed")
 	}
 
 	if err := ops.SchemaEnsurer(ctx, dbPool); err != nil {
-		return fmt.Errorf("failed to ensure booking schema: %s", sanitize(err.Error(), cfg.DatabaseURL))
+		return errors.New("schema_setup_failed")
 	}
 
 	r, workerCancel, err := ops.DependencyBuilder(ctx, cfg, dbPool)
 	if err != nil {
-		return fmt.Errorf("failed to build dependencies: %s", sanitize(err.Error(), cfg.DatabaseURL))
+		return errors.New("dependency_setup_failed")
 	}
+	defer workerCancel()
 
-	if err := ops.Listener(cfg, r, workerCancel); err != nil {
-		return fmt.Errorf("server error: %s", sanitize(err.Error(), cfg.DatabaseURL))
+	if err := ops.Listener(ctx, cfg, r); err != nil {
+		return errors.New("server_start_failed")
 	}
 
 	return nil
-}
-
-func sanitize(msg, secret string) string {
-	if secret == "" {
-		return msg
-	}
-	return strings.ReplaceAll(msg, secret, "[REDACTED_DSN]")
 }
 
 func main() {
@@ -92,37 +137,18 @@ func main() {
 			r, workerCancel, err := setupRouter(ctx, cfg, dbPool, true)
 			return r, workerCancel, err
 		},
-		Listener: func(cfg config.Config, engine *gin.Engine, workerCancel context.CancelFunc) error {
+		Listener: func(ctx context.Context, cfg config.Config, engine *gin.Engine) error {
 			srv := &http.Server{
 				Addr:    ":" + cfg.AppPort,
 				Handler: engine,
 			}
-
-			go func() {
-				log.Println("Server running on port", cfg.AppPort)
-				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("Failed to run server: %v", err)
-				}
-			}()
-
-			quit := make(chan os.Signal, 1)
-			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-			<-quit
-			log.Println("Shutting down server...")
-			workerCancel()
-
-			ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			if err := srv.Shutdown(ctxShutdown); err != nil {
-				return fmt.Errorf("server forced to shutdown: %w", err)
-			}
-			log.Println("Server exiting")
-			return nil
+			log.Println("Server running on port", cfg.AppPort)
+			return runHTTPServer(ctx, srv)
 		},
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	if err := Bootstrap(ctx, ops); err != nil {
 		fmt.Fprintln(os.Stderr, "Startup failed:", err.Error())
 		os.Exit(1)

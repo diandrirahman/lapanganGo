@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"lapangango-api/internal/auth"
 	"lapangango-api/internal/config"
@@ -35,8 +36,8 @@ func checkOptIn(t *testing.T) string {
 		}
 		return adminDSN
 	}
-	t.Skip("TEST_ROLLBACK_HARDENING_DISPOSABLE has invalid value, skipping.")
-	return ""
+	t.Fatalf("TEST_ROLLBACK_HARDENING_DISPOSABLE must be one of unset, 0, false, or 1; got %q", optIn)
+	return "" // unreachable; keeps the helper's return contract explicit.
 }
 
 func createDisposableDB(t *testing.T, adminDSN string) (string, func()) {
@@ -52,7 +53,7 @@ func createDisposableDB(t *testing.T, adminDSN string) (string, func()) {
 	}
 
 	dbName := "lapangango_auth_" + strings.ReplaceAll(uuid.New().String(), "-", "")
-	
+
 	adminDB, err := sql.Open("postgres", adminDSN)
 	if err != nil {
 		t.Fatalf("could not connect to admin db: %v", err)
@@ -98,7 +99,7 @@ func setupMigrate(t *testing.T, targetDSN string) (*sql.DB, *migrate.Migrate) {
 	if err != nil {
 		t.Fatalf("could not create postgres driver: %v", err)
 	}
-	
+
 	m, err := migrate.NewWithDatabaseInstance(
 		"file://../../../../db/migrations",
 		"postgres",
@@ -124,6 +125,16 @@ func seedUser(t *testing.T, db *sql.DB, role, status string) (string, string) {
 	return id, email
 }
 
+func financeTableFingerprint(t *testing.T, db *sql.DB, table string) string {
+	t.Helper()
+	var fingerprint string
+	query := "SELECT md5(COALESCE(string_agg(row_to_json(t)::text, '|' ORDER BY row_to_json(t)::text), '')) FROM " + table + " t"
+	if err := db.QueryRow(query).Scan(&fingerprint); err != nil {
+		t.Fatalf("failed to fingerprint finance table %s: %v", table, err)
+	}
+	return fingerprint
+}
+
 func TestPlatformFinanceAuth_AuthMatrix(t *testing.T) {
 	adminDSN := checkOptIn(t)
 	targetDSN, cleanup := createDisposableDB(t, adminDSN)
@@ -147,15 +158,15 @@ func TestPlatformFinanceAuth_AuthMatrix(t *testing.T) {
 	activeCustomerID, activeCustomerEmail := seedUser(t, db, "CUSTOMER", "ACTIVE")
 	activeOwnerID, activeOwnerEmail := seedUser(t, db, "OWNER", "ACTIVE")
 	activeSuperAdminID, activeSuperAdminEmail := seedUser(t, db, "SUPER_ADMIN", "ACTIVE")
-	
+
 	// Create router with real middlewares
 	gin.SetMode(gin.TestMode)
 	cfg := config.Config{
 		PlatformFinanceAdminEnabled: true,
-		JWTSecret: "test-secret",
-		JWTExpiresInHours: 1,
-		GeneralRateLimitPerMinute: 100,
-		AuthRateLimitPerMinute: 100,
+		JWTSecret:                   "test-secret",
+		JWTExpiresInHours:           1,
+		GeneralRateLimitPerMinute:   100,
+		AuthRateLimitPerMinute:      100,
 	}
 
 	r, cancel, err := setupRouter(context.Background(), cfg, dbPool, false)
@@ -165,7 +176,7 @@ func TestPlatformFinanceAuth_AuthMatrix(t *testing.T) {
 	defer cancel()
 
 	tokenService := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpiresInHours)
-	
+
 	generateToken := func(id, email, role string) string {
 		token, _ := tokenService.Generate(auth.UserResponse{
 			ID:    id,
@@ -175,32 +186,57 @@ func TestPlatformFinanceAuth_AuthMatrix(t *testing.T) {
 		return token
 	}
 
-	testCases := []struct {
-		name       string
-		token      string
-		expected   int
+	routes := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"summary", http.MethodGet, "/admin/finance/summary?start_date=2026-01-01&end_date=2026-01-01", ""},
+		{"breakdown", http.MethodGet, "/admin/finance/breakdown?start_date=2026-01-01&end_date=2026-01-01&dimension=owner", ""},
+		{"list expenses", http.MethodGet, "/admin/finance/expenses?page=1&limit=20", ""},
+		{"create expense", http.MethodPost, "/admin/finance/expenses", `{}`},
+		{"cancel expense", http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/cancel", `{"reason":"auth matrix"}`},
+		{"approve expense", http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/approve", `{}`},
+		{"post expense", http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/post", `{}`},
+		{"void expense", http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/void", `{"reason":"auth matrix"}`},
+		{"journals", http.MethodGet, "/admin/finance/journals?start_date=2026-01-01&end_date=2026-01-01", ""},
+	}
+	authCases := []struct {
+		name  string
+		token string
+		want  int
 	}{
 		{"No JWT", "", http.StatusUnauthorized},
 		{"Invalid JWT", "invalid.token.here", http.StatusUnauthorized},
 		{"Inactive SUPER_ADMIN", generateToken(inactiveSuperAdminID, inactiveSuperAdminEmail, "SUPER_ADMIN"), http.StatusForbidden},
 		{"Active CUSTOMER", generateToken(activeCustomerID, activeCustomerEmail, "CUSTOMER"), http.StatusForbidden},
 		{"Active OWNER", generateToken(activeOwnerID, activeOwnerEmail, "OWNER"), http.StatusForbidden},
-		{"Active SUPER_ADMIN", generateToken(activeSuperAdminID, activeSuperAdminEmail, "SUPER_ADMIN"), http.StatusOK},
+		{"Active SUPER_ADMIN", generateToken(activeSuperAdminID, activeSuperAdminEmail, "SUPER_ADMIN"), 0},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "/admin/finance/summary", nil)
-			if tc.token != "" {
-				req.Header.Set("Authorization", "Bearer "+tc.token)
-			}
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, req)
+	for _, route := range routes {
+		for _, tc := range authCases {
+			t.Run(route.name+"/"+tc.name, func(t *testing.T) {
+				req, _ := http.NewRequest(route.method, route.path, strings.NewReader(route.body))
+				if tc.token != "" {
+					req.Header.Set("Authorization", "Bearer "+tc.token)
+				}
+				if route.method == http.MethodPost {
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Idempotency-Key", uuid.NewString())
+				}
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, req)
 
-			if w.Code != tc.expected {
-				t.Errorf("expected %d, got %d", tc.expected, w.Code)
-			}
-		})
+				if tc.want != 0 && w.Code != tc.want {
+					t.Errorf("expected %d, got %d", tc.want, w.Code)
+				}
+				if tc.want == 0 && (w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden) {
+					t.Errorf("active SUPER_ADMIN did not pass production auth chain: got %d", w.Code)
+				}
+			})
+		}
 	}
 }
 
@@ -226,6 +262,47 @@ func TestPlatformFinanceAuth_DisabledPreservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert audit fact: %v", err)
 	}
+	activeSuperAdminID, activeSuperAdminEmail := seedUser(t, db, "SUPER_ADMIN", "ACTIVE")
+	journalID := uuid.NewString()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("failed to begin journal fixture transaction: %v", err)
+	}
+	if _, err = tx.Exec(`
+		INSERT INTO platform_journals (id, event_key, event_type, payload_hash, effective_at, created_by_user_id, description)
+		VALUES ($1, 'journal.created:disabled-preservation', 'TEST', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $2, $3, 'disabled route preservation')
+	`, journalID, time.Now().Add(-time.Minute), activeSuperAdminID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("failed to insert journal fact: %v", err)
+	}
+	if _, err = tx.Exec(`
+		INSERT INTO platform_ledger_entries (journal_id, account_code, side, amount_rupiah)
+		VALUES ($1, 'BANK_CASH', 'DEBIT', 100), ($1, 'COMMISSION_REVENUE', 'CREDIT', 100)
+	`, journalID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("failed to insert ledger facts: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatalf("failed to commit journal and ledger facts: %v", err)
+	}
+	expenseID := uuid.NewString()
+	if _, err = db.Exec(`
+		INSERT INTO platform_expenses (id, category, vendor, amount_rupiah, currency, occurred_at, payment_account, description, created_by_user_id)
+		VALUES ($1, 'OTHER', 'Preservation Fixture', 100, 'IDR', $2, 'ACCOUNTS_PAYABLE', 'disabled route preservation', $3)
+	`, expenseID, time.Now().Add(-time.Hour), activeSuperAdminID); err != nil {
+		t.Fatalf("failed to insert expense fact: %v", err)
+	}
+	if _, err = db.Exec(`
+		INSERT INTO platform_expense_idempotency (actor_user_id, action, idempotency_key, request_hash, expense_id, response_status, response_body)
+		VALUES ($1, 'CREATE', 'disabled-preservation-key', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $2, 201, '{}')
+	`, activeSuperAdminID, expenseID); err != nil {
+		t.Fatalf("failed to insert expense idempotency fact: %v", err)
+	}
+	beforeFingerprints := make(map[string]string)
+	financeTables := []string{"platform_audit_logs", "platform_commercial_terms", "booking_fee_snapshots", "platform_finance_cutovers", "platform_journals", "platform_ledger_entries", "platform_expenses", "platform_expense_idempotency"}
+	for _, table := range financeTables {
+		beforeFingerprints[table] = financeTableFingerprint(t, db, table)
+	}
 
 	dbPool, err := pgxpool.New(context.Background(), targetDSN)
 	if err != nil {
@@ -233,16 +310,14 @@ func TestPlatformFinanceAuth_DisabledPreservation(t *testing.T) {
 	}
 	defer dbPool.Close()
 
-	activeSuperAdminID, activeSuperAdminEmail := seedUser(t, db, "SUPER_ADMIN", "ACTIVE")
-
 	// Create router with admin DISABLED
 	gin.SetMode(gin.TestMode)
 	cfg := config.Config{
 		PlatformFinanceAdminEnabled: false,
-		JWTSecret: "test-secret",
-		JWTExpiresInHours: 1,
-		GeneralRateLimitPerMinute: 100,
-		AuthRateLimitPerMinute: 100,
+		JWTSecret:                   "test-secret",
+		JWTExpiresInHours:           1,
+		GeneralRateLimitPerMinute:   100,
+		AuthRateLimitPerMinute:      100,
 	}
 
 	r, cancel, err := setupRouter(context.Background(), cfg, dbPool, false)
@@ -258,28 +333,46 @@ func TestPlatformFinanceAuth_DisabledPreservation(t *testing.T) {
 		Role:  "SUPER_ADMIN",
 	})
 
-	routes := []string{
-		"/admin/finance/summary",
-		"/admin/finance/breakdown",
-		"/admin/finance/expenses",
-		"/admin/finance/journals",
+	routes := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/admin/finance/summary?start_date=2026-01-01&end_date=2026-01-01", ""},
+		{http.MethodGet, "/admin/finance/breakdown?start_date=2026-01-01&end_date=2026-01-01&dimension=owner", ""},
+		{http.MethodGet, "/admin/finance/expenses?page=1&limit=20", ""},
+		{http.MethodPost, "/admin/finance/expenses", `{}`},
+		{http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/cancel", `{"reason":"disabled"}`},
+		{http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/approve", `{}`},
+		{http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/post", `{}`},
+		{http.MethodPost, "/admin/finance/expenses/00000000-0000-0000-0000-000000000000/void", `{"reason":"disabled"}`},
+		{http.MethodGet, "/admin/finance/journals?start_date=2026-01-01&end_date=2026-01-01", ""},
 	}
 
 	for _, route := range routes {
-		req, _ := http.NewRequest("GET", route, nil)
+		req, _ := http.NewRequest(route.method, route.path, strings.NewReader(route.body))
 		req.Header.Set("Authorization", "Bearer "+token)
+		if route.method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", uuid.NewString())
+		}
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
 		if w.Code != http.StatusNotFound {
-			t.Errorf("expected 404 for disabled route %s, got %d", route, w.Code)
+			t.Errorf("expected 404 for disabled route %s %s, got %d", route.method, route.path, w.Code)
 		}
 	}
 
-	// Assert facts remain identical
-	var count int
-	err = db.QueryRow("SELECT count(*) FROM platform_audit_logs WHERE id = $1", auditID).Scan(&count)
-	if err != nil || count != 1 {
-		t.Errorf("expected audit fact to be preserved, count %d err %v", count, err)
+	// Assert every finance fact remains unchanged.
+	for _, table := range financeTables {
+		afterFingerprint := financeTableFingerprint(t, db, table)
+		if afterFingerprint != beforeFingerprints[table] {
+			t.Errorf("table %s changed while admin routes were disabled: before=%s after=%s", table, beforeFingerprints[table], afterFingerprint)
+		}
+	}
+	var auditCount int
+	if err = db.QueryRow("SELECT count(*) FROM platform_audit_logs WHERE id = $1", auditID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Errorf("expected audit fact to be preserved, count %d err %v", auditCount, err)
 	}
 }

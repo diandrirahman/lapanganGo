@@ -155,12 +155,6 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	bookingsHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	if startWorkers {
-		go bookingsService.StartExpiryWorker(workerCtx, time.Duration(cfg.BookingExpirySweepIntervalSeconds)*time.Second)
-		go bookingsService.StartAutoCompleteWorker(workerCtx, time.Duration(cfg.BookingAutoCompleteIntervalSeconds)*time.Second)
-	}
-
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
 	blockedSlotHandler := blockedslots.NewHandler(blockedSlotService)
@@ -203,6 +197,13 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	commercialterms.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole, ctService)
 
 	analytics.RegisterRoutes(r, dbPool, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	if startWorkers {
+		go bookingsService.StartExpiryWorker(workerCtx, time.Duration(cfg.BookingExpirySweepIntervalSeconds)*time.Second)
+		go bookingsService.StartAutoCompleteWorker(workerCtx, time.Duration(cfg.BookingAutoCompleteIntervalSeconds)*time.Second)
+	}
+
 	return r, workerCancel, nil
 }
 

@@ -3,6 +3,7 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -39,8 +40,8 @@ func checkOptIn(t *testing.T) string {
 		}
 		return adminDSN
 	}
-	t.Skip("TEST_ROLLBACK_HARDENING_DISPOSABLE has invalid value, skipping.")
-	return ""
+	t.Fatalf("TEST_ROLLBACK_HARDENING_DISPOSABLE must be one of unset, 0, false, or 1; got %q", optIn)
+	return "" // unreachable; keeps the helper's return contract explicit.
 }
 
 func createDisposableDB(t *testing.T, adminDSN string) (string, func()) {
@@ -56,7 +57,7 @@ func createDisposableDB(t *testing.T, adminDSN string) (string, func()) {
 	}
 
 	dbName := "lapangango_rollback_" + strings.ReplaceAll(uuid.New().String(), "-", "")
-	
+
 	adminDB, err := sql.Open("postgres", adminDSN)
 	if err != nil {
 		t.Fatalf("could not connect to admin db: %v", err)
@@ -116,18 +117,93 @@ func setupMigrate(t *testing.T, targetDSN string) (*sql.DB, *migrate.Migrate) {
 }
 
 func getDBFingerprint(ctx context.Context, db *sql.DB) (string, error) {
-	var fingerprint string
-	err := db.QueryRowContext(ctx, `
-		SELECT count(*)::text || '-' || 
-		       (SELECT count(*) FROM information_schema.table_constraints) || '-' ||
-		       (SELECT count(*) FROM information_schema.triggers)
+	var objectFingerprint string
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)::text || '-' ||
+		       (SELECT count(*) FROM information_schema.table_constraints WHERE constraint_schema = 'public') || '-' ||
+		       (SELECT count(*) FROM information_schema.triggers WHERE trigger_schema = 'public')
 		FROM information_schema.tables WHERE table_schema = 'public'
-	`).Scan(&fingerprint)
-	return fingerprint, err
+	`).Scan(&objectFingerprint); err != nil {
+		return "", err
+	}
+
+	facts, err := getTableFingerprint(ctx, db, []string{
+		"platform_commercial_terms",
+		"platform_audit_logs",
+		"platform_finance_cutovers",
+		"booking_fee_snapshots",
+		"platform_journals",
+		"platform_ledger_entries",
+		"platform_expenses",
+		"platform_expense_idempotency",
+	})
+	if err != nil {
+		return "", err
+	}
+	return "objects=" + objectFingerprint + ";" + facts, nil
+}
+
+func getTableFingerprint(ctx context.Context, db *sql.DB, tables []string) (string, error) {
+	parts := make([]string, 0, len(tables))
+	for _, table := range tables {
+		quoted := `"` + strings.ReplaceAll(table, `"`, `""`) + `"`
+		var tableExists bool
+		if err := db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+table).Scan(&tableExists); err != nil {
+			return "", err
+		}
+		if !tableExists {
+			parts = append(parts, table+"=missing")
+			continue
+		}
+		var rowFingerprint sql.NullString
+		query := fmt.Sprintf(`SELECT md5(COALESCE(string_agg(row_to_json(t)::text, '|' ORDER BY row_to_json(t)::text), '')) FROM public.%s t`, quoted)
+		if err := db.QueryRowContext(ctx, query).Scan(&rowFingerprint); err != nil {
+			return "", err
+		}
+		parts = append(parts, table+"="+rowFingerprint.String)
+	}
+	return strings.Join(parts, ";"), nil
+}
+
+func survivingFactTables(target int) []string {
+	tables := []string{"platform_commercial_terms", "platform_audit_logs"}
+	if target >= 20 {
+		tables = append(tables, "platform_finance_cutovers", "booking_fee_snapshots")
+	}
+	if target >= 22 {
+		tables = append(tables, "platform_journals", "platform_ledger_entries")
+	}
+	if target >= 24 {
+		tables = append(tables, "platform_expenses", "platform_expense_idempotency")
+	}
+	return tables
+}
+
+func fingerprintDSN(t *testing.T, dsn string) string {
+	t.Helper()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("failed to open fingerprint database: %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("failed to ping fingerprint database: %v", err)
+	}
+	fingerprint, err := getDBFingerprint(context.Background(), db)
+	if err != nil {
+		t.Fatalf("failed to fingerprint database: %v", err)
+	}
+	return fingerprint
 }
 
 func TestRollbackHardening_PreFactDown(t *testing.T) {
 	adminDSN := checkOptIn(t)
+	sourceBefore := fingerprintDSN(t, adminDSN)
+	defer func() {
+		if sourceAfter := fingerprintDSN(t, adminDSN); sourceAfter != sourceBefore {
+			t.Errorf("admin/source database changed during disposable rollback test")
+		}
+	}()
 	targetDSN, cleanup := createDisposableDB(t, adminDSN)
 	defer cleanup()
 
@@ -152,16 +228,24 @@ func TestRollbackHardening_PreFactDown(t *testing.T) {
 
 func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 	adminDSN := checkOptIn(t)
+	sourceBefore := fingerprintDSN(t, adminDSN)
+	defer func() {
+		if sourceAfter := fingerprintDSN(t, adminDSN); sourceAfter != sourceBefore {
+			t.Errorf("admin/source database changed during disposable rollback test")
+		}
+	}()
 
 	cases := []struct {
-		name        string
-		target      int
-		insertQuery string
-		insertArgs  []interface{}
+		name                 string
+		target               int
+		expectedDirtyVersion int
+		insertQuery          string
+		insertArgs           []interface{}
 	}{
 		{
-			name:        "019 Additional commercial term",
-			target:      19,
+			name:                 "019 Additional commercial term",
+			target:               19,
+			expectedDirtyVersion: 18,
 			insertQuery: `
 				WITH new_user AS (
 					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'term-actor', 'term@test.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
@@ -172,29 +256,33 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 				INSERT INTO platform_commercial_terms (owner_profile_id, label, phase, finance_mode, collection_method, commission_bps, valid_from) 
 				VALUES ((SELECT COALESCE((SELECT id FROM new_owner), (SELECT id FROM owner_profiles LIMIT 1))), 'Another Term', 'STANDARD', 'LIVE', 'NONE', 500, $3)
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), uuid.New().String(), time.Now()},
+			insertArgs: []interface{}{uuid.New().String(), uuid.New().String(), time.Now()},
 		},
 		{
-			name:        "019 Mutated frozen seed",
-			target:      19,
-			insertQuery: `UPDATE platform_commercial_terms SET commission_bps = 800 WHERE label = 'Global Default Term'`,
-			insertArgs:  nil,
+			name:                 "019 Mutated frozen seed",
+			target:               19,
+			expectedDirtyVersion: 18,
+			insertQuery:          `UPDATE platform_commercial_terms SET commission_bps = 800 WHERE label = 'Global Default Term'`,
+			insertArgs:           nil,
 		},
 		{
-			name:        "019 Missing frozen seed",
-			target:      19,
-			insertQuery: `DELETE FROM platform_commercial_terms WHERE label = 'Global Default Term'`,
-			insertArgs:  nil,
+			name:                 "019 Missing frozen seed",
+			target:               19,
+			expectedDirtyVersion: 18,
+			insertQuery:          `DELETE FROM platform_commercial_terms WHERE label = 'Global Default Term'`,
+			insertArgs:           nil,
 		},
 		{
-			name:        "019 Platform audit fact",
-			target:      19,
-			insertQuery: `INSERT INTO platform_audit_logs (actor_role, action, entity_type) VALUES ($1, $2, $3)`,
-			insertArgs:  []interface{}{"SYSTEM", "CREATE", "MIGRATION_TEST"},
+			name:                 "019 Platform audit fact",
+			target:               19,
+			expectedDirtyVersion: 18,
+			insertQuery:          `INSERT INTO platform_audit_logs (actor_role, action, entity_type) VALUES ($1, $2, $3)`,
+			insertArgs:           []interface{}{"SYSTEM", "CREATE", "MIGRATION_TEST"},
 		},
 		{
-			name:        "020 Booking fee snapshot (direct)",
-			target:      20,
+			name:                 "020 Booking fee snapshot (direct)",
+			target:               20,
+			expectedDirtyVersion: 19,
 			insertQuery: `
 				WITH new_user AS (
 					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'snapshot-actor', 'snap@test.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
@@ -232,11 +320,25 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 					'V1'
 				)
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String(), time.Now()},
+			insertArgs: []interface{}{uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String(), time.Now()},
 		},
 		{
-			name:        "021 Active cutover guard",
-			target:      21,
+			name:                 "020 Active cutover guard (direct)",
+			target:               20,
+			expectedDirtyVersion: 20,
+			insertQuery: `
+				WITH new_user AS (
+					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'cutover-direct-actor', 'cutover-direct@test.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
+				)
+				INSERT INTO platform_finance_cutovers (id, snapshot_cutover_at, calculation_version, release_reference, created_by_user_id)
+				VALUES (1, $2, 'V1', 'R1', (SELECT COALESCE((SELECT id FROM new_user), (SELECT id FROM users LIMIT 1))))
+			`,
+			insertArgs: []interface{}{uuid.New().String(), time.Now()},
+		},
+		{
+			name:                 "021 Active cutover guard",
+			target:               21,
+			expectedDirtyVersion: 20,
 			insertQuery: `
 				WITH new_user AS (
 					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'cutover-actor', 'cutover@test.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
@@ -244,11 +346,12 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 				INSERT INTO platform_finance_cutovers (id, snapshot_cutover_at, calculation_version, release_reference, created_by_user_id) 
 				VALUES (1, $2, 'V1', 'R1', (SELECT COALESCE((SELECT id FROM new_user), (SELECT id FROM users LIMIT 1))))
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), time.Now()},
+			insertArgs: []interface{}{uuid.New().String(), time.Now()},
 		},
 		{
-			name:        "022 Ledger facts",
-			target:      22,
+			name:                 "022 Ledger facts",
+			target:               22,
+			expectedDirtyVersion: 22,
 			insertQuery: `
 				WITH new_journal AS (
 					INSERT INTO platform_journals (id, event_key, event_type, payload_hash, effective_at) 
@@ -259,11 +362,12 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 					($3, (SELECT id FROM new_journal), 'BANK_CASH', 'DEBIT', 10),
 					($4, (SELECT id FROM new_journal), 'COMMISSION_REVENUE', 'CREDIT', 10)
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), time.Now(), uuid.New().String(), uuid.New().String()},
+			insertArgs: []interface{}{uuid.New().String(), time.Now(), uuid.New().String(), uuid.New().String()},
 		},
 		{
-			name:        "023 Ledger balance reschedule",
-			target:      23,
+			name:                 "023 Ledger balance reschedule",
+			target:               23,
+			expectedDirtyVersion: 22,
 			insertQuery: `
 				WITH new_journal AS (
 					INSERT INTO platform_journals (id, event_key, event_type, payload_hash, effective_at) 
@@ -274,11 +378,12 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 					($3, (SELECT id FROM new_journal), 'BANK_CASH', 'DEBIT', 10),
 					($4, (SELECT id FROM new_journal), 'COMMISSION_REVENUE', 'CREDIT', 10)
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), time.Now(), uuid.New().String(), uuid.New().String()},
+			insertArgs: []interface{}{uuid.New().String(), time.Now(), uuid.New().String(), uuid.New().String()},
 		},
 		{
-			name:        "024 Expense row",
-			target:      24,
+			name:                 "024 Expense row",
+			target:               24,
+			expectedDirtyVersion: 23,
 			insertQuery: `
 				WITH new_user AS (
 					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'exp', 'expense-actor@example.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
@@ -286,11 +391,12 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 				INSERT INTO platform_expenses (id, category, amount_rupiah, currency, occurred_at, payment_account, description, created_by_user_id) 
 				VALUES ($2, 'OTHER', 100, 'IDR', $3, 'ACCOUNTS_PAYABLE', 'Desc', (SELECT COALESCE((SELECT id FROM new_user), (SELECT id FROM users LIMIT 1))))
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), uuid.New().String(), time.Now()},
+			insertArgs: []interface{}{uuid.New().String(), uuid.New().String(), time.Now()},
 		},
 		{
-			name:        "024 Expense idempotency",
-			target:      24,
+			name:                 "024 Expense idempotency",
+			target:               24,
+			expectedDirtyVersion: 23,
 			insertQuery: `
 				WITH new_user AS (
 					INSERT INTO users (id, name, email, password_hash) VALUES ($1, 'idemp', 'idemp-actor@example.com', 'hash') ON CONFLICT DO NOTHING RETURNING id
@@ -303,7 +409,7 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 				INSERT INTO platform_expense_idempotency (id, actor_user_id, action, idempotency_key, request_hash, expense_id, response_status, response_body)
 				VALUES ($4, (SELECT COALESCE((SELECT id FROM new_user), (SELECT id FROM users LIMIT 1))), 'CREATE', 'key1', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', (SELECT id FROM new_expense), 200, '{}')
 			`,
-			insertArgs:  []interface{}{uuid.New().String(), uuid.New().String(), time.Now(), uuid.New().String()},
+			insertArgs: []interface{}{uuid.New().String(), uuid.New().String(), time.Now(), uuid.New().String()},
 		},
 	}
 
@@ -322,8 +428,12 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 					t.Fatalf("failed to insert fixture: %v", err)
 				}
 			}
+			beforeFingerprint, err := getTableFingerprint(context.Background(), db, survivingFactTables(tc.target))
+			if err != nil {
+				t.Fatalf("failed to fingerprint facts before migration refusal: %v", err)
+			}
 
-			err := m.Steps(-1 * (24 - tc.target + 1))
+			err = m.Steps(-1 * (24 - tc.target + 1))
 			db.Exec("ROLLBACK") // clear aborted txn state
 			if err == nil {
 				t.Fatalf("expected down migration to fail for target %d, but it succeeded", tc.target)
@@ -342,13 +452,20 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 			if errVer != nil {
 				t.Fatalf("failed to get version after error: %v", errVer)
 			}
-			
+			afterFingerprint, err := getTableFingerprint(context.Background(), freshDB, survivingFactTables(tc.target))
+			if err != nil {
+				t.Fatalf("failed to fingerprint facts after migration refusal: %v", err)
+			}
+			if beforeFingerprint != afterFingerprint {
+				t.Errorf("facts/schema objects mutated after refused migration\nBefore: %s\nAfter: %s", beforeFingerprint, afterFingerprint)
+			}
+
 			if !dirty {
 				t.Errorf("expected dirty=true after refusal, got false")
 			}
-			
-			if version != tc.target && version != tc.target-1 {
-				t.Errorf("expected version %d or %d, got %d", tc.target, tc.target-1, version)
+
+			if version != tc.expectedDirtyVersion {
+				t.Errorf("expected exact dirty version %d after refused rollback, got %d", tc.expectedDirtyVersion, version)
 			}
 		})
 

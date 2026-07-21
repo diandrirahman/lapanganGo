@@ -49,8 +49,8 @@ services:
       - SMTP_USE_TLS=false
       - SMTP_FROM_NAME=LapangGo
       - SMTP_FROM_EMAIL=no-reply@lapanggo.local
-      - PLATFORM_FINANCE_ADMIN_ENABLED=false
-      - PLATFORM_MONETIZATION_ENABLED=false
+      - PLATFORM_FINANCE_ADMIN_ENABLED=${PLATFORM_FINANCE_ADMIN_ENABLED:-false}
+      - PLATFORM_MONETIZATION_ENABLED=${PLATFORM_MONETIZATION_ENABLED:-false}
     ports:
       - "8080:8080"
     depends_on:
@@ -70,7 +70,6 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         - VITE_PLATFORM_FINANCE_ADMIN_ENABLED=${PLATFORM_FINANCE_ADMIN_ENABLED:-false}
-        - VITE_PLATFORM_MONETIZATION_ENABLED=${PLATFORM_MONETIZATION_ENABLED:-false}
     container_name: lapangango_web
     restart: always
     ports:

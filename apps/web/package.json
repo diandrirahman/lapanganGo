@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node scripts/test_platform_expense_form.mjs && npm run test:responsive && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx src/__tests__/platformFinanceSummary.test.tsx src/__tests__/platformFinanceApiUiContract.test.tsx src/__tests__/superAdminRoute.test.tsx src/__tests__/platformFinanceFeatureFlag.test.tsx",
+    "test": "node scripts/test_platform_expense_form.mjs && node --test scripts/test_platform_finance_responsive_cleanup.test.mjs && npm run test:responsive && vitest run --environment jsdom src/__tests__/platformExpenseWorkflow.test.tsx src/__tests__/platformFinanceSummary.test.tsx src/__tests__/platformFinanceApiUiContract.test.tsx src/__tests__/superAdminRoute.test.tsx src/__tests__/platformFinanceFeatureFlag.test.tsx",
     "test:responsive": "node scripts/test_platform_finance_responsive.mjs",
     "lint": "oxlint",
     "preview": "vite preview"

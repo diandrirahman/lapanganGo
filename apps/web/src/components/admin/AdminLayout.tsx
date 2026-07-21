@@ -92,6 +92,7 @@ export const AdminLayout: React.FC = () => {
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             className="text-slate-300 hover:text-white p-2"
+            aria-label={isMobileMenuOpen ? 'Close admin navigation' : 'Open admin navigation'}
           >
             {isMobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
           </button>
