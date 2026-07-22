@@ -8,6 +8,7 @@ apps/web/dist
 .gotmp
 outputs
 docs/*
+!docs/task_4-05_automated_full_regression_evidence.md
 !docs/version_1_7_platform_finance_implementation_plan.md
 !docs/LapangGo_Phase_2B_to_Phase_7_Antigravity_Task_Cards.md
 .agents/antigravity_v1_*.md

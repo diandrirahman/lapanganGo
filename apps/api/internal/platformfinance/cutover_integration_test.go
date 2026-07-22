@@ -51,7 +51,9 @@ func TestMain(m *testing.M) {
 		}
 		testDSN = dsn
 
-		// Run all migrations to 21
+		// Run all migrations to the current migration head for the package-level
+		// activation and trigger tests. MigrationVerification creates its own
+		// database and deliberately targets the cutover guard version below.
 		migInst, err := migrate.New(getMigrationsPath(), testDSN)
 		if err != nil {
 			fatalAfterCleanup(cleanup, "failed to create migrate instance")
@@ -411,8 +413,10 @@ func TestCutover_MigrationVerification(t *testing.T) {
 	require.NoError(t, err)
 	defer m.Close()
 
-	// 1. Run all migrations Up to 21
-	err = m.Up()
+	// 1. Run only through the cutover guard migration. The test is validating
+	// the 020/021 boundary; using m.Up() here would also apply later migrations
+	// and make the following Steps(-1) operate on the wrong down migration.
+	err = m.Migrate(21)
 	require.NoError(t, err)
 
 	// 2. DOWN 1 before activation succeeds (goes to 20)
@@ -423,7 +427,7 @@ func TestCutover_MigrationVerification(t *testing.T) {
 	err = m.Steps(1)
 	require.NoError(t, err)
 
-	// Verify schema version 21, dirty false
+	// Verify the cutover guard version, dirty false
 	version, dirty, err := m.Version()
 	require.NoError(t, err)
 	assert.Equal(t, uint(21), version)
