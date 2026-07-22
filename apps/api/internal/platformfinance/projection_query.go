@@ -280,14 +280,20 @@ func (r *repository) loadProjectionEventsMode(ctx context.Context, tx pgx.Tx, st
 	}
 
 	var duplicate int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT booking_id FROM owner_finance_transactions WHERE type='INCOME' AND source='BOOKING' AND booking_id IS NOT NULL GROUP BY booking_id HAVING count(*) > 1) q`).Scan(&duplicate); err != nil {
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM (
+			SELECT booking_id FROM owner_finance_transactions
+			WHERE type='INCOME' AND source='BOOKING' AND booking_id IS NOT NULL
+			GROUP BY booking_id
+			HAVING count(*) > 1 AND count(*) FILTER (WHERE created_at >= $1 AND created_at < $2) > 0
+		) q`, start, end).Scan(&duplicate); err != nil {
 		return nil, nil, time.Time{}, time.Time{}, mapRepositoryError(err)
 	}
 	if duplicate > 0 {
 		return nil, nil, time.Time{}, time.Time{}, ErrDuplicateLedgerDetected
 	}
 	var fractional int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM owner_finance_transactions WHERE amount <> trunc(amount)`).Scan(&fractional); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM owner_finance_transactions WHERE amount <> trunc(amount) AND created_at >= $1 AND created_at < $2`, start, end).Scan(&fractional); err != nil {
 		return nil, nil, time.Time{}, time.Time{}, mapRepositoryError(err)
 	}
 	if fractional > 0 {
@@ -299,9 +305,12 @@ func (r *repository) loadProjectionEventsMode(ctx context.Context, tx pgx.Tx, st
 		FROM owner_finance_transactions t
 		WHERE t.type = 'EXPENSE' AND t.source = 'REFUND'
 		  AND t.created_at >= $1 AND t.created_at < $2
-		  AND (t.booking_id IS NULL OR NOT EXISTS (
+		  AND (t.booking_id IS NULL
+		    OR NOT (`+canonicalLedgerBookingPredicate+`)
+		    OR NOT EXISTS (
 			SELECT 1 FROM owner_finance_transactions i
 			WHERE i.booking_id = t.booking_id AND i.type = 'INCOME' AND i.source = 'BOOKING'
+			  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id
 		))`, start, end).Scan(&orphanRefund); err != nil {
 		return nil, nil, time.Time{}, time.Time{}, mapRepositoryError(err)
 	}

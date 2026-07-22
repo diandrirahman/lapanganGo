@@ -266,6 +266,20 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 			insertArgs:           nil,
 		},
 		{
+			name:                 "019 Mutated frozen seed valid_from",
+			target:               19,
+			expectedDirtyVersion: 18,
+			insertQuery:          `UPDATE platform_commercial_terms SET valid_from = valid_from + interval '1 second' WHERE label = 'Global Default Term'`,
+			insertArgs:           nil,
+		},
+		{
+			name:                 "019 Mutated frozen seed created_at",
+			target:               19,
+			expectedDirtyVersion: 18,
+			insertQuery:          `UPDATE platform_commercial_terms SET created_at = created_at + interval '1 second' WHERE label = 'Global Default Term'`,
+			insertArgs:           nil,
+		},
+		{
 			name:                 "019 Missing frozen seed",
 			target:               19,
 			expectedDirtyVersion: 18,

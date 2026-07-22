@@ -26,8 +26,8 @@ func TestConfigLoadFrom_Booleans(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mockEnv := map[string]string{
-				"DATABASE_URL":                  "postgres://user:pass@localhost/db",
-				"JWT_SECRET":                    "secret",
+				"DATABASE_URL":                   "postgres://user:pass@localhost/db",
+				"JWT_SECRET":                     "secret",
 				"PLATFORM_FINANCE_ADMIN_ENABLED": tc.envValue,
 			}
 			cfg, err := LoadFrom(func(k string) string { return mockEnv[k] })
@@ -112,5 +112,21 @@ func TestConfigValidation(t *testing.T) {
 	err2 := cfg2.Validate()
 	if err2 != nil {
 		t.Fatalf("expected no error for monetization disabled, got: %v", err2)
+	}
+}
+
+func TestConfigLoadFrom_RejectsMonetizationBeforeCallersCanOpenDatabase(t *testing.T) {
+	mockEnv := map[string]string{
+		"DATABASE_URL":                  "postgres://user:pass@localhost/db",
+		"JWT_SECRET":                    "secret",
+		"PLATFORM_MONETIZATION_ENABLED": "true",
+	}
+
+	_, err := LoadFrom(func(k string) string { return mockEnv[k] })
+	if err == nil {
+		t.Fatal("expected Phase 4 monetization guard error")
+	}
+	if !strings.Contains(err.Error(), "PLATFORM_MONETIZATION_ENABLED=true is strictly prohibited") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

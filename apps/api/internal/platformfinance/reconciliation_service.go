@@ -150,8 +150,26 @@ func evaluateRollups(snapshot *ReconciliationSnapshot) ReconciliationCheckResult
 func evaluateOPEX(snapshot *ReconciliationSnapshot) ReconciliationCheckResult {
 	result := newReconciliationCheck(ReconciliationCheckOPEX)
 	actualByDate := make(map[string]*ReconciliationTotals)
+	mismatchedDates := make(map[string]struct{})
 	for _, event := range snapshot.OPEXEvents {
 		date := localBucket(event.EffectiveAt)
+		if event.ExpectedAmount != event.Amount {
+			result.addException(ReconciliationException{
+				Metric: "opex_expense_journal", BucketDate: date,
+				ExpectedRupiah: event.ExpectedAmount, ActualRupiah: event.Amount,
+				DifferenceRupiah: event.ExpectedAmount - event.Amount,
+				Reason:           "expense amount differs from linked journal amount",
+			})
+			mismatchedDates[date] = struct{}{}
+		}
+		if !event.ExactLink {
+			result.addException(ReconciliationException{
+				Metric: "opex_exact_reversal", BucketDate: date,
+				ExpectedCount: 1, ActualCount: 0, DifferenceCount: 1,
+				Reason: "void journal does not reverse the expense posted journal",
+			})
+			mismatchedDates[date] = struct{}{}
+		}
 		if actualByDate[date] == nil {
 			actualByDate[date] = &ReconciliationTotals{}
 		}
@@ -164,8 +182,29 @@ func evaluateOPEX(snapshot *ReconciliationSnapshot) ReconciliationCheckResult {
 		actualByDate[date].OperatingExpense = actual
 	}
 	actualBuckets := bucketMapToSortedSlice(actualByDate)
-	compareReconciliationBucketSeries(&result, "opex_posted_minus_reversal", snapshot.OPEXSourceBuckets, actualBuckets, bucketCompareOPEX)
+	// Preserve the aggregate comparison for missing/extra event detection, but
+	// do not duplicate exceptions for dates already diagnosed per expense.
+	compareReconciliationBucketSeries(
+		&result,
+		"opex_posted_minus_reversal",
+		filterReconciliationBuckets(snapshot.OPEXSourceBuckets, mismatchedDates),
+		filterReconciliationBuckets(actualBuckets, mismatchedDates),
+		bucketCompareOPEX,
+	)
 	return applyDataIssues(result, snapshot.DataIssues, "OPEX_POSTED_REVERSAL_MATCH", "OPEX_MISMATCH")
+}
+
+func filterReconciliationBuckets(buckets []ReconciliationBucketTotals, excluded map[string]struct{}) []ReconciliationBucketTotals {
+	if len(excluded) == 0 {
+		return buckets
+	}
+	filtered := make([]ReconciliationBucketTotals, 0, len(buckets))
+	for _, bucket := range buckets {
+		if _, skip := excluded[bucket.BucketDate]; !skip {
+			filtered = append(filtered, bucket)
+		}
+	}
+	return filtered
 }
 
 func evaluateActualMetrics(snapshot *ReconciliationSnapshot, fallbackDate string) ReconciliationCheckResult {

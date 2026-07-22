@@ -85,7 +85,7 @@ func TestReconciliationReportsExactFaultBuckets(t *testing.T) {
 		TrendTotals:   []ReconciliationBucketTotals{{BucketDate: "2026-07-01", Totals: ReconciliationTotals{Gross: 90_000, Commission: 7_000, BookingCount: 1, OperatingExpense: 4_000}}},
 		PaidBookings:  []ReconciliationPaidBooking{{CreatedAt: bookingAt, Snapshot: false, SnapshotFinalPrice: 100_000, LedgerCount: 1, LedgerAmount: 100_000}},
 		RefundEvents:  []ReconciliationEvent{{EventAt: bookingAt, Amount: 40_000, OriginalAmount: 50_000, Exact: false}},
-		OPEXEvents:    []ReconciliationOPEXEvent{{EffectiveAt: bookingAt, Amount: 4_000}},
+		OPEXEvents:    []ReconciliationOPEXEvent{{EffectiveAt: bookingAt, ExpectedAmount: 4_000, Amount: 4_000, ExactLink: true}},
 		DataIssues: []ReconciliationDataIssue{{
 			Code: "DUPLICATE_INCOME", BucketDate: "2026-07-01", DifferenceCount: 2, Reason: "two income events for one booking",
 		}},
@@ -139,7 +139,7 @@ func TestReconciliationDailyComparisonsNeverEmitPeriodBucket(t *testing.T) {
 			{BucketDate: dayTwo, Totals: summary[1].Totals},
 		},
 		OPEXSourceBuckets: []ReconciliationBucketTotals{{BucketDate: dayTwo, Totals: ReconciliationTotals{OperatingExpense: 5}}},
-		OPEXEvents:        []ReconciliationOPEXEvent{{EffectiveAt: time.Date(2026, 7, 2, 12, 0, 0, 0, GetJakartaLocation()), Amount: 4}},
+		OPEXEvents:        []ReconciliationOPEXEvent{{EffectiveAt: time.Date(2026, 7, 2, 12, 0, 0, 0, GetJakartaLocation()), ExpectedAmount: 4, Amount: 4, ExactLink: true}},
 		ActualMetrics:     unavailableMetrics(),
 	}}
 	report, err := NewReconciliationService(repo).Reconcile(context.Background(), ReconciliationQuery{StartDate: dayOne, EndDate: dayTwo})

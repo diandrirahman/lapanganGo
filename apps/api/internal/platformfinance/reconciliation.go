@@ -282,10 +282,12 @@ type ReconciliationPaidBooking struct {
 }
 
 type ReconciliationOPEXEvent struct {
-	ExpenseID   string
-	JournalID   string
-	EffectiveAt time.Time
-	Amount      int64
+	ExpenseID      string
+	JournalID      string
+	EffectiveAt    time.Time
+	ExpectedAmount int64
+	Amount         int64
+	ExactLink      bool
 }
 
 type ReconciliationDataIssue struct {

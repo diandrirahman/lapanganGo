@@ -31,7 +31,7 @@ type Config struct {
 	SMTPFromEmail        string
 	SMTPUseTLS           bool
 	FrontendBaseURL      string
-	
+
 	// Phase 4 Feature Flags
 	PlatformMonetizationEnabled bool
 	PlatformFinanceAdminEnabled bool
@@ -148,7 +148,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	}
 	smtpUsername := getenv("SMTP_USERNAME")
 	smtpPassword := getenv("SMTP_PASSWORD")
-	
+
 	smtpFromName := getenv("SMTP_FROM_NAME")
 	if smtpFromName == "" {
 		smtpFromName = "LapangGo"
@@ -211,5 +211,8 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		PlatformFinanceAdminEnabled:        platformFinanceAdminEnabled,
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }

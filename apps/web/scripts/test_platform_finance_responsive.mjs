@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import process from 'process';
 import { createServer } from 'net';
@@ -18,6 +18,9 @@ const apiURL = 'http://localhost:8080';
 const qaEmail = 'qa@example.com';
 const qaPassword = 'responsive-qa-password';
 const qaToken = 'responsive-qa-token';
+const evidenceDirectory = process.env.TASK4_QA_EVIDENCE_DIR
+  ? path.resolve(process.env.TASK4_QA_EVIDENCE_DIR)
+  : '';
 const qaUser = {
   id: 'qa-super-admin',
   name: 'QA SuperAdmin',
@@ -241,6 +244,10 @@ function assertRequest(failures, request, expectedMethod, expectedPath) {
 
 async function runViewport(browser, viewport) {
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  if (evidenceDirectory) {
+    mkdirSync(evidenceDirectory, { recursive: true });
+    await context.tracing.start({ screenshots: true, snapshots: true });
+  }
   const page = await context.newPage();
   const failures = [];
   const journalRequests = [];
@@ -348,22 +355,27 @@ async function runViewport(browser, viewport) {
     await page.getByRole('button', { name: 'Platform Finance' }).click();
     await page.waitForURL('**/admin/finance');
     if (!(await page.getByRole('heading', { name: 'Keuangan Platform' }).isVisible())) fail('summary heading did not render');
+    if (!(await page.getByText('MODE SIMULASI', { exact: true }).isVisible())) fail('summary simulation banner did not render');
     await assertNoOverflow('summary');
+    if (evidenceDirectory) await page.screenshot({ path: path.join(evidenceDirectory, `${viewport.name}-summary.png`), fullPage: true });
 
     await page.getByRole('link', { name: /Pengeluaran/ }).click();
     await page.waitForURL('**/admin/finance/expenses');
     if (!(await page.getByRole('heading', { name: 'Platform Finance' }).isVisible())) fail('expense heading did not render');
+    if (!(await page.getByRole('note', { name: 'Platform Finance simulation mode' }).isVisible())) fail('expense simulation banner did not render');
     const visibleVoidBadge = viewport.name === 'desktop'
       ? page.getByRole('cell', { name: 'VOID', exact: true })
       : page.locator('article:visible').getByText('VOID', { exact: true });
     await visibleVoidBadge.first().waitFor({ state: 'visible' });
     await assertNoOverflow('expenses');
+    if (evidenceDirectory) await page.screenshot({ path: path.join(evidenceDirectory, `${viewport.name}-expenses.png`), fullPage: true });
 
     const originalResponse = waitForJournal('jnl-1');
     await page.locator('a[href="#journal-jnl-1"]:visible').first().click();
     await originalResponse;
     const journalsTab = page.getByRole('button', { name: 'Journals' });
     if (!(await journalsTab.isVisible())) fail('Journals tab did not render');
+    if (!(await page.getByRole('note', { name: 'Platform Finance simulation mode' }).isVisible())) fail('journal simulation banner did not remain visible');
     if (!((await journalsTab.getAttribute('class')) || '').includes('border-emerald-600')) fail('Journals tab was not active');
     if (!(await page.getByText(/Showing linked journal/).isVisible())) fail('original journal focus notice did not render');
     if (!(await page.locator('[data-focused-journal="jnl-1"]:visible').isVisible())) fail('jnl-1 was not focused');
@@ -379,7 +391,11 @@ async function runViewport(browser, viewport) {
     if (!(await page.locator('[data-focused-journal="jnl-1"]:visible').isVisible())) fail('focus did not return to jnl-1');
     if (journalRequests.join('→') !== 'jnl-1→jnl-2→jnl-1') fail(`unexpected journal request sequence: ${journalRequests.join('→')}`);
     await assertNoOverflow('journals');
+    if (evidenceDirectory) await page.screenshot({ path: path.join(evidenceDirectory, `${viewport.name}-journals.png`), fullPage: true });
   } finally {
+    if (evidenceDirectory) {
+      await context.tracing.stop({ path: path.join(evidenceDirectory, `${viewport.name}-trace.zip`) });
+    }
     await context.close();
   }
 
@@ -420,6 +436,15 @@ async function main() {
       { name: 'mobile', width: 390, height: 844 },
     ]) {
       await runViewport(browser, viewport);
+    }
+    if (evidenceDirectory) {
+      writeFileSync(path.join(evidenceDirectory, 'browser-workflow.json'), `${JSON.stringify({
+        source_commit: process.env.TASK4_QA_SOURCE_COMMIT || 'UNCOMMITTED',
+        api_mode: 'deterministic-intercepted-fixture',
+        viewports: ['desktop', 'mobile'],
+        workflow: ['login-form', 'summary', 'expenses', 'journals', 'reversal-links'],
+        result: 'PASS',
+      }, null, 2)}\n`, { encoding: 'utf8' });
     }
     console.log('SUCCESS: Platform finance browser QA passed for desktop and mobile viewports.');
   } catch (error) {

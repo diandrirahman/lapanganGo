@@ -133,7 +133,8 @@ func createReconciliationShadowSchema(t *testing.T, ctx context.Context, tx pgx.
 
 		CREATE TEMP TABLE platform_journals (
 			id uuid PRIMARY KEY,
-			effective_at timestamptz NOT NULL
+			effective_at timestamptz NOT NULL,
+			reverses_journal_id uuid
 		);
 
 		CREATE TEMP TABLE platform_ledger_entries (
@@ -240,7 +241,7 @@ func insertOPEXVoidExpense(t *testing.T, ctx context.Context, tx pgx.Tx, expense
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO platform_journals (id, effective_at) VALUES ($1, $2)`, voidJournalID, voidAt)
+	_, err = tx.Exec(ctx, `INSERT INTO platform_journals (id, effective_at, reverses_journal_id) VALUES ($1, $2, $3)`, voidJournalID, voidAt, postedJournalID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,6 +282,18 @@ func cleanMatrix() map[string]expectedCheckOutcome {
 		ReconciliationCheckOPEX:      emptyPassCheck(),
 		ReconciliationCheckActual:    emptyPassCheck(),
 	}
+}
+
+func requireReconciliationException(t *testing.T, report *ReconciliationReport, checkCode, metric, bucket string) ReconciliationException {
+	t.Helper()
+	check := checkByCode(report, checkCode)
+	for _, exception := range check.Exceptions {
+		if exception.Metric == metric && exception.BucketDate == bucket {
+			return exception
+		}
+	}
+	t.Fatalf("missing %s/%s exception for bucket %s: %#v", checkCode, metric, bucket, check.Exceptions)
+	return ReconciliationException{}
 }
 
 func requireIntegrationEnv(t *testing.T) string {
@@ -506,6 +519,41 @@ func TestReconciliationBoundarySuite(t *testing.T) {
 		})
 	})
 
+	t.Run("outside-range duplicate and fractional facts do not contaminate clean range", func(t *testing.T) {
+		tx := beginFixtureTx(t, ctx, pool)
+		defer tx.Rollback(ctx)
+		createReconciliationShadowSchema(t, ctx, tx)
+		insertCutover(t, ctx, tx, endExclusive.Add(time.Hour))
+
+		bookingID := "a0000000-0000-0000-0000-000000000030"
+		insertBooking(t, ctx, tx, bookingID, "COMPLETED", start.Add(-72*time.Hour))
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100000", start.Add(-48*time.Hour))
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100000", start.Add(-47*time.Hour))
+		insertLedger(t, ctx, tx, "", "INCOME", "MANUAL", "1.5", start.Add(-46*time.Hour))
+
+		report := reconcileInFixtureTx(t, ctx, tx, "2030-01-10", "2030-01-10")
+		assertReportOutcome(t, report, expectedReportOutcome{Clean: true, Status: ReconciliationClean, Checks: cleanMatrix()})
+	})
+
+	t.Run("duplicate crossing range boundary remains a dated exception", func(t *testing.T) {
+		tx := beginFixtureTx(t, ctx, pool)
+		defer tx.Rollback(ctx)
+		createReconciliationShadowSchema(t, ctx, tx)
+		insertCutover(t, ctx, tx, endExclusive.Add(time.Hour))
+
+		bookingID := "a0000000-0000-0000-0000-000000000031"
+		insertBooking(t, ctx, tx, bookingID, "COMPLETED", start.Add(time.Hour))
+		updateBookingPrice(t, ctx, tx, bookingID, "100000")
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100000", start.Add(-time.Hour))
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100000", start.Add(time.Hour))
+
+		report := reconcileInFixtureTx(t, ctx, tx, "2030-01-10", "2030-01-10")
+		if report.Clean {
+			t.Fatal("cross-boundary duplicate produced false CLEAN")
+		}
+		requireReconciliationException(t, report, ReconciliationCheckDuplicate, "DUPLICATE_INCOME", defaultBucket)
+	})
+
 	t.Run("missing post-cutover snapshot", func(t *testing.T) {
 		tx := beginFixtureTx(t, ctx, pool)
 		defer tx.Rollback(ctx)
@@ -667,6 +715,41 @@ func TestReconciliationBoundarySuite(t *testing.T) {
 		})
 	})
 
+	for _, tc := range []struct {
+		name    string
+		ownerID string
+		venueID string
+	}{
+		{name: "refund wrong owner", ownerID: "99999999-9999-9999-9999-999999999999", venueID: fixtureVenueID},
+		{name: "refund wrong venue", ownerID: fixtureOwnerUserID, venueID: "99999999-9999-9999-9999-999999999998"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := beginFixtureTx(t, ctx, pool)
+			defer tx.Rollback(ctx)
+			createReconciliationShadowSchema(t, ctx, tx)
+			insertCutover(t, ctx, tx, endExclusive.Add(time.Hour))
+
+			bookingID := "b0000000-0000-0000-0000-000000000099"
+			insertBooking(t, ctx, tx, bookingID, "CANCELLED", start.Add(time.Hour))
+			updateBookingPrice(t, ctx, tx, bookingID, "100000")
+			insertSnapshot(t, ctx, tx, bookingID, "POLICY", "MARKETPLACE_ONLINE", "SIMULATION", 700, 7000, 100000)
+			insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100000", start.Add(time.Hour))
+			_, err := tx.Exec(ctx, `
+				INSERT INTO owner_finance_transactions (owner_id, venue_id, booking_id, type, source, amount, created_at)
+				VALUES ($1, $2, $3, 'EXPENSE', 'REFUND', 100000, $4)
+			`, tc.ownerID, tc.venueID, bookingID, start.Add(2*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			report := reconcileInFixtureTx(t, ctx, tx, "2030-01-10", "2030-01-10")
+			if report.Clean {
+				t.Fatal("non-canonical refund produced false CLEAN")
+			}
+			requireReconciliationException(t, report, ReconciliationCheckRefund, "ORPHAN_REFUND", defaultBucket)
+		})
+	}
+
 	t.Run("offline nonzero commission", func(t *testing.T) {
 		tx := beginFixtureTx(t, ctx, pool)
 		defer tx.Rollback(ctx)
@@ -725,7 +808,7 @@ func TestReconciliationBoundarySuite(t *testing.T) {
 		matrix[ReconciliationCheckOPEX] = expectedCheckOutcome{
 			Status: ReconciliationFail,
 			Exceptions: []expectedException{
-				{Metric: "opex_posted_minus_reversal", BucketDate: defaultBucket, ExpectedRupiah: 100000, ActualRupiah: 90000, DifferenceRupiah: 10000},
+				{Metric: "opex_expense_journal", BucketDate: defaultBucket, ExpectedRupiah: 100000, ActualRupiah: 90000, DifferenceRupiah: 10000},
 			},
 		}
 
@@ -734,6 +817,57 @@ func TestReconciliationBoundarySuite(t *testing.T) {
 			Status: ReconciliationExceptions,
 			Checks: matrix,
 		})
+	})
+
+	t.Run("OPEX opposing per-expense mismatches cannot cancel", func(t *testing.T) {
+		tx := beginFixtureTx(t, ctx, pool)
+		defer tx.Rollback(ctx)
+		createReconciliationShadowSchema(t, ctx, tx)
+		insertCutover(t, ctx, tx, endExclusive.Add(time.Hour))
+
+		insertOPEXExpense(t, ctx, tx, "c0000000-0000-0000-0000-000000000010", "d0000000-0000-0000-0000-000000000010", "POSTED", 90000, start.Add(time.Hour))
+		insertOPEXExpense(t, ctx, tx, "c0000000-0000-0000-0000-000000000011", "d0000000-0000-0000-0000-000000000011", "POSTED", 110000, start.Add(2*time.Hour))
+		_, err := tx.Exec(ctx, `UPDATE platform_expenses SET amount_rupiah=100000 WHERE id IN ($1,$2)`, "c0000000-0000-0000-0000-000000000010", "c0000000-0000-0000-0000-000000000011")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		report := reconcileInFixtureTx(t, ctx, tx, "2030-01-10", "2030-01-10")
+		check := checkByCode(report, ReconciliationCheckOPEX)
+		if report.Clean || check.Status != ReconciliationFail {
+			t.Fatalf("opposing OPEX mismatches produced clean/pass: %#v", check)
+		}
+		var mismatches int
+		for _, exception := range check.Exceptions {
+			if exception.Metric == "opex_expense_journal" {
+				mismatches++
+			}
+		}
+		if mismatches != 2 {
+			t.Fatalf("per-expense mismatch exceptions=%d, want 2: %#v", mismatches, check.Exceptions)
+		}
+	})
+
+	t.Run("OPEX void must link to exact posted journal", func(t *testing.T) {
+		tx := beginFixtureTx(t, ctx, pool)
+		defer tx.Rollback(ctx)
+		createReconciliationShadowSchema(t, ctx, tx)
+		insertCutover(t, ctx, tx, endExclusive.Add(time.Hour))
+
+		expenseID := "c0000000-0000-0000-0000-000000000012"
+		postedID := "d0000000-0000-0000-0000-000000000012"
+		voidID := "e0000000-0000-0000-0000-000000000012"
+		insertOPEXVoidExpense(t, ctx, tx, expenseID, postedID, voidID, "VOID", 100000, start.Add(time.Hour), start.Add(2*time.Hour))
+		_, err := tx.Exec(ctx, `UPDATE platform_journals SET reverses_journal_id=$2 WHERE id=$1`, voidID, "ffffffff-ffff-ffff-ffff-ffffffffffff")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		report := reconcileInFixtureTx(t, ctx, tx, "2030-01-10", "2030-01-10")
+		if report.Clean {
+			t.Fatal("unrelated void journal produced false CLEAN")
+		}
+		requireReconciliationException(t, report, ReconciliationCheckOPEX, "opex_exact_reversal", defaultBucket)
 	})
 
 	t.Run("Jakarta midnight boundary", func(t *testing.T) {

@@ -203,11 +203,12 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT count(*) FROM (
 			SELECT booking_id 
 			FROM owner_finance_transactions 
-			WHERE type = 'INCOME' AND source = 'BOOKING' 
+			WHERE type = 'INCOME' AND source = 'BOOKING' AND booking_id IS NOT NULL
 			GROUP BY booking_id 
 			HAVING count(*) > 1
+			   AND count(*) FILTER (WHERE created_at >= $1 AND created_at < $2) > 0
 		) d
-	`).Scan(&dupCount)
+	`, utcStart, utcEndExclusive).Scan(&dupCount)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +222,8 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 	err = tx.QueryRow(ctx, `
 		SELECT count(*) 
 		FROM owner_finance_transactions 
-		WHERE amount != TRUNC(amount)
-	`).Scan(&fracCount)
+		WHERE amount != TRUNC(amount) AND created_at >= $1 AND created_at < $2
+	`, utcStart, utcEndExclusive).Scan(&fracCount)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +238,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT count(*)
 		FROM owner_finance_transactions t
 		WHERE t.type = 'EXPENSE' AND t.source = 'REFUND'
+		  AND t.created_at >= $1 AND t.created_at < $2
 		  AND (
 			t.booking_id IS NULL
 			OR NOT (`+canonicalLedgerBookingPredicate+`)
@@ -247,7 +249,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 			  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id
 			)
 		  )
-	`).Scan(&orphanRefundCount)
+	`, utcStart, utcEndExclusive).Scan(&orphanRefundCount)
 	if err != nil {
 		return nil, mapRepositoryError(err)
 	}
@@ -262,6 +264,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 		SELECT count(*)
 		FROM owner_finance_transactions t
 		WHERE t.type = 'EXPENSE' AND t.source = 'REFUND'
+		  AND t.created_at >= $1 AND t.created_at < $2
 		  AND `+canonicalLedgerBookingPredicate+`
 		  AND NOT EXISTS (
 			SELECT 1 FROM owner_finance_transactions i
@@ -270,7 +273,7 @@ func getSummaryDataInTx(ctx context.Context, tx pgx.Tx, utcStart, utcEndExclusiv
 			  AND i.owner_id = t.owner_id AND i.venue_id = t.venue_id
 			  AND i.amount = t.amount
 		  )
-	`).Scan(&refundAmountMismatchCount)
+	`, utcStart, utcEndExclusive).Scan(&refundAmountMismatchCount)
 	if err != nil {
 		return nil, mapRepositoryError(err)
 	}

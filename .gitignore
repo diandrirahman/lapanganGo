@@ -9,6 +9,13 @@ apps/web/dist
 outputs
 docs/*
 !docs/task_4-05_automated_full_regression_evidence.md
+!docs/task_4-06_manual_qa_booking_snapshot_projection.md
+!docs/task_4-07_manual_qa_opex_audit_auth_owner.md
+!docs/task_4-08_manual_qa_time_reconciliation_ux.md
+!docs/version_1_7_platform_finance_readiness.md
+!docs/platform_finance_metric_dictionary.md
+!docs/platform_finance_incident_runbook.md
+!docs/mvp_known_limitations.md
 !docs/version_1_7_platform_finance_implementation_plan.md
 !docs/LapangGo_Phase_2B_to_Phase_7_Antigravity_Task_Cards.md
 .agents/antigravity_v1_*.md

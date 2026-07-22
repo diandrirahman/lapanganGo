@@ -277,23 +277,26 @@ func loadReconciliationDataIssues(ctx context.Context, tx pgx.Tx, start, end, cu
 		return mapRepositoryError(rows.Err())
 	}
 	if err := addCountIssue("DUPLICATE_INCOME", `
-		SELECT date_trunc('day', MIN(created_at) AT TIME ZONE 'Asia/Jakarta'), COUNT(*) - 1
+		SELECT date_trunc('day', (MIN(created_at) FILTER (WHERE created_at >= $1 AND created_at < $2)) AT TIME ZONE 'Asia/Jakarta'), COUNT(*) - 1
 		FROM owner_finance_transactions
 		WHERE type='INCOME' AND source='BOOKING' AND booking_id IS NOT NULL
-		GROUP BY booking_id HAVING COUNT(*) > 1`); err != nil {
+		GROUP BY booking_id
+		HAVING COUNT(*) > 1 AND COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) > 0`, start, end); err != nil {
 		return nil, err
 	}
 	if err := addCountIssue("DUPLICATE_EVENT", `
-		SELECT date_trunc('day', MIN(created_at) AT TIME ZONE 'Asia/Jakarta'), COUNT(*) - 1
+		SELECT date_trunc('day', (MIN(created_at) FILTER (WHERE created_at >= $1 AND created_at < $2)) AT TIME ZONE 'Asia/Jakarta'), COUNT(*) - 1
 		FROM owner_finance_transactions
 		WHERE type='EXPENSE' AND source='REFUND' AND booking_id IS NOT NULL
-		GROUP BY booking_id HAVING COUNT(*) > 1`); err != nil {
+		GROUP BY booking_id
+		HAVING COUNT(*) > 1 AND COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) > 0`, start, end); err != nil {
 		return nil, err
 	}
 	if err := addCountIssue("FRACTIONAL_LEDGER", `
 		SELECT date_trunc('day', MIN(created_at) AT TIME ZONE 'Asia/Jakarta'), COUNT(*)
-		FROM owner_finance_transactions WHERE amount <> trunc(amount)
-		GROUP BY date_trunc('day', created_at AT TIME ZONE 'Asia/Jakarta')`); err != nil {
+		FROM owner_finance_transactions
+		WHERE amount <> trunc(amount) AND created_at >= $1 AND created_at < $2
+		GROUP BY date_trunc('day', created_at AT TIME ZONE 'Asia/Jakarta')`, start, end); err != nil {
 		return nil, err
 	}
 	if !cutover.IsZero() {
@@ -429,8 +432,12 @@ func loadReconciliationDataIssues(ctx context.Context, tx pgx.Tx, start, end, cu
 		SELECT date_trunc('day', created_at AT TIME ZONE 'Asia/Jakarta'), COUNT(*)
 		FROM owner_finance_transactions t
 		WHERE t.type='EXPENSE' AND t.source='REFUND' AND t.created_at >= $1 AND t.created_at < $2
-		  AND (t.booking_id IS NULL OR NOT EXISTS (
-			SELECT 1 FROM owner_finance_transactions i WHERE i.booking_id=t.booking_id AND i.type='INCOME' AND i.source='BOOKING'))
+		  AND (t.booking_id IS NULL
+		    OR NOT (`+canonicalLedgerBookingPredicate+`)
+		    OR NOT EXISTS (
+			SELECT 1 FROM owner_finance_transactions i
+			WHERE i.booking_id=t.booking_id AND i.type='INCOME' AND i.source='BOOKING'
+			  AND i.owner_id=t.owner_id AND i.venue_id=t.venue_id))
 		GROUP BY 1`, start, end); err != nil {
 		return nil, err
 	}
@@ -438,6 +445,7 @@ func loadReconciliationDataIssues(ctx context.Context, tx pgx.Tx, start, end, cu
 		SELECT date_trunc('day', t.created_at AT TIME ZONE 'Asia/Jakarta'), COUNT(*)
 		FROM owner_finance_transactions t
 		JOIN owner_finance_transactions i ON i.booking_id=t.booking_id AND i.type='INCOME' AND i.source='BOOKING'
+		 AND i.owner_id=t.owner_id AND i.venue_id=t.venue_id
 		WHERE t.type='EXPENSE' AND t.source='REFUND' AND t.created_at >= $1 AND t.created_at < $2
 		  AND t.amount <> i.amount GROUP BY 1`, start, end); err != nil {
 		return nil, err
@@ -673,22 +681,26 @@ func loadReconciliationOPEXEvents(ctx context.Context, tx pgx.Tx, start, end tim
 	rows, err := tx.Query(ctx, `
 		WITH events AS (
 			SELECT expense.id::text AS expense_id, posted.id::text AS journal_id, posted.effective_at,
-			       SUM(entry.amount_rupiah)::bigint AS amount
+			       expense.amount_rupiah::bigint AS expected_amount,
+			       SUM(entry.amount_rupiah)::bigint AS amount, TRUE AS exact_link
 			FROM platform_expenses expense
 			JOIN platform_journals posted ON posted.id=expense.posted_journal_id
 			JOIN platform_ledger_entries entry ON entry.journal_id=posted.id
 			WHERE expense.status IN ('POSTED','VOID') AND entry.account_code LIKE 'OPEX_%' AND entry.side='DEBIT'
-			GROUP BY expense.id, posted.id, posted.effective_at
+			GROUP BY expense.id, posted.id, posted.effective_at, expense.amount_rupiah
 			UNION ALL
 			SELECT expense.id::text, reversal.id::text, reversal.effective_at,
-			       -SUM(entry.amount_rupiah)::bigint
+			       -expense.amount_rupiah::bigint,
+			       -SUM(entry.amount_rupiah)::bigint,
+			       reversal.reverses_journal_id = expense.posted_journal_id
 			FROM platform_expenses expense
 			JOIN platform_journals reversal ON reversal.id=expense.void_journal_id
 			JOIN platform_ledger_entries entry ON entry.journal_id=reversal.id
 			WHERE expense.status='VOID' AND entry.account_code LIKE 'OPEX_%' AND entry.side='CREDIT'
-			GROUP BY expense.id, reversal.id, reversal.effective_at
+			GROUP BY expense.id, reversal.id, reversal.effective_at, expense.amount_rupiah,
+			         reversal.reverses_journal_id, expense.posted_journal_id
 		)
-		SELECT expense_id, journal_id, effective_at, amount FROM events
+		SELECT expense_id, journal_id, effective_at, expected_amount, amount, exact_link FROM events
 		WHERE effective_at >= $1 AND effective_at < $2 ORDER BY effective_at, expense_id`, start, end)
 	if err != nil {
 		return nil, 0, mapRepositoryError(err)
@@ -698,7 +710,7 @@ func loadReconciliationOPEXEvents(ctx context.Context, tx pgx.Tx, start, end tim
 	var total int64
 	for rows.Next() {
 		var event ReconciliationOPEXEvent
-		if err := rows.Scan(&event.ExpenseID, &event.JournalID, &event.EffectiveAt, &event.Amount); err != nil {
+		if err := rows.Scan(&event.ExpenseID, &event.JournalID, &event.EffectiveAt, &event.ExpectedAmount, &event.Amount, &event.ExactLink); err != nil {
 			return nil, 0, mapRepositoryError(err)
 		}
 		var addErr error

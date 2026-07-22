@@ -118,13 +118,29 @@ func TestRepositoryControlledFinanceFixtures(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate original outside period fails closed", func(t *testing.T) {
+	t.Run("duplicate original wholly outside period does not contaminate requested range", func(t *testing.T) {
 		tx := beginFixtureTx(t, ctx, pool)
 		defer tx.Rollback(ctx)
 		bookingID := "cccccccc-0000-0000-0000-000000000001"
 		insertBooking(t, ctx, tx, bookingID, "COMPLETED", start.Add(-96*time.Hour))
 		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100", start.Add(-72*time.Hour))
 		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100", start.Add(-48*time.Hour))
+		result, err := getSummaryDataInTx(ctx, tx, start, endExclusive, "", "")
+		if err != nil {
+			t.Fatalf("outside-range duplicate contaminated report: %v", err)
+		}
+		if result.Gross != 0 || result.RefundPrincipal != 0 {
+			t.Fatalf("outside-range facts leaked into report: %#v", result)
+		}
+	})
+
+	t.Run("duplicate crossing period boundary still fails closed", func(t *testing.T) {
+		tx := beginFixtureTx(t, ctx, pool)
+		defer tx.Rollback(ctx)
+		bookingID := "cccccccc-0000-0000-0000-000000000002"
+		insertBooking(t, ctx, tx, bookingID, "COMPLETED", start)
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100", start.Add(-time.Hour))
+		insertLedger(t, ctx, tx, bookingID, "INCOME", "BOOKING", "100", start.Add(time.Hour))
 		_, err := getSummaryDataInTx(ctx, tx, start, endExclusive, "", "")
 		if !errors.Is(err, ErrDuplicateLedgerDetected) {
 			t.Fatalf("error = %v, want ErrDuplicateLedgerDetected", err)

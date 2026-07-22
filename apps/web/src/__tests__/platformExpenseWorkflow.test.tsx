@@ -235,6 +235,19 @@ describe('CreateExpenseModal idempotency ambiguity QA', () => {
 });
 
 describe('AdminPlatformExpensesPage executable refresh and link QA', () => {
+  it('keeps the simulation warning visible on both expense and journal surfaces', async () => {
+    const user = userEvent.setup();
+    getPlatformExpenses.mockResolvedValue(expensePage(expense));
+    getPlatformJournals.mockResolvedValue(journalPage);
+
+    render(<AdminPlatformExpensesPage />);
+    const banner = await screen.findByRole('note', { name: 'Platform Finance simulation mode' });
+    expect(banner.textContent).toContain('MODE SIMULASI');
+    await user.click(screen.getByRole('button', { name: 'Journals' }));
+    await waitFor(() => expect(getPlatformJournals).toHaveBeenCalled());
+    expect(screen.getByRole('note', { name: 'Platform Finance simulation mode' }).textContent).toContain('MODE SIMULASI');
+  });
+
   it('refetches and renders the new status after a successful post', async () => {
     const user = userEvent.setup();
     getPlatformExpenses

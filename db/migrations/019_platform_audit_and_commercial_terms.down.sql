@@ -25,7 +25,11 @@ BEGIN
       AND commission_bps = 700
       AND valid_until IS NULL
       AND supersedes_id IS NULL
-      AND created_by_user_id IS NULL;
+      AND created_by_user_id IS NULL
+      -- The up migration writes both values from the same transaction-time
+      -- expression. A one-sided historical timestamp edit means the frozen
+      -- seed is no longer pristine and must block destructive rollback.
+      AND valid_from = created_at;
 
     IF valid_seed_count != 1 THEN
         RAISE EXCEPTION 'Cannot rollback: frozen global default term seed is mutated.';
