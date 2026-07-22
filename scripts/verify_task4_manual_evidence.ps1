@@ -2,12 +2,14 @@ param(
     [string[]]$DocumentPaths = @(
         "docs/task_4-06_manual_qa_booking_snapshot_projection.md",
         "docs/task_4-07_manual_qa_opex_audit_auth_owner.md",
-        "docs/task_4-08_manual_qa_time_reconciliation_ux.md"
+        "docs/task_4-08_manual_qa_time_reconciliation_ux.md",
+        "docs/task_4-11_release_blocker_fix_evidence.md"
     ),
     [string[]]$EvidenceDirectories = @(
         "D:/project/lapangGo_task406_evidence_20260722",
         "D:/project/lapangGo_task407_evidence_20260722",
-        "D:/project/lapangGo_task408_evidence_20260722"
+        "D:/project/lapangGo_task408_evidence_20260722",
+        "D:/project/lapangGo_task411_evidence_20260722"
     )
 )
 

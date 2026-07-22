@@ -143,8 +143,10 @@ claims are included.
 - Verification: scoped secret/credential scan returned zero hits; tracked diff
   whitespace check passed. Runtime regression evidence is referenced from
   Tasks 4-05 through 4-08 and is not rerun by this documentation-only task.
-- Skipped/unverified: independent Task 4-10 audit and final Git commit remain
-  pending. No production/LIVE execution is claimed.
-- Commit: not committed; explicit finalization authorization is still required.
+- Task 4-10 blockers were remediated at application commit
+  `3656a65de5f4f4226793e1e545ad409b3562654e`. The exact-commit disposable,
+  auth, reconciliation, rollback, browser, residue, and credential evidence is
+  recorded in [`task_4-11_release_blocker_fix_evidence.md`](task_4-11_release_blocker_fix_evidence.md).
+- No production/LIVE execution is claimed.
 
-**READY FOR 4-10**
+**READY FOR 4-12**
