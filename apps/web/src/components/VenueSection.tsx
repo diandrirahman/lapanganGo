@@ -34,11 +34,11 @@ export const VenueSection: React.FC = () => {
   return (
     <section id="venue-pilihan" className="relative z-20 bg-white py-16 md:py-28">
       <div className="mx-auto max-w-7xl px-5 md:px-6">
-        
+
         {/* Header */}
         <ScrollReveal className="mb-10 flex flex-col items-start justify-between gap-6 md:mb-14 md:flex-row md:items-end">
           <div>
-            <p className="mb-4 text-xs font-extrabold uppercase tracking-[0.2em] text-primary">01 / Venue pilihan</p>
+            <p className="mb-4 text-xs font-extrabold uppercase tracking-[0.2em] text-primary">Rekomendasi Venue</p>
             <h2 className="max-w-4xl text-[clamp(2.6rem,6vw,5.4rem)] font-extrabold leading-[0.95] tracking-[-0.055em] text-text-main">Tempat terbaik untuk mulai bergerak.</h2>
             <p className="mt-5 text-base font-medium text-text-muted md:text-lg">
               Lapangan terbaik yang bisa langsung dibooking hari ini.
@@ -55,8 +55,8 @@ export const VenueSection: React.FC = () => {
         ) : error ? (
           <ErrorState message={error} onRetry={() => window.location.reload()} />
         ) : venues.length === 0 ? (
-          <EmptyState 
-            title="Belum Ada Venue" 
+          <EmptyState
+            title="Belum Ada Venue"
             description="Saat ini belum ada venue lapangan yang tersedia di sistem kami."
           />
         ) : (

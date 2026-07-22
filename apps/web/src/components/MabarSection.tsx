@@ -63,17 +63,17 @@ export const MabarSection: React.FC = () => {
     <section className="relative overflow-hidden bg-[#071c1a] py-16 text-white md:py-28">
       <div className="pointer-events-none absolute -right-28 top-24 h-80 w-80 rounded-full bg-primary/25 blur-3xl" />
       <div className="relative mx-auto max-w-7xl px-5 md:px-6">
-      
+
         {/* Section Header */}
         <ScrollReveal className="mb-10 flex flex-col items-start justify-between gap-6 md:mb-14 md:flex-row md:items-end">
           <div>
-            <p className="mb-4 text-xs font-extrabold uppercase tracking-[0.2em] text-secondary">02 / Main bareng</p>
+            <p className="mb-4 text-xs font-extrabold uppercase tracking-[0.2em] text-secondary">Main Bareng</p>
             <h2 className="max-w-4xl text-[clamp(2.6rem,6vw,5.4rem)] font-extrabold leading-[0.95] tracking-[-0.055em] text-white">Datang sendiri. Pulang bawa tim.</h2>
             <p className="mt-5 text-base font-medium text-white/60 md:text-lg">
               Gabung pertandingan yang sedang butuh pemain di sekitarmu.
             </p>
           </div>
-          
+
           <Button onClick={() => navigate('/open-matches')} variant="secondary" className="group shrink-0 gap-2 border-white/15 bg-white/10 text-white hover:bg-white hover:text-text-main">
             Lihat Semua Mabar <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
           </Button>
@@ -86,8 +86,8 @@ export const MabarSection: React.FC = () => {
           ) : error ? (
             <ErrorState message={error} onRetry={() => window.location.reload()} />
           ) : matches.length === 0 && !useMockMabar ? (
-            <EmptyState 
-              title="Belum Ada Jadwal Mabar" 
+            <EmptyState
+              title="Belum Ada Jadwal Mabar"
               description="Jadilah yang pertama membuat jadwal mabar hari ini dan temukan teman baru untuk berolahraga!"
             />
           ) : (
