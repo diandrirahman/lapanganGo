@@ -36,6 +36,7 @@ var platformAuditEntities = map[string]struct{}{
 	audit.EntityPlatformCommercialTerm: {},
 	audit.EntityPlatformFinanceJournal: {},
 	audit.EntityPlatformExpense:        {},
+	audit.EntityPaymentAttempt:         {},
 }
 
 var ownerAuditActions = map[string]struct{}{
@@ -73,6 +74,8 @@ var platformAuditActions = map[string]struct{}{
 	audit.ActionPlatformExpenseApproved:            {},
 	audit.ActionPlatformExpensePosted:              {},
 	audit.ActionPlatformExpenseVoided:              {},
+	audit.ActionPaymentStateTransition:             {},
+	audit.ActionReconciliationException:            {},
 }
 
 type Handler struct {
@@ -214,7 +217,7 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 		return
 	}
 	query.EntityType = strings.ToUpper(strings.TrimSpace(query.EntityType))
-	query.Action = strings.ToUpper(strings.TrimSpace(query.Action))
+	query.Action = normalizeAuditAction(query.Action)
 	if query.EntityType != "" && !validAuditEntity(query.Scope, query.EntityType) {
 		writeAuditError(c, http.StatusBadRequest, "INVALID_ENTITY_TYPE", "Invalid entity_type for the selected scope")
 		return
@@ -231,6 +234,18 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+func normalizeAuditAction(action string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(action))
+	switch normalized {
+	case strings.ToUpper(audit.ActionPaymentStateTransition):
+		return audit.ActionPaymentStateTransition
+	case strings.ToUpper(audit.ActionReconciliationException):
+		return audit.ActionReconciliationException
+	default:
+		return normalized
+	}
 }
 
 func validAuditEntity(scope, entity string) bool {

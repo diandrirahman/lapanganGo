@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -35,15 +37,77 @@ type Config struct {
 	// Phase 4 Feature Flags
 	PlatformMonetizationEnabled bool
 	PlatformFinanceAdminEnabled bool
+
+	// Phase 5 payment adapter configuration. Secret and token fields are
+	// backend-only and must never be copied into API DTOs or logs.
+	PaymentSandboxEnabled              bool
+	PaymentCreateEnabled               bool
+	PaymentInquiryEnabled              bool
+	PaymentWebhookIngressEnabled       bool
+	PaymentWebhookProcessorEnabled     bool
+	PaymentRefundEnabled               bool
+	PaymentShadowReconciliationEnabled bool
+	PaymentIsolatedTestLedgerEnabled   bool
+	PaymentProvider                    string
+	PaymentProviderMode                string
+	PaymentWebhookContractVersion      string
+	PaymentReturnOrigin                string
+	XenditSecretKey                    string
+	XenditWebhookToken                 string
 }
 
 var ErrInvalidBooleanConfiguration = errors.New("invalid boolean configuration: must be exact lowercase 'true' or 'false' (or unset)")
+var ErrFrontendProviderSecret = errors.New("frontend VITE_* provider secret/token configuration is prohibited")
 
 func (c *Config) Validate() error {
 	if c.PlatformMonetizationEnabled {
 		return errors.New("PLATFORM_MONETIZATION_ENABLED=true is strictly prohibited during Phase 4 across all environments")
 	}
+	if c.PaymentProvider != "" && c.PaymentProvider != "XENDIT" {
+		return errors.New("PAYMENT_PROVIDER must be exactly XENDIT")
+	}
+	if c.PaymentProviderMode != "" && c.PaymentProviderMode != "TEST" {
+		return errors.New("PAYMENT_PROVIDER_MODE must be exactly TEST")
+	}
+	if c.PaymentWebhookContractVersion != "" && c.PaymentWebhookContractVersion != "DISABLED" &&
+		c.PaymentWebhookContractVersion != "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL" &&
+		c.PaymentWebhookContractVersion != "XENDIT_CALLBACK_TOKEN_V1_VERIFIED" {
+		return errors.New("PAYMENT_WEBHOOK_CONTRACT_VERSION is unsupported")
+	}
+	if paymentCapabilityEnabled(c) && !c.PaymentSandboxEnabled {
+		return errors.New("payment capability flags require PAYMENT_SANDBOX_ENABLED=true")
+	}
+	if (c.PaymentCreateEnabled || c.PaymentInquiryEnabled || c.PaymentRefundEnabled) && strings.TrimSpace(c.XenditSecretKey) == "" {
+		return errors.New("XENDIT_SECRET_KEY is required for enabled payment commands")
+	}
+	if c.PaymentWebhookIngressEnabled && strings.TrimSpace(c.XenditWebhookToken) == "" {
+		return errors.New("XENDIT_WEBHOOK_TOKEN is required when webhook ingress is enabled")
+	}
+	if c.PaymentWebhookProcessorEnabled && (!c.PaymentWebhookIngressEnabled || c.PaymentWebhookContractVersion != "XENDIT_CALLBACK_TOKEN_V1_VERIFIED") {
+		return errors.New("webhook processor requires verified webhook ingress contract")
+	}
+	if c.PaymentRefundEnabled {
+		return errors.New("PAYMENT_REFUND_ENABLED requires the payment facts and outbox prerequisites")
+	}
+	if c.PaymentIsolatedTestLedgerEnabled {
+		return errors.New("PAYMENT_ISOLATED_TEST_LEDGER_ENABLED is restricted to isolated tests")
+	}
+	if c.PaymentReturnOrigin != "" && !isAllowlistedHTTPSOrigin(c.PaymentReturnOrigin) {
+		return errors.New("PAYMENT_RETURN_ORIGIN must be an HTTPS origin without path, query, or fragment")
+	}
 	return nil
+}
+
+func paymentCapabilityEnabled(c *Config) bool {
+	return c.PaymentCreateEnabled || c.PaymentInquiryEnabled || c.PaymentWebhookIngressEnabled ||
+		c.PaymentWebhookProcessorEnabled || c.PaymentRefundEnabled || c.PaymentShadowReconciliationEnabled ||
+		c.PaymentIsolatedTestLedgerEnabled
+}
+
+func isAllowlistedHTTPSOrigin(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
+		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 func parseStrictBool(value string) (bool, error) {
@@ -62,7 +126,41 @@ func parseStrictBool(value string) (bool, error) {
 // Load loads the configuration by reading .env (if it exists) and then using os.Getenv.
 func Load() (Config, error) {
 	_ = godotenv.Load() // ignore error, as .env is optional
-	return LoadFrom(os.Getenv)
+	return LoadFromEnvironment(os.Getenv, os.Environ())
+}
+
+// LoadFromEnvironment applies process-wide security gates that cannot be
+// expressed through getenv lookups before loading the regular configuration.
+func LoadFromEnvironment(getenv func(string) string, environ []string) (Config, error) {
+	if err := rejectFrontendProviderSecrets(environ); err != nil {
+		return Config{}, err
+	}
+	return LoadFrom(getenv)
+}
+
+func rejectFrontendProviderSecrets(environ []string) error {
+	for _, entry := range environ {
+		name, _, found := strings.Cut(entry, "=")
+		if !found {
+			name = entry
+		}
+		upperName := strings.ToUpper(strings.TrimSpace(name))
+		if !strings.HasPrefix(upperName, "VITE_") {
+			continue
+		}
+
+		isProviderVariable := strings.Contains(upperName, "XENDIT") ||
+			strings.Contains(upperName, "PAYMENT") ||
+			strings.Contains(upperName, "PROVIDER")
+		isSecretVariable := strings.Contains(upperName, "SECRET") ||
+			strings.Contains(upperName, "TOKEN") ||
+			strings.Contains(upperName, "PRIVATE_KEY") ||
+			strings.Contains(upperName, "API_KEY")
+		if isProviderVariable && isSecretVariable {
+			return ErrFrontendProviderSecret
+		}
+	}
+	return nil
 }
 
 // LoadFrom is a pure function that loads configuration using the provided getenv function.
@@ -187,6 +285,52 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("PLATFORM_FINANCE_ADMIN_ENABLED %w", err)
 	}
 
+	paymentSandboxEnabled, err := parseStrictBool(getenv("PAYMENT_SANDBOX_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_SANDBOX_ENABLED %w", err)
+	}
+	paymentCreateEnabled, err := parseStrictBool(getenv("PAYMENT_CREATE_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_CREATE_ENABLED %w", err)
+	}
+	paymentInquiryEnabled, err := parseStrictBool(getenv("PAYMENT_INQUIRY_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_INQUIRY_ENABLED %w", err)
+	}
+	paymentWebhookIngressEnabled, err := parseStrictBool(getenv("PAYMENT_WEBHOOK_INGRESS_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_WEBHOOK_INGRESS_ENABLED %w", err)
+	}
+	paymentWebhookProcessorEnabled, err := parseStrictBool(getenv("PAYMENT_WEBHOOK_PROCESSOR_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_WEBHOOK_PROCESSOR_ENABLED %w", err)
+	}
+	paymentRefundEnabled, err := parseStrictBool(getenv("PAYMENT_REFUND_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_REFUND_ENABLED %w", err)
+	}
+	paymentShadowReconciliationEnabled, err := parseStrictBool(getenv("PAYMENT_SHADOW_RECONCILIATION_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_SHADOW_RECONCILIATION_ENABLED %w", err)
+	}
+	paymentIsolatedTestLedgerEnabled, err := parseStrictBool(getenv("PAYMENT_ISOLATED_TEST_LEDGER_ENABLED"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PAYMENT_ISOLATED_TEST_LEDGER_ENABLED %w", err)
+	}
+
+	paymentProvider := getenv("PAYMENT_PROVIDER")
+	if paymentProvider == "" {
+		paymentProvider = "XENDIT"
+	}
+	paymentProviderMode := getenv("PAYMENT_PROVIDER_MODE")
+	if paymentProviderMode == "" {
+		paymentProviderMode = "TEST"
+	}
+	paymentWebhookContractVersion := getenv("PAYMENT_WEBHOOK_CONTRACT_VERSION")
+	if paymentWebhookContractVersion == "" {
+		paymentWebhookContractVersion = "DISABLED"
+	}
+
 	cfg := Config{
 		AppPort:                            appPort,
 		DatabaseURL:                        databaseURL,
@@ -209,6 +353,20 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		FrontendBaseURL:                    frontendBaseURL,
 		PlatformMonetizationEnabled:        platformMonetizationEnabled,
 		PlatformFinanceAdminEnabled:        platformFinanceAdminEnabled,
+		PaymentSandboxEnabled:              paymentSandboxEnabled,
+		PaymentCreateEnabled:               paymentCreateEnabled,
+		PaymentInquiryEnabled:              paymentInquiryEnabled,
+		PaymentWebhookIngressEnabled:       paymentWebhookIngressEnabled,
+		PaymentWebhookProcessorEnabled:     paymentWebhookProcessorEnabled,
+		PaymentRefundEnabled:               paymentRefundEnabled,
+		PaymentShadowReconciliationEnabled: paymentShadowReconciliationEnabled,
+		PaymentIsolatedTestLedgerEnabled:   paymentIsolatedTestLedgerEnabled,
+		PaymentProvider:                    paymentProvider,
+		PaymentProviderMode:                paymentProviderMode,
+		PaymentWebhookContractVersion:      paymentWebhookContractVersion,
+		PaymentReturnOrigin:                getenv("PAYMENT_RETURN_ORIGIN"),
+		XenditSecretKey:                    getenv("XENDIT_SECRET_KEY"),
+		XenditWebhookToken:                 getenv("XENDIT_WEBHOOK_TOKEN"),
 	}
 
 	if err := cfg.Validate(); err != nil {

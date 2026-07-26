@@ -22,10 +22,13 @@ const (
 	ActionPlatformExpenseApproved            = "PLATFORM_EXPENSE_APPROVED"
 	ActionPlatformExpensePosted              = "PLATFORM_EXPENSE_POSTED"
 	ActionPlatformExpenseVoided              = "PLATFORM_EXPENSE_VOIDED"
+	ActionPaymentStateTransition             = "payment_state_transition"
+	ActionReconciliationException            = "reconciliation_exception"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
 	EntityPlatformExpense        = "PLATFORM_EXPENSE"
+	EntityPaymentAttempt         = "PAYMENT_ATTEMPT"
 )
 
 var allowedPlatformActions = map[string]bool{
@@ -39,12 +42,15 @@ var allowedPlatformActions = map[string]bool{
 	ActionPlatformExpenseApproved:            true,
 	ActionPlatformExpensePosted:              true,
 	ActionPlatformExpenseVoided:              true,
+	ActionPaymentStateTransition:             true,
+	ActionReconciliationException:            true,
 }
 
 var allowedPlatformEntities = map[string]bool{
 	EntityPlatformCommercialTerm: true,
 	EntityPlatformFinanceJournal: true,
 	EntityPlatformExpense:        true,
+	EntityPaymentAttempt:         true,
 }
 
 var platformActionEntity = map[string]string{
@@ -58,6 +64,8 @@ var platformActionEntity = map[string]string{
 	ActionPlatformExpenseApproved:            EntityPlatformExpense,
 	ActionPlatformExpensePosted:              EntityPlatformExpense,
 	ActionPlatformExpenseVoided:              EntityPlatformExpense,
+	ActionPaymentStateTransition:             EntityPaymentAttempt,
+	ActionReconciliationException:            EntityPaymentAttempt,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -113,11 +121,25 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"void_journal_id":   true,
 		"effective_at":      true,
 	},
+	ActionPaymentStateTransition: {
+		"from_state":   true,
+		"to_state":     true,
+		"attempt_no":   true,
+		"late_capture": true,
+	},
+	ActionReconciliationException: {
+		"from_state": true,
+		"to_state":   true,
+		"attempt_no": true,
+		"reason":     true,
+	},
 }
 
 var requiredMetadataKeysPerAction = map[string][]string{
 	ActionPlatformFinanceJournalReversed:   {"source_journal_id", "effective_at"},
 	ActionPlatformFinanceLiveWriteRejected: {"reason", "write_kind", "request_fingerprint"},
+	ActionPaymentStateTransition:           {"to_state", "attempt_no", "late_capture"},
+	ActionReconciliationException:          {"from_state", "to_state", "attempt_no", "reason"},
 }
 
 var allowedLiveWriteKinds = map[string]bool{
@@ -238,6 +260,9 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if (p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved || p.Action == ActionPlatformExpensePosted || p.Action == ActionPlatformExpenseVoided) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for expense action")
 	}
+	if (p.Action == ActionPaymentStateTransition || p.Action == ActionReconciliationException) && (p.EntityID == nil || p.CorrelationID == nil) {
+		return errors.New("payment audit entity and correlation id are required")
+	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
 	}
@@ -302,11 +327,28 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				if !ok {
 					return errors.New("reason must be string")
 				}
+				if p.Action == ActionReconciliationException && v == "LATE_CAPTURE" {
+					break
+				}
 				// Strict enum for reason
 				if v != "LIVE_NOT_ALLOWED" && v != "BPS_OUT_OF_BOUNDS" && v != "OVERLAP" && v != "INVALID_TIME" && v != "VALIDATION_ERROR" {
 					if (p.Action != ActionPlatformExpenseCancelled && p.Action != ActionPlatformExpenseVoided) || strings.TrimSpace(v) == "" || len([]byte(v)) > 500 || containsSecret(v) {
 						return errors.New("reason must be an allowed code")
 					}
+				}
+			case "from_state", "to_state":
+				v, ok := val.(string)
+				if !ok || !isPaymentAttemptAuditState(v) {
+					return errors.New(key + " must be a supported payment attempt state")
+				}
+			case "attempt_no":
+				v, ok := val.(int)
+				if !ok || v <= 0 || v > math.MaxInt16 {
+					return errors.New("attempt_no must be a positive small integer")
+				}
+			case "late_capture":
+				if _, ok := val.(bool); !ok {
+					return errors.New("late_capture must be boolean")
 				}
 			case "transition":
 				v, ok := val.(string)
@@ -448,11 +490,25 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			}
 		case "reason":
 			if value, ok := value.(string); ok {
-				if (action == ActionPlatformExpenseCancelled || action == ActionPlatformExpenseVoided) && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
+				if action == ActionReconciliationException && value == "LATE_CAPTURE" {
+					out[key] = value
+				} else if (action == ActionPlatformExpenseCancelled || action == ActionPlatformExpenseVoided) && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
 					out[key] = value
 				} else if value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR" {
 					out[key] = value
 				}
+			}
+		case "from_state", "to_state":
+			if value, ok := value.(string); ok && isPaymentAttemptAuditState(value) {
+				out[key] = value
+			}
+		case "attempt_no":
+			if value, ok := scalarPositiveSmallInt(value); ok {
+				out[key] = value
+			}
+		case "late_capture":
+			if value, ok := value.(bool); ok {
+				out[key] = value
 			}
 		case "source_journal_id":
 			if value, ok := value.(string); ok {
@@ -518,6 +574,29 @@ var expenseAuditCategories = map[string]bool{
 }
 
 var expenseAuditDigits = regexp.MustCompile(`^[0-9]+$`)
+
+func isPaymentAttemptAuditState(value string) bool {
+	switch value {
+	case "CREATED", "PENDING", "CAPTURED", "FAILED", "EXPIRED", "CANCELLED":
+		return true
+	default:
+		return false
+	}
+}
+
+func scalarPositiveSmallInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, v > 0 && v <= math.MaxInt16
+	case float64:
+		if v <= 0 || v > math.MaxInt16 || math.Trunc(v) != v {
+			return 0, false
+		}
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
 
 // SanitizeAuditMetadata applies an action-specific, scalar-only projection to
 // legacy owner audit metadata before it crosses the admin read boundary.

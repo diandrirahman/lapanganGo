@@ -25,7 +25,10 @@ var downMigrations = map[int]string{
 	22: "022_platform_double_entry_ledger.down.sql",
 	23: "023_platform_ledger_balance_reschedule.down.sql",
 	24: "024_platform_expenses.down.sql",
+	25: "025_payment_attempts.down.sql",
 }
+
+const latestMigrationVersion = 25
 
 func checkOptIn(t *testing.T) string {
 	t.Helper()
@@ -136,6 +139,8 @@ func getDBFingerprint(ctx context.Context, db *sql.DB) (string, error) {
 		"platform_ledger_entries",
 		"platform_expenses",
 		"platform_expense_idempotency",
+		"payment_attempts",
+		"payment_capture_facts",
 	})
 	if err != nil {
 		return "", err
@@ -176,6 +181,9 @@ func survivingFactTables(target int) []string {
 	if target >= 24 {
 		tables = append(tables, "platform_expenses", "platform_expense_idempotency")
 	}
+	if target >= 25 {
+		tables = append(tables, "payment_attempts", "payment_capture_facts")
+	}
 	return tables
 }
 
@@ -209,7 +217,7 @@ func TestRollbackHardening_PreFactDown(t *testing.T) {
 
 	_, m := setupMigrate(t, targetDSN)
 
-	err := m.Steps(-6) // From 24 down to 18
+	err := m.Steps(-7) // From 25 down to 18
 	if err != nil {
 		t.Fatalf("expected pre-fact down migration to succeed, got: %v", err)
 	}
@@ -447,7 +455,7 @@ func TestRollbackHardening_PostFactRefusal(t *testing.T) {
 				t.Fatalf("failed to fingerprint facts before migration refusal: %v", err)
 			}
 
-			err = m.Steps(-1 * (24 - tc.target + 1))
+			err = m.Steps(-1 * (latestMigrationVersion - tc.target + 1))
 			db.Exec("ROLLBACK") // clear aborted txn state
 			if err == nil {
 				t.Fatalf("expected down migration to fail for target %d, but it succeeded", tc.target)
