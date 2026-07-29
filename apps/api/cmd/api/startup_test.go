@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"lapangango-api/internal/config"
+	"lapangango-api/internal/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -141,6 +142,38 @@ func TestStartup_ValidConfigPassesThrough(t *testing.T) {
 	}
 	if workerCancelled != 1 {
 		t.Fatalf("expected exactly one worker cancellation after clean listener return, got %d", workerCancelled)
+	}
+}
+
+func TestStartup_RuntimeRoleValidationFailsClosed(t *testing.T) {
+	depsBuilt := 0
+	listenerCalled := 0
+	ops := StartupOperations{
+		ConfigLoader: func() (config.Config, error) {
+			return config.Config{DatabaseURL: "dummy"}, nil
+		},
+		DatabaseOpener: func(context.Context, config.Config) (*pgxpool.Pool, error) {
+			return nil, nil
+		},
+		RuntimeRoleValidator: func(context.Context, *pgxpool.Pool) error {
+			return database.ErrUnsafeRuntimeDatabaseRole
+		},
+		DependencyBuilder: func(context.Context, config.Config, *pgxpool.Pool) (*gin.Engine, context.CancelFunc, error) {
+			depsBuilt++
+			return nil, func() {}, nil
+		},
+		Listener: func(context.Context, config.Config, *gin.Engine) error {
+			listenerCalled++
+			return nil
+		},
+	}
+
+	err := Bootstrap(context.Background(), ops)
+	if err == nil || err.Error() != "database_role_validation_failed" {
+		t.Fatalf("runtime role validation error = %v; want database_role_validation_failed", err)
+	}
+	if depsBuilt != 0 || listenerCalled != 0 {
+		t.Fatalf("unsafe role reached dependencies/listener: deps=%d listener=%d", depsBuilt, listenerCalled)
 	}
 }
 

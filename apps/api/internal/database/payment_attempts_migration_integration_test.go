@@ -20,9 +20,13 @@ func TestPaymentAttemptsMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	defer db.Close()
 	defer m.Close()
 
-	assertMigrationVersion(t, m, 25, false)
+	assertMigrationVersion(t, m, 26, false)
 	assertPaymentTablesPresent(t, db, true)
 
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("empty down migration 026 should succeed: %v", err)
+	}
+	assertMigrationVersion(t, m, 25, false)
 	if err := m.Steps(-1); err != nil {
 		t.Fatalf("empty down migration 025 should succeed: %v", err)
 	}
@@ -30,9 +34,9 @@ func TestPaymentAttemptsMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	assertPaymentTablesPresent(t, db, false)
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		t.Fatalf("upgrade from migration 024 to 025 failed: %v", err)
+		t.Fatalf("upgrade from migration 024 to 026 failed: %v", err)
 	}
-	assertMigrationVersion(t, m, 25, false)
+	assertMigrationVersion(t, m, 26, false)
 	assertPaymentTablesPresent(t, db, true)
 }
 
@@ -151,6 +155,10 @@ func TestPaymentAttemptsMigration_DownRefusesExistingAttempts(t *testing.T) {
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	insertPaymentAttempt(t, db, uuid.NewString(), bookingID, 1, "payment:create:down-refusal", "PENDING", nil, time.Now().UTC())
 
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("empty down migration 026 should succeed before testing 025 refusal: %v", err)
+	}
+	assertMigrationVersion(t, m, 25, false)
 	if err := m.Steps(-1); err == nil {
 		t.Fatal("down migration must refuse when a payment attempt exists")
 	}

@@ -19,12 +19,13 @@ import (
 )
 
 type StartupOperations struct {
-	ConfigLoader      func() (config.Config, error)
-	DatabaseOpener    func(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error)
-	MigrationRunner   func(dbURL string) error
-	SchemaEnsurer     func(ctx context.Context, dbPool *pgxpool.Pool) error
-	DependencyBuilder func(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool) (*gin.Engine, context.CancelFunc, error)
-	Listener          func(ctx context.Context, cfg config.Config, engine *gin.Engine) error
+	ConfigLoader         func() (config.Config, error)
+	DatabaseOpener       func(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error)
+	MigrationRunner      func(dbURL string) error
+	SchemaEnsurer        func(ctx context.Context, dbPool *pgxpool.Pool) error
+	RuntimeRoleValidator func(ctx context.Context, dbPool *pgxpool.Pool) error
+	DependencyBuilder    func(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool) (*gin.Engine, context.CancelFunc, error)
+	Listener             func(ctx context.Context, cfg config.Config, engine *gin.Engine) error
 }
 
 type httpServer interface {
@@ -95,12 +96,22 @@ func Bootstrap(ctx context.Context, ops StartupOperations) error {
 		defer dbPool.Close()
 	}
 
-	if err := ops.MigrationRunner(cfg.DatabaseURL); err != nil {
-		return errors.New("migration_failed")
+	if ops.MigrationRunner != nil {
+		if err := ops.MigrationRunner(cfg.DatabaseURL); err != nil {
+			return errors.New("migration_failed")
+		}
 	}
 
-	if err := ops.SchemaEnsurer(ctx, dbPool); err != nil {
-		return errors.New("schema_setup_failed")
+	if ops.SchemaEnsurer != nil {
+		if err := ops.SchemaEnsurer(ctx, dbPool); err != nil {
+			return errors.New("schema_setup_failed")
+		}
+	}
+
+	if ops.RuntimeRoleValidator != nil {
+		if err := ops.RuntimeRoleValidator(ctx, dbPool); err != nil {
+			return errors.New("database_role_validation_failed")
+		}
 	}
 
 	r, workerCancel, err := ops.DependencyBuilder(ctx, cfg, dbPool)
@@ -122,16 +133,8 @@ func main() {
 		DatabaseOpener: func(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 			return database.NewPostgresPool(ctx, cfg.DatabaseURL)
 		},
-		MigrationRunner: func(dbURL string) error {
-			log.Println("Starting database migrations...")
-			err := database.RunMigrations(dbURL)
-			if err == nil {
-				log.Println("Database migrations completed successfully.")
-			}
-			return err
-		},
-		SchemaEnsurer: func(ctx context.Context, dbPool *pgxpool.Pool) error {
-			return database.EnsureBookingSchema(ctx, dbPool)
+		RuntimeRoleValidator: func(ctx context.Context, dbPool *pgxpool.Pool) error {
+			return database.ValidateRuntimeRole(ctx, dbPool)
 		},
 		DependencyBuilder: func(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool) (*gin.Engine, context.CancelFunc, error) {
 			r, workerCancel, err := setupRouter(ctx, cfg, dbPool, true)

@@ -1,0 +1,575 @@
+package payments
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"lapangango-api/internal/paymentoutbox"
+)
+
+func TestPaymentProviderOutboxAtomicReplayConflictAndLeaseRecovery(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-atomic"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+
+	params := outboxParams(attempt)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin rollback transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE payment_attempts SET state = 'PENDING', updated_at = transaction_timestamp() WHERE id = $1`, attempt.ID); err != nil {
+		t.Fatalf("update domain state in rollback transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, params); err != nil {
+		t.Fatalf("enqueue in rollback transaction: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback domain and outbox transaction: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM payment_attempts WHERE id = $1`, attempt.ID).Scan(&state); err != nil {
+		t.Fatalf("read rolled back attempt: %v", err)
+	}
+	if state != string(AttemptStateCreated) {
+		t.Fatalf("attempt state after rollback = %q; want CREATED", state)
+	}
+	var commandCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_provider_commands WHERE idempotency_key = $1`, params.IdempotencyKey).Scan(&commandCount); err != nil {
+		t.Fatalf("count rolled back command: %v", err)
+	}
+	if commandCount != 0 {
+		t.Fatalf("rolled back command count = %d; want 0", commandCount)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*paymentoutbox.EnqueueParams)
+	}{
+		{name: "amount mismatch", mutate: func(p *paymentoutbox.EnqueueParams) { p.Payload.AmountRupiah++ }},
+		{name: "method mismatch", mutate: func(p *paymentoutbox.EnqueueParams) { p.Payload.RequestedMethod = "CARD" }},
+		{name: "hash mismatch", mutate: func(p *paymentoutbox.EnqueueParams) { p.RequestHash = strings.Repeat("f", 64) }},
+		{name: "non-deterministic key", mutate: func(p *paymentoutbox.EnqueueParams) {
+			p.IdempotencyKey = "payment:create:" + attempt.BookingID + ":999"
+		}},
+	} {
+		t.Run("reject first enqueue "+tc.name, func(t *testing.T) {
+			invalid := params
+			tc.mutate(&invalid)
+			invalidTx, beginErr := pool.Begin(ctx)
+			if beginErr != nil {
+				t.Fatalf("begin invalid command transaction: %v", beginErr)
+			}
+			defer invalidTx.Rollback(ctx)
+			if _, enqueueErr := outbox.EnqueueTx(ctx, invalidTx, invalid); !errors.Is(enqueueErr, paymentoutbox.ErrInvalidCommand) {
+				t.Fatalf("invalid command error = %v; want ErrInvalidCommand", enqueueErr)
+			}
+		})
+	}
+
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin commit transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE payment_attempts SET state = 'PENDING', updated_at = transaction_timestamp() WHERE id = $1`, attempt.ID); err != nil {
+		t.Fatalf("update domain state in commit transaction: %v", err)
+	}
+	created, err := outbox.EnqueueTx(ctx, tx, params)
+	if err != nil {
+		t.Fatalf("enqueue committed command: %v", err)
+	}
+	var databaseTransactionTime time.Time
+	if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&databaseTransactionTime); err != nil {
+		t.Fatalf("read enqueue database transaction time: %v", err)
+	}
+	if !created.Command.AvailableAt.Equal(databaseTransactionTime) {
+		t.Fatalf(
+			"default available_at = %s; want database transaction time %s",
+			created.Command.AvailableAt,
+			databaseTransactionTime,
+		)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+	if created.Replayed || created.Command.State != paymentoutbox.StatePending {
+		t.Fatalf("unexpected first command result: %#v", created)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM payment_attempts WHERE id = $1`, attempt.ID).Scan(&state); err != nil {
+		t.Fatalf("read committed attempt: %v", err)
+	}
+	if state != string(AttemptStatePending) {
+		t.Fatalf("attempt state after commit = %q; want PENDING", state)
+	}
+
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin replay transaction: %v", err)
+	}
+	replay, err := outbox.EnqueueTx(ctx, tx, params)
+	if err != nil || !replay.Replayed || replay.Command.ID != created.Command.ID {
+		t.Fatalf("same payload replay = %#v, %v", replay, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit replay transaction: %v", err)
+	}
+
+	conflictParams := params
+	conflictParams.Payload.AmountRupiah++
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin conflict transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, conflictParams); !errors.Is(err, paymentoutbox.ErrIdempotencyConflict) {
+		t.Fatalf("different payload conflict = %v; want ErrIdempotencyConflict", err)
+	}
+	_ = tx.Rollback(ctx)
+
+	wrongKeyParams := params
+	wrongKeyParams.IdempotencyKey = "payment:create:" + attempt.BookingID + ":999"
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin duplicate aggregate transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, wrongKeyParams); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+		t.Fatalf("different key for same aggregate = %v; want ErrInvalidCommand", err)
+	}
+	_ = tx.Rollback(ctx)
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM payment_provider_commands
+		WHERE command_type = 'PAYMENT_CREATE' AND aggregate_id = $1
+	`, attempt.ID).Scan(&commandCount); err != nil {
+		t.Fatalf("count aggregate commands: %v", err)
+	}
+	if commandCount != 1 {
+		t.Fatalf("payment create commands for aggregate = %d; want 1", commandCount)
+	}
+
+	restartOwner := "worker:" + uuid.NewString()
+	claimed, err := outbox.ClaimNext(ctx, restartOwner, time.Minute)
+	if err != nil || claimed.ID != created.Command.ID || claimed.AttemptCount != 1 {
+		t.Fatalf("claim result = %#v, %v", claimed, err)
+	}
+	if claimed.LeaseToken == nil {
+		t.Fatal("claim did not issue a lease token")
+	}
+	if _, err := outbox.MarkRetryable(ctx, claimed.ID, *claimed.LeaseOwner, *claimed.LeaseToken, "AUTHENTICATION_FAILED", 0); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+		t.Fatalf("terminal error accepted as retryable: %v", err)
+	}
+	if _, err := outbox.MarkTerminal(ctx, claimed.ID, *claimed.LeaseOwner, *claimed.LeaseToken, "RETRYABLE_TIMEOUT"); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+		t.Fatalf("retryable error accepted as terminal: %v", err)
+	}
+	if _, err := outbox.MarkRetryable(ctx, claimed.ID, *claimed.LeaseOwner, *claimed.LeaseToken, "RETRYABLE_TIMEOUT", 0); err != nil {
+		t.Fatalf("mark retryable: %v", err)
+	}
+	claimedAgain, err := outbox.ClaimNext(ctx, restartOwner, 50*time.Millisecond)
+	if err != nil || claimedAgain.ID != created.Command.ID || claimedAgain.AttemptCount != 2 {
+		t.Fatalf("retry claim result = %#v, %v", claimedAgain, err)
+	}
+	if claimedAgain.LeaseToken == nil || *claimedAgain.LeaseToken == *claimed.LeaseToken {
+		t.Fatal("retry claim did not rotate the lease token")
+	}
+	staleToken := *claimedAgain.LeaseToken
+	time.Sleep(75 * time.Millisecond)
+	reclaimed, err := outbox.ClaimNext(ctx, restartOwner, time.Minute)
+	if err != nil || reclaimed.ID != created.Command.ID || reclaimed.AttemptCount != 3 {
+		t.Fatalf("expired lease reclaim result = %#v, %v", reclaimed, err)
+	}
+	if reclaimed.LeaseToken == nil || *reclaimed.LeaseToken == staleToken {
+		t.Fatal("expired lease reclaim did not rotate the lease token")
+	}
+	safeProviderReference, err := paymentoutbox.DigestProviderReference("ps_1234abcd")
+	if err != nil {
+		t.Fatalf("digest provider reference: %v", err)
+	}
+	if _, err := outbox.MarkSucceeded(ctx, reclaimed.ID, restartOwner, staleToken, safeProviderReference); !errors.Is(err, paymentoutbox.ErrLeaseConflict) {
+		t.Fatalf("same-owner stale lease completion = %v; want ErrLeaseConflict", err)
+	}
+	for _, unsafeReference := range []string{
+		"4111111111111111",
+		"ref-4111-1111-1111-1111",
+		"ref_1234567890",
+		"sk_test_abc123",
+		"xnd_development_secret",
+		"https://provider.example/reference",
+	} {
+		if _, err := outbox.MarkSucceeded(ctx, reclaimed.ID, restartOwner, *reclaimed.LeaseToken, unsafeReference); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+			t.Fatalf("unsafe provider reference %q = %v; want ErrInvalidCommand", unsafeReference, err)
+		}
+	}
+	if _, err := outbox.MarkSucceeded(ctx, reclaimed.ID, restartOwner, *reclaimed.LeaseToken, safeProviderReference); err != nil {
+		t.Fatalf("mark succeeded: %v", err)
+	}
+}
+
+func TestPaymentProviderOutboxMalformedResponseRetriesOnlyOnce(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-malformed"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	params := outboxParams(attempt)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, params); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	workerOwner := "worker:" + uuid.NewString()
+	first, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || first.LeaseToken == nil {
+		t.Fatalf("first malformed claim = %#v, %v", first, err)
+	}
+	firstRetry, err := outbox.MarkRetryable(ctx, first.ID, *first.LeaseOwner, *first.LeaseToken, "MALFORMED_RESPONSE", 0)
+	if err != nil {
+		t.Fatalf("first malformed response should be retryable: %v", err)
+	}
+	if firstRetry.State != paymentoutbox.StateRetryable || firstRetry.MalformedResponseCount != 1 {
+		t.Fatalf("first malformed response result = %#v; want retryable with malformed count 1", firstRetry)
+	}
+	if !firstRetry.AvailableAt.Equal(firstRetry.UpdatedAt) {
+		t.Fatalf(
+			"immediate malformed retry available_at = %s; want database update time %s",
+			firstRetry.AvailableAt,
+			firstRetry.UpdatedAt,
+		)
+	}
+	second, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || second.LeaseToken == nil {
+		t.Fatalf("second malformed claim = %#v, %v", second, err)
+	}
+	terminal, err := outbox.MarkRetryable(ctx, second.ID, *second.LeaseOwner, *second.LeaseToken, "MALFORMED_RESPONSE", 0)
+	if err != nil {
+		t.Fatalf("second malformed response terminalization: %v", err)
+	}
+	if terminal.State != paymentoutbox.StateTerminal || terminal.CompletedAt == nil ||
+		terminal.LastErrorCode == nil || *terminal.LastErrorCode != "MALFORMED_RESPONSE" ||
+		terminal.MalformedResponseCount != 2 {
+		t.Fatalf("second malformed response result = %#v; want terminal malformed response", terminal)
+	}
+	if _, err := outbox.ClaimNext(ctx, workerOwner, time.Minute); !errors.Is(err, paymentoutbox.ErrNoCommandAvailable) {
+		t.Fatalf("terminal malformed command was claimable: %v", err)
+	}
+}
+
+func TestPaymentProviderOutboxLeaseDurationUsesDatabasePrecision(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-lease-duration"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, outboxParams(attempt)); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	workerOwner := "worker:" + uuid.NewString()
+	for _, invalidDuration := range []time.Duration{
+		-time.Nanosecond,
+		0,
+		time.Nanosecond,
+		time.Microsecond - time.Nanosecond,
+		time.Microsecond + time.Nanosecond,
+		24*time.Hour - time.Nanosecond,
+		24*time.Hour + time.Microsecond,
+	} {
+		if _, err := outbox.ClaimNext(ctx, workerOwner, invalidDuration); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+			t.Fatalf("invalid lease duration %s = %v; want ErrInvalidCommand", invalidDuration, err)
+		}
+	}
+
+	const leaseDuration = time.Microsecond
+	claimed, err := outbox.ClaimNext(ctx, workerOwner, leaseDuration)
+	if err != nil || claimed.LeaseExpiresAt == nil {
+		t.Fatalf("minimum lease claim = %#v, %v", claimed, err)
+	}
+	if claimed.LeaseExpiresAt.Sub(claimed.UpdatedAt) != leaseDuration {
+		t.Fatalf(
+			"lease duration = %s; want exact PostgreSQL duration %s",
+			claimed.LeaseExpiresAt.Sub(claimed.UpdatedAt),
+			leaseDuration,
+		)
+	}
+}
+
+func TestPaymentProviderOutboxRetryDelayUsesDatabaseClock(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-retry-delay"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, outboxParams(attempt)); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	workerOwner := "worker:" + uuid.NewString()
+	claimed, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || claimed.LeaseOwner == nil || claimed.LeaseToken == nil {
+		t.Fatalf("retry-delay claim = %#v, %v", claimed, err)
+	}
+	for _, invalidDelay := range []time.Duration{
+		-time.Nanosecond,
+		time.Nanosecond,
+		24*time.Hour - time.Nanosecond,
+		24*time.Hour + time.Nanosecond,
+	} {
+		if _, err := outbox.MarkRetryable(
+			ctx,
+			claimed.ID,
+			*claimed.LeaseOwner,
+			*claimed.LeaseToken,
+			"RETRYABLE_TIMEOUT",
+			invalidDelay,
+		); !errors.Is(err, paymentoutbox.ErrInvalidCommand) {
+			t.Fatalf("invalid retry delay %s = %v; want ErrInvalidCommand", invalidDelay, err)
+		}
+	}
+
+	const retryDelay = 250 * time.Millisecond
+	retryable, err := outbox.MarkRetryable(
+		ctx,
+		claimed.ID,
+		*claimed.LeaseOwner,
+		*claimed.LeaseToken,
+		"RETRYABLE_TIMEOUT",
+		retryDelay,
+	)
+	if err != nil {
+		t.Fatalf("mark delayed retryable: %v", err)
+	}
+	if retryable.State != paymentoutbox.StateRetryable ||
+		retryable.AvailableAt.Sub(retryable.UpdatedAt) != retryDelay {
+		t.Fatalf(
+			"delayed retry = %#v; want available_at exactly %s after database update time",
+			retryable,
+			retryDelay,
+		)
+	}
+	if _, err := outbox.ClaimNext(ctx, workerOwner, time.Minute); !errors.Is(err, paymentoutbox.ErrNoCommandAvailable) {
+		t.Fatalf("delayed retry was claimable too early: %v", err)
+	}
+	time.Sleep(retryDelay + 100*time.Millisecond)
+	reclaimed, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || reclaimed.ID != retryable.ID || reclaimed.AttemptCount != 2 {
+		t.Fatalf("delayed retry claim = %#v, %v", reclaimed, err)
+	}
+}
+
+func TestPaymentProviderOutboxMalformedRetryBudgetIgnoresPriorClaims(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-mixed-malformed"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, outboxParams(attempt)); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	workerOwner := "worker:" + uuid.NewString()
+	first, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || first.LeaseToken == nil {
+		t.Fatalf("first mixed claim = %#v, %v", first, err)
+	}
+	if _, err := outbox.MarkRetryable(ctx, first.ID, *first.LeaseOwner, *first.LeaseToken, "RETRYABLE_TIMEOUT", 0); err != nil {
+		t.Fatalf("mark initial timeout retryable: %v", err)
+	}
+	second, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || second.LeaseToken == nil || second.AttemptCount != 2 {
+		t.Fatalf("second mixed claim = %#v, %v", second, err)
+	}
+	firstMalformed, err := outbox.MarkRetryable(ctx, second.ID, *second.LeaseOwner, *second.LeaseToken, "MALFORMED_RESPONSE", 0)
+	if err != nil {
+		t.Fatalf("first malformed after timeout: %v", err)
+	}
+	if firstMalformed.State != paymentoutbox.StateRetryable ||
+		firstMalformed.AttemptCount != 2 ||
+		firstMalformed.MalformedResponseCount != 1 {
+		t.Fatalf("first malformed after timeout = %#v; want retryable with independent malformed count", firstMalformed)
+	}
+	third, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || third.LeaseToken == nil || third.AttemptCount != 3 {
+		t.Fatalf("third mixed claim = %#v, %v", third, err)
+	}
+	secondMalformed, err := outbox.MarkRetryable(ctx, third.ID, *third.LeaseOwner, *third.LeaseToken, "MALFORMED_RESPONSE", 0)
+	if err != nil {
+		t.Fatalf("second malformed after timeout: %v", err)
+	}
+	if secondMalformed.State != paymentoutbox.StateTerminal ||
+		secondMalformed.MalformedResponseCount != 2 ||
+		secondMalformed.CompletedAt == nil {
+		t.Fatalf("second malformed after timeout = %#v; want terminal with malformed count 2", secondMalformed)
+	}
+}
+
+func TestPaymentProviderOutboxMarkTerminalCompletesAndCannotReplay(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-terminal"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	params := outboxParams(attempt)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, params); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	workerOwner := "worker:" + uuid.NewString()
+	claimed, err := outbox.ClaimNext(ctx, workerOwner, time.Minute)
+	if err != nil || claimed.LeaseOwner == nil || claimed.LeaseToken == nil {
+		t.Fatalf("terminal claim = %#v, %v", claimed, err)
+	}
+	terminal, err := outbox.MarkTerminal(
+		ctx,
+		claimed.ID,
+		*claimed.LeaseOwner,
+		*claimed.LeaseToken,
+		"AUTHENTICATION_FAILED",
+	)
+	if err != nil {
+		t.Fatalf("mark terminal: %v", err)
+	}
+	if terminal.State != paymentoutbox.StateTerminal ||
+		terminal.CompletedAt == nil ||
+		terminal.LastErrorCode == nil ||
+		*terminal.LastErrorCode != "AUTHENTICATION_FAILED" ||
+		terminal.LeaseOwner != nil ||
+		terminal.LeaseToken != nil ||
+		terminal.LeaseExpiresAt != nil ||
+		terminal.ProviderReference != nil {
+		t.Fatalf("terminal command = %#v; want completed terminal state with cleared lease", terminal)
+	}
+	if _, err := outbox.MarkTerminal(
+		ctx,
+		claimed.ID,
+		*claimed.LeaseOwner,
+		*claimed.LeaseToken,
+		"AUTHENTICATION_FAILED",
+	); !errors.Is(err, paymentoutbox.ErrLeaseConflict) {
+		t.Fatalf("terminal command replay = %v; want ErrLeaseConflict", err)
+	}
+	if _, err := outbox.ClaimNext(ctx, workerOwner, time.Minute); !errors.Is(err, paymentoutbox.ErrNoCommandAvailable) {
+		t.Fatalf("terminal command was claimable: %v", err)
+	}
+}
+
+func TestPaymentProviderOutboxConcurrentClaimDoesNotDuplicate(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-concurrent"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	params := outboxParams(attempt)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, params); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	results := make(chan paymentoutbox.Command, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			command, err := outbox.ClaimNext(ctx, "worker:"+uuid.NewString(), time.Minute)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- command
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	var claimed int
+	for range results {
+		claimed++
+	}
+	var noCommand int
+	for err := range errs {
+		if errors.Is(err, paymentoutbox.ErrNoCommandAvailable) {
+			noCommand++
+		} else {
+			t.Fatalf("concurrent claim error: %v", err)
+		}
+	}
+	if claimed != 1 || noCommand != 1 {
+		t.Fatalf("concurrent claim counts = claimed:%d no-command:%d; want 1/1", claimed, noCommand)
+	}
+}
+
+func outboxParams(attempt PaymentAttempt) paymentoutbox.EnqueueParams {
+	return paymentoutbox.EnqueueParams{
+		CommandType:      paymentoutbox.CommandPaymentCreate,
+		AggregateType:    paymentoutbox.AggregatePaymentAttempt,
+		AggregateID:      attempt.ID,
+		PaymentAttemptID: attempt.ID,
+		IdempotencyKey:   "payment:create:" + attempt.BookingID + ":" + strconv.Itoa(int(attempt.AttemptNo)),
+		RequestHash:      attempt.RequestHash,
+		Payload: paymentoutbox.PaymentCommandPayload{
+			AttemptID:       attempt.ID,
+			AmountRupiah:    attempt.AmountRupiah,
+			Currency:        string(attempt.Currency),
+			RequestedMethod: string(attempt.RequestedMethod),
+		},
+	}
+}

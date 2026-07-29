@@ -26,9 +26,10 @@ var downMigrations = map[int]string{
 	23: "023_platform_ledger_balance_reschedule.down.sql",
 	24: "024_platform_expenses.down.sql",
 	25: "025_payment_attempts.down.sql",
+	26: "026_payment_provider_outbox.down.sql",
 }
 
-const latestMigrationVersion = 25
+const latestMigrationVersion = 26
 
 func checkOptIn(t *testing.T) string {
 	t.Helper()
@@ -184,6 +185,9 @@ func survivingFactTables(target int) []string {
 	if target >= 25 {
 		tables = append(tables, "payment_attempts", "payment_capture_facts")
 	}
+	if target >= 26 {
+		tables = append(tables, "payment_provider_commands")
+	}
 	return tables
 }
 
@@ -217,7 +221,7 @@ func TestRollbackHardening_PreFactDown(t *testing.T) {
 
 	_, m := setupMigrate(t, targetDSN)
 
-	err := m.Steps(-7) // From 25 down to 18
+	err := m.Steps(-8) // From 26 down to 18
 	if err != nil {
 		t.Fatalf("expected pre-fact down migration to succeed, got: %v", err)
 	}

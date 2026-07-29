@@ -103,7 +103,15 @@ Current core tables:
 - `court_operating_hours`
 - `court_blocked_slots`
 
-Migrations run automatically on API startup using golang-migrate. There is no need to apply migrations manually.
+In Docker Compose, the one-shot `db-role-init` service provisions the limited
+local runtime role and the one-shot `migrate` service applies migrations before
+the API starts. The API does not run migrations and connects using the
+non-owner `lapangango_app` role. Running `docker compose up --build -d` handles
+both fresh and existing local database volumes.
+
+The credentials in `docker-compose.yml` and `db/init` are for local development
+only. Deployed environments must inject separate managed credentials for the
+migrator and API while preserving the same privilege boundary.
 
 ## API Overview
 

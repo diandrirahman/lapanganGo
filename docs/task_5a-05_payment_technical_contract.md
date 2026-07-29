@@ -203,15 +203,25 @@ Durable outbox for provider calls:
 | `state` | `PENDING`, `LEASED`, `RETRYABLE`, `SUCCEEDED`, `TERMINAL` |
 | `attempt_count` | Non-negative integer |
 | `available_at` | Next eligible attempt time |
-| `lease_owner`, `lease_expires_at` | Nullable bounded worker lease |
+| `lease_owner`, `lease_token`, `lease_expires_at` | Nullable bounded worker lease plus opaque per-claim generation token |
 | `last_error_code` | Nullable normalized safe code |
-| `provider_reference` | Nullable sanitized result reference |
+| `provider_reference` | Nullable `sha256:<64-lowercase-hex>` digest; raw provider result references are forbidden |
 | `created_at`, `updated_at`, `completed_at` | Worker lifecycle timestamps |
 
 Enqueue must be in the same database transaction as the domain state and
 audit. Provider HTTP calls always occur outside that transaction. Claiming
 uses `FOR UPDATE SKIP LOCKED` or an equivalent safe lease. A crashed/expired
 lease is retryable with the same key and request hash.
+Retry scheduling passes a bounded relative delay to the repository; PostgreSQL
+derives `available_at` from `transaction_timestamp()` so worker/API clock skew
+cannot change the intended backoff.
+The enqueue boundary reads the referenced immutable payment attempt in the
+same transaction, derives the command key, and persists only amount, currency,
+method, and request hash that match that attempt. One command of each type is
+allowed per aggregate.
+Every claim rotates `lease_token`; lease completion requires the exact current
+owner and token so a stale execution cannot complete a command reclaimed after
+expiry or worker restart.
 
 ### 5.4 `payment_webhook_events`
 
@@ -715,6 +725,14 @@ notification delivery are never performed while database locks are held.
 3. Stop workers after releasing/expiring leases; never delete commands.
 4. Revoke/rotate a suspected provider key/token and preserve sanitized
    evidence.
+
+Migration `026` may be rolled down only after an explicit
+`SELECT count(*) FROM payment_provider_commands` returns zero. If a rollback is
+attempted while commands exist, the down migration preserves the table and
+fails; `golang-migrate` then records version `25` as dirty. Verify that the
+version-26 table and command rows remain intact, then restore migration
+metadata with `migrate force 26`. Never force version `25` while the outbox
+table exists, and never delete commands to make rollback pass.
 5. Keep uncertain attempts/refunds in their current non-terminal state.
 6. Reconcile by authenticated inquiry with the original provider IDs and keys.
 7. Re-enable one capability at a time in the frozen activation order.

@@ -16,6 +16,7 @@ COPY db/migrations/ ./db/migrations/
 # Build the application
 WORKDIR /app/apps/api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/api_binary ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/migrate_binary ./cmd/migrate
 
 # Create a lightweight production image
 FROM alpine:3.20
@@ -25,6 +26,7 @@ WORKDIR /app
 
 # Copy the binary and migrations
 COPY --from=builder /app/api_binary .
+COPY --from=builder /app/migrate_binary .
 COPY --from=builder /app/db/migrations ./db/migrations
 
 EXPOSE 8080
