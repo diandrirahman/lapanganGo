@@ -8,6 +8,7 @@ apps/web/dist
 .gotmp
 outputs
 docs/*
+!docs/task_5c-00_signed_webhook_fixture_freeze.md
 !docs/task_4-05_automated_full_regression_evidence.md
 !docs/task_4-06_manual_qa_booking_snapshot_projection.md
 !docs/task_4-07_manual_qa_opex_audit_auth_owner.md

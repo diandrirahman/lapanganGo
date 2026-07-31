@@ -1,0 +1,1 @@
+{"event":"refund.succeeded","version":"2024-11-11","created":"2026-01-15T10:09:00Z","data":{"refund_id":"refund_fixture_succeeded_0001","payment_id":"pay_fixture_refund_0001","payment_request_id":"pr_fixture_refund_0001","status":"SUCCEEDED","amount":125000,"currency":"IDR"}}

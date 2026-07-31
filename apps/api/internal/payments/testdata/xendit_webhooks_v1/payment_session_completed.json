@@ -1,0 +1,1 @@
+{"event":"payment_session.completed","version":"2024-11-11","created":"2026-01-15T10:00:00Z","data":{"payment_session_id":"ps_fixture_completed_0001","payment_request_id":"pr_fixture_completed_0001","payment_id":"pay_fixture_completed_0001","status":"COMPLETED","amount":125000,"currency":"IDR"}}

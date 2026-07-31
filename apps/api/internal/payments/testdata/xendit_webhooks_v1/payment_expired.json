@@ -1,0 +1,1 @@
+{"event":"payment.capture","version":"2024-11-11","created":"2026-01-15T10:05:30Z","data":{"payment_id":"pay_fixture_payment_expired_0001","payment_request_id":"pr_fixture_payment_expired_0001","status":"EXPIRED","amount":125000,"currency":"IDR"}}

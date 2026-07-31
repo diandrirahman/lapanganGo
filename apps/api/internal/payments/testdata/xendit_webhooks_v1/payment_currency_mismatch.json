@@ -1,0 +1,1 @@
+{"event":"payment.capture","version":"2024-11-11","created":"2026-01-15T10:07:00Z","data":{"payment_id":"pay_fixture_currency_mismatch_0001","payment_request_id":"pr_fixture_currency_mismatch_0001","status":"SUCCEEDED","amount":125000,"currency":"USD"}}
