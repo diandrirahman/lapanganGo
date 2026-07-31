@@ -17,6 +17,7 @@ func TestPaymentCreateCommandContractGuardMigration_FreshUpgradeAndEmptyDown(t *
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 28)
 
 	assertMigrationVersion(t, m, 28, false)
 	assertPaymentCreateCommandContractGuardPresent(t, db, true)
@@ -27,7 +28,7 @@ func TestPaymentCreateCommandContractGuardMigration_FreshUpgradeAndEmptyDown(t *
 	assertMigrationVersion(t, m, 27, false)
 	assertPaymentCreateCommandContractGuardPresent(t, db, false)
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := m.Migrate(28); err != nil && err != migrate.ErrNoChange {
 		t.Fatalf("upgrade from migration 027 to 028 failed: %v", err)
 	}
 	assertMigrationVersion(t, m, 28, false)
@@ -42,6 +43,7 @@ func TestPaymentCreateCommandContractGuardMigration_RequiresExactContract(t *tes
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 28)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()
@@ -76,6 +78,7 @@ func TestPaymentCreateCommandContractGuardMigration_ReservesPaymentInquiry(t *te
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 28)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()
@@ -165,6 +168,7 @@ func TestPaymentCreateCommandContractGuardMigration_DownRefusesCreateCommands(t 
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 28)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()
@@ -215,6 +219,7 @@ func TestPaymentCreateCommandContractGuardMigration_IsolatesLegacyAndRecordsCanc
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 28)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()
