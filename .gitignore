@@ -24,6 +24,11 @@ docs/*
 !docs/task_5b-03_payment_repository_state_guard.md
 !docs/task_5b-04_provider_neutral_adapter_contract.md
 !docs/task_5b-05_finance_outbox_foundation.md
+!docs/task_5b-06_sandbox_create_payment_orchestration.md
+!docs/task_5b-07_sandbox_inquiry_timeout_recovery_implementation_plan.md
+!docs/task_5b-07_sandbox_inquiry_timeout_recovery.md
+!docs/task_5b-07_review_findings_remediation_implementation_plan.md
+!docs/task_5b-07_root_cause_stabilization.md
 !docs/version_1_7_platform_finance_readiness.md
 !docs/platform_finance_metric_dictionary.md
 !docs/platform_finance_incident_runbook.md

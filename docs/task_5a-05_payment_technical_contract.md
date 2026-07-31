@@ -95,8 +95,10 @@ by this contract, subject to Task 5B-00 proving that they remain unused:
 |---:|---|---|---|
 | `025_payment_attempts` | 5B-01 | `payment_attempts`, `payment_capture_facts`, constraints, indexes, immutable capture guard | Refuse down when either table contains facts |
 | `026_payment_provider_outbox` | 5B-05 | `payment_provider_commands`, lease/retry indexes and payload guards | Refuse down when command rows exist |
-| `027_payment_webhook_inbox` | 5C-01 | `payment_webhook_events`, processing indexes, optional capture source FK | Refuse down when inbox rows or dependent facts exist |
-| `028_payment_refunds_and_costs` | 5D-01 | `payment_refunds`, `payment_cost_items`, webhook/refund links and isolated journal source FKs | Refuse down when refund/cost/source-linked journal rows exist |
+| `027_payment_create_contracts` | 5B-06 | Immutable requested expiry and normalized return URLs bound one-to-one to a payment attempt | Refuse down when any create contract exists |
+| `028_payment_create_command_contract_guard` | 5B-06 | Always-enabled create-contract, bidirectional sandbox/legacy and owner-cash isolation, immutable pre-dispatch cancellation guards, plus the provider-neutral `PAYMENT_INQUIRY` persistence/claim foundation | Refuse down while payment attempts or provider commands exist |
+| `029_payment_webhook_inbox` | 5C-01 | `payment_webhook_events`, processing indexes, optional capture source FK | Refuse down when inbox rows or dependent facts exist |
+| `030_payment_refunds_and_costs` | 5D-01 | `payment_refunds`, `payment_cost_items`, webhook/refund links and isolated journal source FKs | Refuse down when refund/cost/source-linked journal rows exist |
 
 Every migration requires matching `*.up.sql` and `*.down.sql`. All financial
 references use `ON DELETE RESTRICT`; no new payment table may use CASCADE.
@@ -182,7 +184,7 @@ Append-only proof of one verified capture:
 | `authority` | `VERIFIED_WEBHOOK` or `AUTHENTICATED_INQUIRY` |
 | `source_reference` | Deterministic sanitized provider/inquiry reference |
 | `payload_hash` | Lowercase SHA-256 hex |
-| `source_webhook_event_id` | Nullable `RESTRICT` FK added by migration 027 |
+| `source_webhook_event_id` | Nullable `RESTRICT` FK added by migration 029 |
 | `created_at` | Insert timestamp |
 
 All UPDATE and DELETE operations are rejected. A successful refund never
@@ -241,7 +243,7 @@ Durable redacted webhook inbox:
 | `processing_state` | `RECEIVED`, `PROCESSING`, `PROCESSED`, `RETRYABLE`, `TERMINAL`, `DUPLICATE` |
 | `redacted_payload` | Normalized allowlisted JSON; never raw body |
 | `payment_attempt_id` | Nullable `RESTRICT` FK |
-| `payment_refund_id` | Nullable `RESTRICT` FK added by migration 028 |
+| `payment_refund_id` | Nullable `RESTRICT` FK added by migration 030 |
 | `correlation_id` | Opaque server correlation value |
 | `received_at`, `processed_at`, `created_at`, `updated_at` | Lifecycle timestamps |
 
@@ -343,12 +345,15 @@ available only to the explicit test package/CLI introduced by Phase 5E.
 | Method/path | Contract |
 |---|---|
 | `POST /bookings/:id/payment-attempts` | Authenticated booking customer requests one allowed method. No amount/provider IDs accepted. Returns `202` with local attempt ID/state. |
-| `GET /payment-attempts/:id` | Booking customer reads normalized state, expiry, and checkout URL when available. No raw provider response. |
+| `GET /payment-attempts/:id` | Booking customer reads normalized state, expiry, and a validated checkout URL only while the attempt is `PENDING`, the booking remains `PENDING_PAYMENT`, and both booking and attempt remain unexpired by the database clock. No raw provider response. |
+| `GET /payment-attempts/resolve/:reference` | Authenticated booking customer resolves an owned opaque checkout-return reference to the same normalized local state. Unknown and foreign references are indistinguishable. |
 
 Create-payment is asynchronous: the first request atomically creates the local
 attempt, outbox command, and audit. The frontend polls the GET endpoint until a
 Test Mode checkout URL is ready, then redirects. A return from checkout causes
-the frontend to poll again; it never submits “paid” authority.
+the frontend to poll again with capped exponential backoff until a terminal
+state, attempt expiry, or the five-minute client verification window is
+reached; it never submits “paid” authority.
 
 ### 6.2 Future webhook routes
 
@@ -372,7 +377,15 @@ can be enabled.
 
 Success/cancel URLs are constructed from a backend HTTPS allowlist and opaque
 attempt reference. They contain no amount, booking ID, customer data, provider
-credential, or payment token. Return routes display/poll local state only.
+credential, or payment token. The authenticated frontend route
+`/payments/return/:reference/{success|cancel}` resolves the reference through
+the customer API and displays/polls local state only. Its success/cancel path
+is navigation context and never payment authority. Polling is bounded by the
+earlier of attempt expiry or a five-minute verification window and then sends
+the customer to booking detail for authoritative state. Authentication loss may
+preserve only that canonical internal path in session-scoped browser storage;
+it is consumed once after a CUSTOMER login. External/arbitrary paths, invalid
+references, unsupported outcomes, and other roles fail closed.
 
 ## 7. Xendit Test Mode adapter contract
 
@@ -564,6 +577,11 @@ Non-boolean configuration:
 - backend-only `XENDIT_SECRET_KEY`;
 - backend-only `XENDIT_WEBHOOK_TOKEN`;
 - allowlisted HTTPS payment return origin.
+
+The return origin uses one contract at startup and in persisted create-payment
+facts: HTTPS only, ASCII DNS/IPv4 hostname characters, optional port
+`1..65535`, and no userinfo, path, query, or fragment. IPv6 is intentionally
+outside the frozen Phase 5B contract.
 
 Startup fails closed when:
 
