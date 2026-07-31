@@ -21,6 +21,7 @@ All normal bodies are exact UTF-8 file bytes, including their final newline. `ov
 - Refund: `XENDIT|<event type>|<refund_id>`.
 - Invalid input uses a fixed `XENDIT|invalid...|...-v1` key only as a fixture correlation identity; it must not produce an inbox row where the frozen ingress contract says `NO_INBOX`.
 - A same key and same hash is a no-op. A same key and different hash is `IDEMPOTENCY_CONFLICT` and quarantined. Old and out-of-order events rely on deduplication and monotonic processing, not a timestamp signature. A body `created` more than five minutes ahead is `FUTURE_CREATED_SEMANTIC` quarantine, not authentication failure.
+- The `duplicate-conflict` row uses `payment_capture_conflicting_replay.json`: it keeps the canonical capture payment ID/key while changing only the semantic `created` timestamp, so its exact raw-body hash differs from `payment_capture_succeeded.json` without borrowing the amount-mismatch identity.
 - `payment_session.completed` remains `PENDING` until an authoritative payment request/payment inquiry validates identity, amount, and IDR currency.
 
 ## Matrix coverage

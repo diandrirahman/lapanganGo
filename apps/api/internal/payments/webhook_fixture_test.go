@@ -24,6 +24,9 @@ type webhookFixture struct {
 	EventKey        string         `json:"event_key"`
 	PrimaryObjectID string         `json:"primary_object_id"`
 	Hash            string         `json:"hash"`
+	Verification    string         `json:"verification"`
+	Processing      string         `json:"processing"`
+	Duplicate       string         `json:"duplicate"`
 	Normalized      map[string]any `json:"normalized"`
 }
 
@@ -69,6 +72,49 @@ func TestXenditWebhookFixturesV1AreDeterministicAndRedacted(t *testing.T) {
 	}
 }
 
+func TestXenditWebhookFixturesV1ReplayIdentityIsConsistent(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate fixture test")
+	}
+	fixtureDir := filepath.Join(filepath.Dir(sourceFile), "testdata", "xendit_webhooks_v1")
+	manifestBytes, err := os.ReadFile(filepath.Join(fixtureDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest webhookFixtureManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+
+	original := fixtureByID(t, manifest, "capture-succeeded")
+	conflict := fixtureByID(t, manifest, "duplicate-conflict")
+	amountMismatch := fixtureByID(t, manifest, "amount-mismatch")
+
+	originalKey, originalPrimary := canonicalCaptureFixtureIdentity(t, fixtureDir, original.File)
+	conflictKey, conflictPrimary := canonicalCaptureFixtureIdentity(t, fixtureDir, conflict.File)
+	mismatchKey, mismatchPrimary := canonicalCaptureFixtureIdentity(t, fixtureDir, amountMismatch.File)
+
+	if originalKey != original.EventKey || originalPrimary != original.PrimaryObjectID {
+		t.Fatalf("capture fixture identity = %q/%q; want %q/%q", originalKey, originalPrimary, original.EventKey, original.PrimaryObjectID)
+	}
+	if conflictKey != conflict.EventKey || conflictPrimary != conflict.PrimaryObjectID {
+		t.Fatalf("conflicting replay identity = %q/%q; want %q/%q", conflictKey, conflictPrimary, conflict.EventKey, conflict.PrimaryObjectID)
+	}
+	if originalKey != conflictKey || originalPrimary != conflictPrimary {
+		t.Fatalf("conflicting replay did not retain canonical capture identity: original=%q/%q conflict=%q/%q", originalKey, originalPrimary, conflictKey, conflictPrimary)
+	}
+	if original.Hash == conflict.Hash {
+		t.Fatal("conflicting replay retained the original exact raw-body hash")
+	}
+	if mismatchKey != amountMismatch.EventKey || mismatchPrimary != amountMismatch.PrimaryObjectID || mismatchKey == originalKey {
+		t.Fatalf("amount mismatch identity is not independently canonical: key=%q primary=%q", mismatchKey, mismatchPrimary)
+	}
+	if conflict.Verification != "QUARANTINED" || conflict.Processing != "TERMINAL" || conflict.Duplicate != "SAME_KEY_DIFFERENT_HASH_QUARANTINE" {
+		t.Fatalf("conflicting replay expectation is not quarantined terminal: %+v", conflict)
+	}
+}
+
 func fixtureRawBytes(dir, name string) ([]byte, error) {
 	if name != "oversized_body.spec" {
 		return os.ReadFile(filepath.Join(dir, name))
@@ -90,4 +136,47 @@ func assertNormalizedPayloadIsRedacted(t *testing.T, normalized map[string]any) 
 			t.Fatalf("normalized payload retained forbidden field %q", forbidden)
 		}
 	}
+}
+
+func fixtureByID(t *testing.T, manifest webhookFixtureManifest, id string) webhookFixture {
+	t.Helper()
+	for _, fixture := range manifest.Fixtures {
+		if fixture.ID == id {
+			return fixture
+		}
+	}
+	t.Fatalf("fixture %q not found", id)
+	return webhookFixture{}
+}
+
+func canonicalCaptureFixtureIdentity(t *testing.T, fixtureDir, file string) (string, string) {
+	t.Helper()
+	raw, err := fixtureRawBytes(fixtureDir, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Event string `json:"event"`
+		Data  struct {
+			PaymentID string `json:"payment_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Event != "payment.capture" || payload.Data.PaymentID == "" {
+		t.Fatalf("parse canonical capture fixture %q: %v", file, err)
+	}
+	firstKey := "XENDIT|" + payload.Event + "|" + payload.Data.PaymentID
+	var repeated struct {
+		Event string `json:"event"`
+		Data  struct {
+			PaymentID string `json:"payment_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &repeated); err != nil {
+		t.Fatalf("repeat parse canonical capture fixture %q: %v", file, err)
+	}
+	secondKey := "XENDIT|" + repeated.Event + "|" + repeated.Data.PaymentID
+	if firstKey != secondKey || payload.Data.PaymentID != repeated.Data.PaymentID {
+		t.Fatalf("canonical capture parsing is non-deterministic for %q", file)
+	}
+	return firstKey, payload.Data.PaymentID
 }
