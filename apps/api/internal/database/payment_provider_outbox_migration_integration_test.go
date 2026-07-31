@@ -19,6 +19,7 @@ func TestPaymentProviderOutboxMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 26)
 
 	assertMigrationVersion(t, m, 26, false)
 	assertOutboxTablePresent(t, db, true)
@@ -29,7 +30,7 @@ func TestPaymentProviderOutboxMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	assertMigrationVersion(t, m, 25, false)
 	assertOutboxTablePresent(t, db, false)
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := m.Migrate(26); err != nil && err != migrate.ErrNoChange {
 		t.Fatalf("upgrade from migration 025 to 026 failed: %v", err)
 	}
 	assertMigrationVersion(t, m, 26, false)
@@ -44,6 +45,7 @@ func TestPaymentProviderOutboxMigration_ConstraintsAndRestrict(t *testing.T) {
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 26)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()

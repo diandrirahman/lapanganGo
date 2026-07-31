@@ -19,6 +19,7 @@ func TestPaymentAttemptsMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 26)
 
 	assertMigrationVersion(t, m, 26, false)
 	assertPaymentTablesPresent(t, db, true)
@@ -33,7 +34,7 @@ func TestPaymentAttemptsMigration_FreshUpgradeAndEmptyDown(t *testing.T) {
 	assertMigrationVersion(t, m, 24, false)
 	assertPaymentTablesPresent(t, db, false)
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := m.Migrate(26); err != nil && err != migrate.ErrNoChange {
 		t.Fatalf("upgrade from migration 024 to 026 failed: %v", err)
 	}
 	assertMigrationVersion(t, m, 26, false)
@@ -48,6 +49,7 @@ func TestPaymentAttemptsMigration_ConstraintsAndImmutability(t *testing.T) {
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 26)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	attemptID := uuid.NewString()
@@ -151,6 +153,7 @@ func TestPaymentAttemptsMigration_DownRefusesExistingAttempts(t *testing.T) {
 	db, m := setupMigrate(t, targetDSN)
 	defer db.Close()
 	defer m.Close()
+	migrateToVersion(t, m, 26)
 
 	bookingID := seedPaymentAttemptBooking(t, db, true)
 	insertPaymentAttempt(t, db, uuid.NewString(), bookingID, 1, "payment:create:down-refusal", "PENDING", nil, time.Now().UTC())
@@ -264,6 +267,13 @@ func assertMigrationVersion(t *testing.T, m *migrate.Migrate, wantVersion uint, 
 	}
 	if version != wantVersion || dirty != wantDirty {
 		t.Fatalf("unexpected migration state: got %d|%t, want %d|%t", version, dirty, wantVersion, wantDirty)
+	}
+}
+
+func migrateToVersion(t *testing.T, m *migrate.Migrate, version uint) {
+	t.Helper()
+	if err := m.Migrate(version); err != nil && err != migrate.ErrNoChange {
+		t.Fatalf("migrate to version %d: %v", version, err)
 	}
 }
 
