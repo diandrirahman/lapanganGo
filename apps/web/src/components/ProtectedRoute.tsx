@@ -1,6 +1,7 @@
 import React from 'react';
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { rememberPaymentReturnPath } from '../lib/authReturn';
 import { getRoleHomeRoute } from '../lib/roleRouting';
 import { PageShell } from './layout/PageShell';
 
@@ -18,6 +19,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children
 }) => {
   const { isAuthenticated, isLoading, user, isWorkspaceUser, hasOwnerPermission, isActualOwner } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -30,6 +32,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   }
 
   if (!isAuthenticated) {
+    rememberPaymentReturnPath(location.pathname);
     return <Navigate to="/login" replace />;
   }
 

@@ -429,6 +429,8 @@ func respondBookingError(c *gin.Context, err error, fallbackMessage string) {
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrBookingAlreadyCancelled), errors.Is(err, ErrBookingCannotBeCancelled), errors.Is(err, ErrBookingAlreadyConfirmed), errors.Is(err, ErrBookingCannotBeConfirmed):
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, ErrSandboxPaymentFlowConflict), errors.Is(err, ErrSandboxPaymentCancelUnavailable):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrForbidden):
 		c.JSON(http.StatusForbidden, gin.H{"message": err.Error()})
 	case errors.Is(err, ErrBookingNotFound):

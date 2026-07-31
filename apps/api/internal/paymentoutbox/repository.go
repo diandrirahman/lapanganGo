@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
+
+	"lapangango-api/internal/paymentflow"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,6 +27,7 @@ func (r *Repository) EnqueueTx(ctx context.Context, tx pgx.Tx, params EnqueuePar
 	expectedKey := deterministicIdempotencyKey(
 		params.CommandType,
 		facts.BookingID,
+		params.PaymentAttemptID,
 		facts.AttemptNo,
 	)
 	canonicalPayloadValue := PaymentCommandPayload{
@@ -39,7 +43,8 @@ func (r *Repository) EnqueueTx(ctx context.Context, tx pgx.Tx, params EnqueuePar
 	if params.IdempotencyKey != expectedKey ||
 		params.RequestHash != facts.RequestHash ||
 		params.Payload != canonicalPayloadValue ||
-		string(requestedPayload) != string(canonicalPayload) {
+		string(requestedPayload) != string(canonicalPayload) ||
+		(params.CommandType == CommandPaymentInquiry && facts.State != "PENDING") {
 		exists, existsErr := commandKeyExistsTx(ctx, tx, params.CommandType, params.IdempotencyKey)
 		if existsErr != nil {
 			return EnqueueResult{}, existsErr
@@ -127,25 +132,113 @@ func (r *Repository) EnqueueTx(ctx context.Context, tx pgx.Tx, params EnqueuePar
 // ClaimNext leases one eligible command and issues a new opaque lease token.
 // Every completion operation must present that exact token.
 func (r *Repository) ClaimNext(ctx context.Context, leaseOwner string, leaseDuration time.Duration) (Command, error) {
+	return r.ClaimNextForTypes(ctx, leaseOwner, leaseDuration, []CommandType{CommandPaymentCreate, CommandPaymentInquiry})
+}
+
+const claimablePaymentCommandPredicate = `(
+	(
+		c.command_type = 'PAYMENT_CREATE'
+		AND pcc.command_id IS NULL
+		AND (
+			(pa.state = 'CREATED' AND b.status = 'PENDING_PAYMENT')
+			OR pa.state = 'PENDING'
+		)
+	)
+	OR (
+		c.command_type = 'PAYMENT_INQUIRY'
+		AND pa.state = 'PENDING'
+	)
+	OR (
+		c.state = 'LEASED'
+		AND c.lease_expires_at <= transaction_timestamp()
+		AND c.command_type IN ('PAYMENT_CREATE', 'PAYMENT_INQUIRY')
+		AND pa.state IN ('CAPTURED', 'FAILED', 'EXPIRED', 'CANCELLED')
+	)
+)`
+
+// ClaimNextForTypes leases only the explicitly allowed payment command types.
+// The allowlist is converted to a static SQL predicate after validation so an
+// inquiry-disabled worker cannot accidentally claim create or inquiry work.
+func (r *Repository) ClaimNextForTypes(ctx context.Context, leaseOwner string, leaseDuration time.Duration, commandTypes []CommandType) (Command, error) {
 	if !validateLeaseOwner(leaseOwner) || !validateLeaseDuration(leaseDuration) {
 		return Command{}, ErrInvalidCommand
 	}
-	leaseDurationMicroseconds := leaseDuration.Microseconds()
-	tx, err := r.db.Begin(ctx)
+	commandFilter, err := commandTypeFilter(commandTypes)
 	if err != nil {
 		return Command{}, err
 	}
+	leaseDurationMicroseconds := leaseDuration.Microseconds()
+	for {
+		command, retry, err := r.claimNextOnce(ctx, leaseOwner, leaseDurationMicroseconds, commandFilter)
+		if err != nil {
+			return Command{}, err
+		}
+		if !retry {
+			return command, nil
+		}
+	}
+}
+
+func (r *Repository) claimNextOnce(
+	ctx context.Context,
+	leaseOwner string,
+	leaseDurationMicroseconds int64,
+	commandFilter string,
+) (Command, bool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Command{}, false, err
+	}
 	defer tx.Rollback(ctx)
+
+	var candidateID string
+	var bookingID string
+	err = tx.QueryRow(ctx, `
+		SELECT c.id::text, pa.booking_id::text
+		FROM payment_provider_commands c
+		JOIN payment_attempts pa ON pa.id = c.payment_attempt_id
+		JOIN bookings b ON b.id = pa.booking_id
+		LEFT JOIN payment_create_cancellations pcc ON pcc.command_id = c.id
+		WHERE (
+			(c.state IN ('PENDING', 'RETRYABLE') AND c.available_at <= transaction_timestamp())
+			OR (c.state = 'LEASED' AND c.lease_expires_at <= transaction_timestamp())
+		)
+		  AND `+claimablePaymentCommandPredicate+`
+		  AND `+commandFilter+`
+		ORDER BY c.available_at, c.created_at, c.id
+		LIMIT 1
+	`).Scan(&candidateID, &bookingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return Command{}, false, commitErr
+		}
+		return Command{}, false, ErrNoCommandAvailable
+	}
+	if err != nil {
+		return Command{}, false, err
+	}
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return Command{}, false, err
+	}
 
 	var command Command
 	err = scanCommand(tx.QueryRow(ctx, `
 		WITH candidate AS (
-			SELECT id
-			FROM payment_provider_commands
-			WHERE (state IN ('PENDING', 'RETRYABLE') AND available_at <= transaction_timestamp())
-			   OR (state = 'LEASED' AND lease_expires_at <= transaction_timestamp())
-			ORDER BY available_at, created_at, id
-			FOR UPDATE SKIP LOCKED
+			SELECT c.id
+			FROM payment_provider_commands c
+			JOIN payment_attempts pa ON pa.id = c.payment_attempt_id
+			JOIN bookings b ON b.id = pa.booking_id
+			LEFT JOIN payment_create_cancellations pcc
+			       ON pcc.command_id = c.id
+			WHERE (
+				(c.state IN ('PENDING', 'RETRYABLE') AND c.available_at <= transaction_timestamp())
+				OR (c.state = 'LEASED' AND c.lease_expires_at <= transaction_timestamp())
+			)
+			  AND `+claimablePaymentCommandPredicate+`
+			  AND `+commandFilter+`
+			  AND c.id = $3
+			ORDER BY c.available_at, c.created_at, c.id
+			FOR UPDATE OF c
 			LIMIT 1
 		)
 		UPDATE payment_provider_commands c
@@ -153,9 +246,9 @@ func (r *Repository) ClaimNext(ctx context.Context, leaseOwner string, leaseDura
 		    attempt_count = c.attempt_count + 1,
 		    lease_owner = $1,
 		    lease_token = gen_random_uuid(),
-		    lease_expires_at = transaction_timestamp() + ($2::bigint * interval '1 microsecond'),
+		    lease_expires_at = statement_timestamp() + ($2::bigint * interval '1 microsecond'),
 		    last_error_code = CASE WHEN c.state = 'LEASED' THEN 'LEASE_EXPIRED' ELSE c.last_error_code END,
-		    updated_at = transaction_timestamp()
+		    updated_at = statement_timestamp()
 		FROM candidate
 		WHERE c.id = candidate.id
 		RETURNING c.id::text, c.command_type, c.aggregate_type, c.aggregate_id::text,
@@ -163,20 +256,41 @@ func (r *Repository) ClaimNext(ctx context.Context, leaseOwner string, leaseDura
 		          c.redacted_payload, c.state, c.attempt_count, c.malformed_response_count, c.available_at,
 		          c.lease_owner, c.lease_token::text, c.lease_expires_at, c.last_error_code, c.provider_reference,
 		          c.created_at, c.updated_at, c.completed_at
-	`, leaseOwner, leaseDurationMicroseconds), &command)
+	`, leaseOwner, leaseDurationMicroseconds, candidateID), &command)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return Command{}, commitErr
+			return Command{}, false, commitErr
 		}
-		return Command{}, ErrNoCommandAvailable
+		return Command{}, true, nil
 	}
 	if err != nil {
-		return Command{}, err
+		return Command{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return Command{}, err
+		return Command{}, false, err
 	}
-	return command, nil
+	return command, false, nil
+}
+
+func commandTypeFilter(commandTypes []CommandType) (string, error) {
+	seen := make(map[CommandType]bool, len(commandTypes))
+	for _, commandType := range commandTypes {
+		if commandType != CommandPaymentCreate && commandType != CommandPaymentInquiry {
+			return "", ErrInvalidCommand
+		}
+		seen[commandType] = true
+	}
+	if len(seen) == 0 {
+		return "", ErrInvalidCommand
+	}
+	parts := make([]string, 0, 2)
+	if seen[CommandPaymentCreate] {
+		parts = append(parts, "'PAYMENT_CREATE'")
+	}
+	if seen[CommandPaymentInquiry] {
+		parts = append(parts, "'PAYMENT_INQUIRY'")
+	}
+	return "c.command_type IN (" + strings.Join(parts, ",") + ")", nil
 }
 
 func (r *Repository) MarkRetryable(ctx context.Context, id, leaseOwner, leaseToken, errorCode string, retryDelay time.Duration) (Command, error) {
@@ -184,9 +298,24 @@ func (r *Repository) MarkRetryable(ctx context.Context, id, leaseOwner, leaseTok
 		!validateRetryableErrorCode(errorCode) || !validateRetryDelay(retryDelay) {
 		return Command{}, ErrInvalidCommand
 	}
+	return r.markRetryable(ctx, nil, id, leaseOwner, leaseToken, errorCode, retryDelay)
+}
+
+// MarkRetryableTx finishes a leased command inside the caller's transaction.
+// It is used when the payment/domain result and command lifecycle must commit
+// atomically. The caller owns commit and rollback.
+func (r *Repository) MarkRetryableTx(ctx context.Context, tx pgx.Tx, id, leaseOwner, leaseToken, errorCode string, retryDelay time.Duration) (Command, error) {
+	if tx == nil || !validateLeaseOwner(leaseOwner) || !validateLeaseToken(leaseToken) ||
+		!validateRetryableErrorCode(errorCode) || !validateRetryDelay(retryDelay) {
+		return Command{}, ErrInvalidCommand
+	}
+	return r.markRetryable(ctx, tx, id, leaseOwner, leaseToken, errorCode, retryDelay)
+}
+
+func (r *Repository) markRetryable(ctx context.Context, tx pgx.Tx, id, leaseOwner, leaseToken, errorCode string, retryDelay time.Duration) (Command, error) {
 	retryDelayMicroseconds := retryDelay.Microseconds()
 	if errorCode == "MALFORMED_RESPONSE" {
-		return r.finishLease(ctx, id, leaseOwner, leaseToken, `
+		return r.finishLease(ctx, tx, id, leaseOwner, leaseToken, `
 			state = CASE WHEN malformed_response_count >= 1 THEN 'TERMINAL' ELSE 'RETRYABLE' END,
 			available_at = CASE
 				WHEN malformed_response_count >= 1 THEN available_at
@@ -199,7 +328,7 @@ func (r *Repository) MarkRetryable(ctx context.Context, id, leaseOwner, leaseTok
 			completed_at = CASE WHEN malformed_response_count >= 1 THEN transaction_timestamp() ELSE NULL END
 		`, errorCode, retryDelayMicroseconds)
 	}
-	return r.finishLease(ctx, id, leaseOwner, leaseToken, `
+	return r.finishLease(ctx, tx, id, leaseOwner, leaseToken, `
 		state = 'RETRYABLE',
 		available_at = transaction_timestamp() + ($5::bigint * interval '1 microsecond'),
 		last_error_code = $4,
@@ -213,7 +342,20 @@ func (r *Repository) MarkSucceeded(ctx context.Context, id, leaseOwner, leaseTok
 		!validateProviderReference(providerReference) {
 		return Command{}, ErrInvalidCommand
 	}
-	return r.finishLease(ctx, id, leaseOwner, leaseToken, `
+	return r.finishLease(ctx, nil, id, leaseOwner, leaseToken, `
+		state = 'SUCCEEDED', provider_reference = $4,
+		lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = transaction_timestamp(),
+		completed_at = transaction_timestamp(), last_error_code = NULL
+	`, providerReference, nil)
+}
+
+// MarkSucceededTx finishes a leased command inside the caller's transaction.
+func (r *Repository) MarkSucceededTx(ctx context.Context, tx pgx.Tx, id, leaseOwner, leaseToken, providerReference string) (Command, error) {
+	if tx == nil || !validateLeaseOwner(leaseOwner) || !validateLeaseToken(leaseToken) ||
+		!validateProviderReference(providerReference) {
+		return Command{}, ErrInvalidCommand
+	}
+	return r.finishLease(ctx, tx, id, leaseOwner, leaseToken, `
 		state = 'SUCCEEDED', provider_reference = $4,
 		lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = transaction_timestamp(),
 		completed_at = transaction_timestamp(), last_error_code = NULL
@@ -223,6 +365,7 @@ func (r *Repository) MarkSucceeded(ctx context.Context, id, leaseOwner, leaseTok
 type paymentAttemptFacts struct {
 	BookingID       string
 	AttemptNo       int16
+	State           string
 	RequestedMethod string
 	Currency        string
 	AmountRupiah    int64
@@ -232,7 +375,7 @@ type paymentAttemptFacts struct {
 func loadPaymentAttemptFactsTx(ctx context.Context, tx pgx.Tx, paymentAttemptID string) (paymentAttemptFacts, error) {
 	var facts paymentAttemptFacts
 	err := tx.QueryRow(ctx, `
-		SELECT booking_id::text, attempt_no, requested_method, currency::text,
+		SELECT booking_id::text, attempt_no, state, requested_method, currency::text,
 		       amount_rupiah, request_hash
 		FROM payment_attempts
 		WHERE id = $1::uuid
@@ -240,6 +383,7 @@ func loadPaymentAttemptFactsTx(ctx context.Context, tx pgx.Tx, paymentAttemptID 
 	`, paymentAttemptID).Scan(
 		&facts.BookingID,
 		&facts.AttemptNo,
+		&facts.State,
 		&facts.RequestedMethod,
 		&facts.Currency,
 		&facts.AmountRupiah,
@@ -270,7 +414,19 @@ func (r *Repository) MarkTerminal(ctx context.Context, id, leaseOwner, leaseToke
 	if !validateLeaseOwner(leaseOwner) || !validateLeaseToken(leaseToken) || !validateTerminalErrorCode(errorCode) {
 		return Command{}, ErrInvalidCommand
 	}
-	return r.finishLease(ctx, id, leaseOwner, leaseToken, `
+	return r.finishLease(ctx, nil, id, leaseOwner, leaseToken, `
+		state = 'TERMINAL', last_error_code = $4,
+		lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = transaction_timestamp(),
+		completed_at = transaction_timestamp()
+	`, errorCode, nil)
+}
+
+// MarkTerminalTx finishes a leased command inside the caller's transaction.
+func (r *Repository) MarkTerminalTx(ctx context.Context, tx pgx.Tx, id, leaseOwner, leaseToken, errorCode string) (Command, error) {
+	if tx == nil || !validateLeaseOwner(leaseOwner) || !validateLeaseToken(leaseToken) || !validateTerminalErrorCode(errorCode) {
+		return Command{}, ErrInvalidCommand
+	}
+	return r.finishLease(ctx, tx, id, leaseOwner, leaseToken, `
 		state = 'TERMINAL', last_error_code = $4,
 		lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = transaction_timestamp(),
 		completed_at = transaction_timestamp()
@@ -279,17 +435,46 @@ func (r *Repository) MarkTerminal(ctx context.Context, id, leaseOwner, leaseToke
 
 func (r *Repository) finishLease(
 	ctx context.Context,
+	tx pgx.Tx,
 	id, leaseOwner, leaseToken, setClause, value string,
 	extraValue any,
 ) (Command, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return Command{}, ErrInvalidCommand
 	}
-	tx, err := r.db.Begin(ctx)
+	ownsTx := tx == nil
+	if ownsTx {
+		var err error
+		tx, err = r.db.Begin(ctx)
+		if err != nil {
+			return Command{}, err
+		}
+		defer tx.Rollback(ctx)
+	}
+	command, err := r.finishLeaseTx(ctx, tx, id, leaseOwner, leaseToken, setClause, value, extraValue)
 	if err != nil {
 		return Command{}, err
 	}
-	defer tx.Rollback(ctx)
+	if command.ID == "" {
+		return Command{}, ErrLeaseConflict
+	}
+	if ownsTx {
+		if err := tx.Commit(ctx); err != nil {
+			return Command{}, err
+		}
+	}
+	return command, nil
+}
+
+func (r *Repository) finishLeaseTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	id, leaseOwner, leaseToken, setClause, value string,
+	extraValue any,
+) (Command, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Command{}, ErrInvalidCommand
+	}
 
 	var command Command
 	query := `
@@ -309,14 +494,8 @@ func (r *Repository) finishLease(
 		args = append(args, extraValue)
 	}
 	if err := scanCommand(tx.QueryRow(ctx, query, args...), &command); errors.Is(err, pgx.ErrNoRows) {
-		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return Command{}, commitErr
-		}
 		return Command{}, ErrLeaseConflict
 	} else if err != nil {
-		return Command{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return Command{}, err
 	}
 	return command, nil

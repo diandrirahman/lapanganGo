@@ -6,6 +6,8 @@ import type { OpenMatch } from '../types/mabar';
 import type { FinanceSummaryResult } from '../types/finance';
 import type { NotificationListResponse } from '../types/notification';
 import type { AuditLog, AuditLogQuery } from '../types/audit';
+import type { ResolvePaymentAttemptResponse } from '../types/payment';
+import { rememberPaymentReturnPath } from './authReturn';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
@@ -40,6 +42,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: ApiFetchInit): P
     const response = await fetch(input, fetchInit);
     if (response.status === 401) {
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        rememberPaymentReturnPath(window.location.pathname);
         localStorage.removeItem('auth_token');
         window.location.href = '/login';
       }
@@ -53,6 +56,26 @@ export async function apiFetch(input: RequestInfo | URL, init?: ApiFetchInit): P
       providedSignal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+export async function fetchPaymentAttemptByReference(
+  reference: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<ResolvePaymentAttemptResponse> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/payment-attempts/resolve/${encodeURIComponent(reference)}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+      timeoutMs: 10000,
+    },
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || 'Status pembayaran tidak dapat dimuat');
+  }
+  return response.json();
 }
 
 export async function fetchOpenMatches(page: number = 1, limit: number = 10): Promise<PaginatedResponse<OpenMatch>> {

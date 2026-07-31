@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 	"lapangango-api/internal/notifications"
 	"lapangango-api/internal/owneraccess"
 	"lapangango-api/internal/owners"
+	"lapangango-api/internal/paymentoutbox"
+	"lapangango-api/internal/payments"
 	"lapangango-api/internal/platformfinance"
 	"lapangango-api/internal/promos"
 	"lapangango-api/internal/refunds"
@@ -35,7 +38,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var errPaymentProviderAdapterContractBlocked = errors.New("payment provider adapter contract is not ready")
+
 func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, startWorkers bool) (*gin.Engine, context.CancelFunc, error) {
+	if startWorkers && (cfg.PaymentCreateEnabled || cfg.PaymentInquiryEnabled) {
+		// 5B-07 deliberately has no runtime provider adapter while the frozen
+		// customer/session contract is blocked. Never start a listener with an
+		// enabled payment worker that cannot prove this dependency.
+		return nil, nil, errPaymentProviderAdapterContractBlocked
+	}
 	r := gin.Default()
 	r.Use(middleware.CORS())
 
@@ -91,6 +102,8 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 
 	auditRepository := audit.NewRepository(dbPool)
 	auditService := audit.NewService(auditRepository)
+	platformAuditRepository := audit.NewPlatformRepository()
+	platformAuditService := audit.NewPlatformService(platformAuditRepository)
 
 	var emailService email.Service
 	if cfg.EmailDeliveryEnabled {
@@ -155,6 +168,16 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	bookingsHandler.RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
 	bookingsHandler.RegisterOwnerRoutes(r, authMiddleware, requireActiveUser, ownerWorkspaceMiddleware)
 
+	paymentAttemptRepository := payments.NewRepository(dbPool)
+	paymentOutboxRepository := paymentoutbox.NewRepository(dbPool)
+	paymentOrchestrator := payments.NewOrchestrator(dbPool, paymentAttemptRepository, paymentOutboxRepository, platformAuditService, payments.OrchestratorOptions{
+		SandboxEnabled: cfg.PaymentSandboxEnabled,
+		CreateEnabled:  cfg.PaymentCreateEnabled,
+		AttemptTTL:     time.Duration(cfg.BookingPaymentTTLMinutes) * time.Minute,
+		ReturnOrigin:   cfg.PaymentReturnOrigin,
+	})
+	payments.NewHandler(paymentOrchestrator).RegisterRoutes(r, authMiddleware, requireActiveUser, middleware.RequireRole("CUSTOMER"))
+
 	blockedSlotRepository := blockedslots.NewRepository(dbPool)
 	blockedSlotService := blockedslots.NewService(blockedSlotRepository)
 	blockedSlotHandler := blockedslots.NewHandler(blockedSlotService)
@@ -177,9 +200,6 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	adminService := admin.NewService(adminRepository, auditService)
 	adminHandler := admin.NewHandler(adminService)
 	adminHandler.RegisterRoutes(r, authMiddleware, requireActiveUser)
-
-	platformAuditRepository := audit.NewPlatformRepository()
-	platformAuditService := audit.NewPlatformService(platformAuditRepository)
 
 	buildServices := func() (platformfinance.Service, platformfinance.ExpenseService, platformfinance.JournalReadService, error) {
 		return buildPlatformFinanceAdminServices(dbPool, platformAuditService)

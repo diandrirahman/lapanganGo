@@ -8,8 +8,9 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
+
+	"lapangango-api/internal/provideridentity"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -52,14 +53,18 @@ const (
 	StateTerminal  CommandState = "TERMINAL"
 )
 
+// MaxLeaseDuration is the largest lease interval representable by the outbox
+// lifecycle contract. Worker/processor constructors use the same bound so an
+// adapter call can never require an impossible lease.
+const MaxLeaseDuration = 24 * time.Hour
+
 var (
-	ErrInvalidCommand         = errors.New("invalid payment provider command")
-	ErrCommandNotFound        = errors.New("payment provider command not found")
-	ErrIdempotencyConflict    = errors.New("payment provider command idempotency conflict")
-	ErrNoCommandAvailable     = errors.New("no payment provider command available")
-	ErrLeaseConflict          = errors.New("payment provider command lease conflict")
-	ErrPaymentInquiryNotReady = errors.New("payment inquiry commands are not available before Task 5B-07")
-	ErrRefundOutboxNotReady   = errors.New("refund provider commands are not available before the refund migration")
+	ErrInvalidCommand       = errors.New("invalid payment provider command")
+	ErrCommandNotFound      = errors.New("payment provider command not found")
+	ErrIdempotencyConflict  = errors.New("payment provider command idempotency conflict")
+	ErrNoCommandAvailable   = errors.New("no payment provider command available")
+	ErrLeaseConflict        = errors.New("payment provider command lease conflict")
+	ErrRefundOutboxNotReady = errors.New("refund provider commands are not available before the refund migration")
 )
 
 type DBTX interface {
@@ -128,32 +133,17 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 const canonicalUUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`
 
 var paymentCreateKeyPattern = regexp.MustCompile(`^payment:create:` + canonicalUUIDPattern + `:[1-9][0-9]{0,4}$`)
+var paymentInquiryKeyPattern = regexp.MustCompile(`^payment:inquiry:` + canonicalUUIDPattern + `$`)
 var safeHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var leaseOwnerPattern = regexp.MustCompile(`^worker:` + canonicalUUIDPattern + `$`)
 var providerReferenceDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-var rawProviderReferenceUUIDPattern = regexp.MustCompile(`^` + canonicalUUIDPattern + `$`)
-var rawProviderReferencePrefixedUUIDPattern = regexp.MustCompile(`^[a-z]{2,16}[-_:]` + canonicalUUIDPattern + `$`)
-var rawProviderReferenceTokenPattern = regexp.MustCompile(`^[a-z]{2,16}[-_:][a-z0-9]{8,128}$`)
-var rawProviderReferenceSegmentedPattern = regexp.MustCompile(`^[a-z]{2,16}[-_:][a-z0-9]{4,64}(?:-[a-z0-9]{4,64}){1,7}$`)
-var rawProviderReferenceTokenLetterPattern = regexp.MustCompile(`[a-z]`)
-var rawProviderReferenceTokenDigitPattern = regexp.MustCompile(`[0-9]`)
-
-var forbiddenRawProviderReferencePrefixes = map[string]struct{}{
-	"acct": {}, "account": {}, "api": {}, "authorization": {}, "bank": {},
-	"bearer": {}, "card": {}, "cvc": {}, "cvv": {}, "iban": {}, "key": {},
-	"pan": {}, "password": {}, "payload": {}, "pk": {}, "raw": {}, "secret": {},
-	"sk": {}, "token": {}, "xnd": {},
-}
 
 func ValidateEnqueueParams(params EnqueueParams) ([]byte, error) {
-	if params.CommandType == CommandPaymentInquiry {
-		return nil, ErrPaymentInquiryNotReady
-	}
 	if params.CommandType == CommandRefundCreate || params.CommandType == CommandRefundInquiry {
 		return nil, ErrRefundOutboxNotReady
 	}
 	if !params.CommandType.IsValid() || params.AggregateType != AggregatePaymentAttempt ||
-		params.CommandType != CommandPaymentCreate {
+		(params.CommandType != CommandPaymentCreate && params.CommandType != CommandPaymentInquiry) {
 		return nil, ErrInvalidCommand
 	}
 	aggregateID, err := uuid.Parse(params.AggregateID)
@@ -190,18 +180,39 @@ func validateIdempotencyKey(commandType CommandType, value string) bool {
 	switch commandType {
 	case CommandPaymentCreate:
 		return paymentCreateKeyPattern.MatchString(value)
+	case CommandPaymentInquiry:
+		return paymentInquiryKeyPattern.MatchString(value)
 	default:
 		return false
 	}
 }
 
-func deterministicIdempotencyKey(commandType CommandType, bookingID string, attemptNo int16) string {
+func deterministicIdempotencyKey(
+	commandType CommandType,
+	bookingID, paymentAttemptID string,
+	attemptNo int16,
+) string {
 	switch commandType {
 	case CommandPaymentCreate:
 		return "payment:create:" + bookingID + ":" + strconv.FormatInt(int64(attemptNo), 10)
+	case CommandPaymentInquiry:
+		return "payment:inquiry:" + paymentAttemptID
 	default:
 		return ""
 	}
+}
+
+// DeterministicCreateKey exposes the frozen create-payment namespace to the
+// orchestration layer without exposing any provider-specific implementation.
+func DeterministicCreateKey(bookingID string, attemptNo int16) string {
+	return deterministicIdempotencyKey(CommandPaymentCreate, bookingID, "", attemptNo)
+}
+
+// DeterministicInquiryKey exposes the reserved uncertain-payment inquiry
+// namespace. Task 5B-06 persists and claims this provider-neutral command but
+// does not execute a provider inquiry; execution remains scoped to Task 5B-07.
+func DeterministicInquiryKey(paymentAttemptID string) string {
+	return deterministicIdempotencyKey(CommandPaymentInquiry, "", paymentAttemptID, 0)
 }
 
 func isAllowedRequestedMethod(value string) bool {
@@ -229,31 +240,17 @@ func DigestProviderReference(value string) (string, error) {
 }
 
 func validateRawProviderReference(value string) bool {
-	if rawProviderReferenceUUIDPattern.MatchString(value) {
-		return true
-	}
-	separatorIndex := strings.IndexAny(value, "-_:")
-	if separatorIndex < 0 {
-		return false
-	}
-	prefix := value[:separatorIndex]
-	if _, forbidden := forbiddenRawProviderReferencePrefixes[prefix]; forbidden {
-		return false
-	}
-	if rawProviderReferencePrefixedUUIDPattern.MatchString(value) {
-		return true
-	}
-	if !rawProviderReferenceTokenPattern.MatchString(value) &&
-		!rawProviderReferenceSegmentedPattern.MatchString(value) {
-		return false
-	}
-	token := value[separatorIndex+1:]
-	return rawProviderReferenceTokenLetterPattern.MatchString(token) &&
-		rawProviderReferenceTokenDigitPattern.MatchString(token)
+	return provideridentity.Valid(value, true)
 }
 
 func validateLeaseOwner(owner string) bool {
 	return leaseOwnerPattern.MatchString(owner)
+}
+
+// ValidateLeaseOwner exposes the exact lifecycle owner contract to worker
+// constructors so startup validation cannot drift from repository validation.
+func ValidateLeaseOwner(owner string) bool {
+	return validateLeaseOwner(owner)
 }
 
 func validateLeaseToken(token string) bool {
@@ -263,14 +260,27 @@ func validateLeaseToken(token string) bool {
 
 func validateLeaseDuration(value time.Duration) bool {
 	return value >= time.Microsecond &&
-		value <= 24*time.Hour &&
+		value <= MaxLeaseDuration &&
 		value%time.Microsecond == 0
+}
+
+// ValidateLeaseDuration exposes the exact persistence contract used by claim
+// operations so worker construction cannot accept a lease the repository will
+// reject later.
+func ValidateLeaseDuration(value time.Duration) bool {
+	return validateLeaseDuration(value)
 }
 
 func validateRetryDelay(value time.Duration) bool {
 	return value >= 0 &&
 		value <= 24*time.Hour &&
 		value%time.Microsecond == 0
+}
+
+// ValidateRetryDelay exposes the exact persistence contract used by retry
+// finalizers so retry-policy validation cannot drift from the repository.
+func ValidateRetryDelay(value time.Duration) bool {
+	return validateRetryDelay(value)
 }
 
 func validateRetryableErrorCode(code string) bool {

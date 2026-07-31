@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
 import { getRoleHomeRoute } from '../lib/roleRouting';
+import { consumePaymentReturnPath } from '../lib/authReturn';
 import { PageShell } from '../components/layout/PageShell';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
@@ -38,7 +39,7 @@ export const LoginPage: React.FC = () => {
           };
           login('mock-jwt-token', user);
           toast.success('Login berhasil!');
-          const route = getRoleHomeRoute(user.role);
+          const route = consumePaymentReturnPath(user.role) ?? getRoleHomeRoute(user.role);
           navigate(route, { replace: true });
         }, 1000);
         return;
@@ -58,7 +59,7 @@ export const LoginPage: React.FC = () => {
 
       login(data.token, data.user);
       toast.success('Login berhasil!');
-      const route = getRoleHomeRoute(data.user.role);
+      const route = consumePaymentReturnPath(data.user.role) ?? getRoleHomeRoute(data.user.role);
       navigate(route, { replace: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Terjadi kesalahan';

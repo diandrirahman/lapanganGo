@@ -37,3 +37,26 @@ func TestRespondBookingError_InvalidRupiahAmountReturnsGenericBadRequest(t *test
 		})
 	}
 }
+
+func TestRespondBookingError_SandboxPaymentConflictsReturnConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, testCase := range []struct {
+		name string
+		err  error
+	}{
+		{name: "legacy flow blocked", err: ErrSandboxPaymentFlowConflict},
+		{name: "cancellation dispatch race", err: ErrSandboxPaymentCancelUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+
+			respondBookingError(ctx, testCase.err, "Failed to update booking")
+
+			if recorder.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+			}
+		})
+	}
+}

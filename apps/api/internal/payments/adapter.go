@@ -35,6 +35,20 @@ func (s PaymentStatus) IsTerminal() bool {
 		s == PaymentStatusExpired || s == PaymentStatusCancelled
 }
 
+// PaymentInquiryScope identifies which provider-side object an inquiry
+// response describes. A checkout session may reveal a payment-request
+// identity, but it cannot prove payment capture.
+type PaymentInquiryScope string
+
+const (
+	PaymentInquiryScopeCheckoutSession PaymentInquiryScope = "CHECKOUT_SESSION"
+	PaymentInquiryScopePayment         PaymentInquiryScope = "PAYMENT"
+)
+
+func (s PaymentInquiryScope) IsValid() bool {
+	return s == PaymentInquiryScopeCheckoutSession || s == PaymentInquiryScopePayment
+}
+
 type RefundStatus string
 
 const (
@@ -178,19 +192,26 @@ type CreatePaymentResponse struct {
 
 type GetPaymentStatusRequest struct {
 	AttemptID            string
+	ProviderSessionID    string
 	ProviderPaymentReqID string
 	ProviderPaymentID    string
 	IdempotencyKey       string
 }
 
 type PaymentStatusResponse struct {
+	Scope                PaymentInquiryScope
+	ProviderSessionID    string
 	ProviderPaymentReqID string
 	ProviderPaymentID    string
 	Status               PaymentStatus
 	AmountRupiah         int64
 	Currency             Currency
 	CapturedAt           *time.Time
-	ReasonCode           string
+	// PayloadHash is an evidence hash produced by the adapter before any raw
+	// provider response is discarded. It is never a raw provider payload.
+	PayloadHash string
+	ReasonCode  string
+	StatusCode  string
 }
 
 type VerifyWebhookRequest struct {

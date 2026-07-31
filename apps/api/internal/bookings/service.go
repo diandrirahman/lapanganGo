@@ -37,6 +37,8 @@ var (
 	ErrBookingCannotBeRefunded         = errors.New("booking cannot be cancelled/refunded in current status")
 	ErrBookingRefundAlreadyExists      = errors.New("refund already recorded for this booking")
 	ErrBookingIncomeLedgerNotFound     = errors.New("booking income ledger not found; backfill ledger before refund")
+	ErrSandboxPaymentFlowConflict      = errors.New("legacy booking payment flow is unavailable after sandbox payment creation")
+	ErrSandboxPaymentCancelUnavailable = errors.New("sandbox payment is already being dispatched; retry cancellation after status recovery")
 	ErrPromoNotActive                  = errors.New("promo is not active")
 	ErrPromoExpired                    = errors.New("promo has expired")
 	ErrPromoNotStarted                 = errors.New("promo has not started yet")

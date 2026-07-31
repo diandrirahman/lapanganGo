@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"lapangango-api/internal/audit"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -18,6 +21,52 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 )
+
+func TestPaymentDisposableSetupRegistersCleanupBeforeFallibleInitialization(t *testing.T) {
+	var events []string
+	var registeredCleanup func()
+	setupFailure := errors.New("forced setup failure")
+
+	err := initializePaymentDisposableAfterCreate(
+		func(cleanup func()) {
+			events = append(events, "register-cleanup")
+			registeredCleanup = cleanup
+		},
+		func() {
+			events = append(events, "cleanup")
+		},
+		func() error {
+			events = append(events, "initialize")
+			return setupFailure
+		},
+	)
+	if !errors.Is(err, setupFailure) {
+		t.Fatalf("setup error = %v; want forced setup failure", err)
+	}
+	if registeredCleanup == nil {
+		t.Fatal("cleanup was not registered before initialization failure")
+	}
+	if strings.Join(events, ",") != "register-cleanup,initialize" {
+		t.Fatalf("setup order = %v; want cleanup registration before initialization", events)
+	}
+	registeredCleanup()
+	if strings.Join(events, ",") != "register-cleanup,initialize,cleanup" {
+		t.Fatalf("cleanup execution = %v", events)
+	}
+}
+
+func TestPaymentRepositoryDisposableEvidenceGate(t *testing.T) {
+	if os.Getenv("REQUIRE_PAYMENT_REPOSITORY_DISPOSABLE") != "1" {
+		t.Skip("repository disposable evidence gate is opt-in")
+	}
+	if os.Getenv("TEST_ROLLBACK_HARDENING_DISPOSABLE") != "1" {
+		t.Fatal("repository disposable evidence required but TEST_ROLLBACK_HARDENING_DISPOSABLE is not 1")
+	}
+	if strings.TrimSpace(os.Getenv("ROLLBACK_HARDENING_TEST_DATABASE_URL")) == "" {
+		t.Fatal("repository disposable evidence required but ROLLBACK_HARDENING_TEST_DATABASE_URL is empty")
+	}
+	t.Log("PAYMENT_REPOSITORY_DISPOSABLE_SUITE_ENABLED")
+}
 
 func TestRepositoryCreateReplayAndStateGuard(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
@@ -57,6 +106,13 @@ func TestRepositoryCreateReplayAndStateGuard(t *testing.T) {
 		t.Fatalf("expired replay created another attempt: first=%s replay=%s", expiringAttempt.ID, expiredReplay.ID)
 	}
 
+	overlongBookingID := seedRepositoryBooking(t, ctx, pool, true)
+	overlongParams := validCreateParams(overlongBookingID, "payment:create:overlong-expiry")
+	overlongParams.ExpiresAt = time.Now().UTC().Add(3 * time.Hour)
+	if _, err := repo.CreateOrReplayAttempt(ctx, overlongParams); !errors.Is(err, ErrInvalidCreateAttempt) {
+		t.Fatalf("attempt beyond booking expiry error = %v; want ErrInvalidCreateAttempt", err)
+	}
+
 	nextNo, err := repo.GetNextAttemptNumber(ctx, bookingID)
 	if err != nil || nextNo != 2 {
 		t.Fatalf("next attempt number = %d, %v; want 2, nil", nextNo, err)
@@ -84,8 +140,8 @@ func TestRepositoryCreateReplayAndStateGuard(t *testing.T) {
 		t.Fatalf("stale CAS error = %v; want ErrStateConflict", err)
 	}
 
-	capture := validCaptureParams(attempt.ID, "payment-1", time.Now().UTC().Add(-time.Second))
-	providerRequestID := "payment-request-1"
+	capture := validCaptureParams(attempt.ID, "payment-test-1", time.Now().UTC().Add(-time.Second))
+	providerRequestID := "payment-request-test-1"
 	capture.ProviderPaymentReqID = &providerRequestID
 	captured, err := repo.RecordCapture(ctx, capture)
 	if err != nil {
@@ -106,7 +162,7 @@ func TestRepositoryCreateReplayAndStateGuard(t *testing.T) {
 	webhookDuplicate := capture
 	webhookDuplicate.Authority = "VERIFIED_WEBHOOK"
 	webhookDuplicate.ObservedAt = capture.ObservedAt.Add(time.Second)
-	webhookDuplicate.SourceReference = "webhook:event-payment-1"
+	webhookDuplicate.SourceReference = "webhook:event-payment-test-1"
 	webhookDuplicate.PayloadHash = strings.Repeat("e", 64)
 	duplicate, err = repo.RecordCapture(ctx, webhookDuplicate)
 	if err != nil {
@@ -215,6 +271,270 @@ func TestRepositoryConcurrentCreateAndCapture(t *testing.T) {
 	}
 }
 
+func TestRepositoryInquiryIdentityBindingIsExactAndAtomic(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	repo := NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := repo.CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:inquiry-identity"))
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	sessionID := "session-inquiry-identity"
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyCreateProviderResultTx(ctx, tx, ApplyCreateProviderResultParams{
+		AttemptID: attempt.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest,
+		ProviderSessionID: sessionID, ProviderStatusCode: "PENDING", Status: PaymentStatusPending,
+		AmountRupiah: 10000, Currency: CurrencyIDR,
+	}); err != nil {
+		t.Fatalf("apply create result: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requestID := "payment-request-inquiry-identity"
+	sessionPtr := &sessionID
+	requestPtr := &requestID
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, bound, err := repo.ApplyInquiryIdentityTx(ctx, tx, ApplyInquiryIdentityParams{
+		AttemptID: attempt.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest,
+		Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: sessionPtr,
+		ProviderPaymentReqID: requestPtr, ProviderStatusCode: "PENDING",
+	})
+	if err != nil || !bound || updated.ProviderPaymentReqID == nil || *updated.ProviderPaymentReqID != requestID {
+		t.Fatalf("first inquiry bind = %#v, bound=%v, err=%v", updated, bound, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bound, err = repo.ApplyInquiryIdentityTx(ctx, tx, ApplyInquiryIdentityParams{
+		AttemptID: attempt.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest,
+		Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: sessionPtr,
+		ProviderPaymentReqID: requestPtr, ProviderStatusCode: "PENDING",
+	})
+	if err != nil || bound {
+		t.Fatalf("identical inquiry replay = bound=%v, err=%v", bound, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	wrongSession := "session-wrong"
+	wrongRequest := "payment-request-wrong"
+	for _, params := range []ApplyInquiryIdentityParams{
+		{AttemptID: attempt.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest, Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: &wrongSession, ProviderPaymentReqID: requestPtr, ProviderStatusCode: "PENDING"},
+		{AttemptID: attempt.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest, Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: sessionPtr, ProviderPaymentReqID: &wrongRequest, ProviderStatusCode: "PENDING"},
+	} {
+		tx, err = pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := repo.ApplyInquiryIdentityTx(ctx, tx, params); !errors.Is(err, ErrCaptureConflict) {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("mismatched identity error = %v; want ErrCaptureConflict", err)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stored, err := repo.GetAttemptByID(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ProviderPaymentReqID == nil || *stored.ProviderPaymentReqID != requestID || stored.ProviderPaymentID != nil {
+		t.Fatalf("mismatched identity mutated attempt: %#v", stored)
+	}
+
+	bookingBeforeRequest := seedRepositoryBooking(t, ctx, pool, true)
+	attemptBeforeRequest, err := repo.CreateOrReplayAttempt(ctx, validCreateParams(bookingBeforeRequest, "payment:create:payment-before-request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyCreateProviderResultTx(ctx, bindTx, ApplyCreateProviderResultParams{AttemptID: attemptBeforeRequest.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest, ProviderSessionID: "session-before-request", ProviderStatusCode: "PENDING", Status: PaymentStatusPending, AmountRupiah: 10000, Currency: CurrencyIDR}); err != nil {
+		_ = bindTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := bindTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bindTx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.ApplyInquiryIdentityTx(ctx, bindTx, ApplyInquiryIdentityParams{AttemptID: attemptBeforeRequest.ID, Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest, Scope: PaymentInquiryScopePayment, ProviderPaymentReqID: &requestID, ProviderPaymentID: &wrongRequest, ProviderStatusCode: "PENDING"}); !errors.Is(err, ErrCaptureConflict) {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("payment before request error = %v; want ErrCaptureConflict", err)
+	}
+	if err := bindTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyCreateProviderResultTerminalNoopRejectsIdentityMismatch(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	repo := NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := repo.CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:terminal-create-identity"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerSessionID := "session-terminal-create-winner-0001"
+	apply := func(sessionID string) (PaymentAttempt, error) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return PaymentAttempt{}, err
+		}
+		defer tx.Rollback(ctx)
+		result, err := repo.ApplyCreateProviderResultTx(ctx, tx, ApplyCreateProviderResultParams{
+			AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment,
+			ProviderSessionID: sessionID, ProviderStatusCode: "PENDING", Status: PaymentStatusPending,
+			AmountRupiah: attempt.AmountRupiah, Currency: attempt.Currency,
+		})
+		if err != nil {
+			return PaymentAttempt{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return PaymentAttempt{}, err
+		}
+		return result, nil
+	}
+	if _, err := apply(winnerSessionID); err != nil {
+		t.Fatalf("bind winning create identity: %v", err)
+	}
+	if _, err := repo.TransitionState(ctx, attempt.ID, AttemptStatePending, AttemptStateCancelled); err != nil {
+		t.Fatalf("terminal transition: %v", err)
+	}
+	replay, err := apply(winnerSessionID)
+	if err != nil || replay.State != AttemptStateCancelled {
+		t.Fatalf("exact terminal replay = %#v, %v; want cancelled no-op", replay, err)
+	}
+	if _, err := apply("session-terminal-create-loser-0001"); !errors.Is(err, ErrCaptureConflict) {
+		t.Fatalf("terminal identity mismatch error = %v; want ErrCaptureConflict", err)
+	}
+	stored, err := repo.GetAttemptByID(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != AttemptStateCancelled || stored.ProviderSessionID == nil || *stored.ProviderSessionID != winnerSessionID {
+		t.Fatalf("terminal mismatch mutated attempt: %#v", stored)
+	}
+}
+
+func TestApplyInquiryIdentityTerminalNoopRejectsBoundMismatch(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	repo := NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt, err := repo.CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:terminal-inquiry-identity"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "session-terminal-inquiry-winner-0001"
+	requestID := "request-terminal-inquiry-winner-0001"
+	paymentID := "payment-terminal-inquiry-winner-0001"
+	applyCreateTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyCreateProviderResultTx(ctx, applyCreateTx, ApplyCreateProviderResultParams{
+		AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment,
+		ProviderSessionID: sessionID, ProviderStatusCode: "PENDING", Status: PaymentStatusPending,
+		AmountRupiah: attempt.AmountRupiah, Currency: attempt.Currency,
+	}); err != nil {
+		_ = applyCreateTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := applyCreateTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bind := func(params ApplyInquiryIdentityParams) {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, _, err := repo.ApplyInquiryIdentityTx(ctx, tx, params); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bind(ApplyInquiryIdentityParams{
+		AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment,
+		Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: &sessionID,
+		ProviderPaymentReqID: &requestID, ProviderStatusCode: "PENDING",
+	})
+	bind(ApplyInquiryIdentityParams{
+		AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment,
+		Scope: PaymentInquiryScopePayment, ProviderSessionID: &sessionID,
+		ProviderPaymentReqID: &requestID, ProviderPaymentID: &paymentID, ProviderStatusCode: "PENDING",
+	})
+	if _, err := repo.TransitionState(ctx, attempt.ID, AttemptStatePending, AttemptStateCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	applyTerminal := func(params ApplyInquiryIdentityParams) (PaymentAttempt, error) {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return PaymentAttempt{}, err
+		}
+		defer tx.Rollback(ctx)
+		current, _, err := repo.ApplyInquiryIdentityTx(ctx, tx, params)
+		return current, err
+	}
+	exact, err := applyTerminal(ApplyInquiryIdentityParams{
+		AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment,
+		Scope: PaymentInquiryScopePayment, ProviderSessionID: &sessionID,
+		ProviderPaymentReqID: &requestID, ProviderPaymentID: &paymentID, ProviderStatusCode: "FAILED",
+	})
+	if !errors.Is(err, ErrStateConflict) || exact.State != AttemptStateCancelled {
+		t.Fatalf("exact terminal identity result = %#v, %v; want cancelled ErrStateConflict", exact, err)
+	}
+
+	wrongSession := "session-terminal-inquiry-loser-0001"
+	wrongRequest := "request-terminal-inquiry-loser-0001"
+	wrongPayment := "payment-terminal-inquiry-loser-0001"
+	for _, params := range []ApplyInquiryIdentityParams{
+		{AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment, Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: &wrongSession, ProviderPaymentReqID: &requestID, ProviderStatusCode: "PENDING"},
+		{AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment, Scope: PaymentInquiryScopeCheckoutSession, ProviderSessionID: &sessionID, ProviderPaymentReqID: &wrongRequest, ProviderStatusCode: "PENDING"},
+		{AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment, Scope: PaymentInquiryScopePayment, ProviderSessionID: &sessionID, ProviderPaymentReqID: &wrongRequest, ProviderPaymentID: &paymentID, ProviderStatusCode: "FAILED"},
+		{AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment, Scope: PaymentInquiryScopePayment, ProviderSessionID: &wrongSession, ProviderPaymentReqID: &requestID, ProviderPaymentID: &paymentID, ProviderStatusCode: "FAILED"},
+		{AttemptID: attempt.ID, Provider: attempt.Provider, ProviderEnvironment: attempt.ProviderEnvironment, Scope: PaymentInquiryScopePayment, ProviderSessionID: &sessionID, ProviderPaymentReqID: &requestID, ProviderPaymentID: &wrongPayment, ProviderStatusCode: "FAILED"},
+	} {
+		if _, err := applyTerminal(params); !errors.Is(err, ErrCaptureConflict) {
+			t.Fatalf("terminal identity mismatch %#v error = %v; want ErrCaptureConflict", params, err)
+		}
+	}
+}
+
+func TestApplyInquiryIdentityRejectsUnsafeInputBeforeQuery(t *testing.T) {
+	repo := &Repository{}
+	if _, _, err := repo.ApplyInquiryIdentityTx(context.Background(), nil, ApplyInquiryIdentityParams{}); !errors.Is(err, ErrInvalidInquiryIdentity) {
+		t.Fatalf("nil transaction identity error = %v; want ErrInvalidInquiryIdentity", err)
+	}
+	if _, _, err := repo.ApplyInquiryIdentityTx(context.Background(), nil, ApplyInquiryIdentityParams{AttemptID: "not-a-uuid", Provider: ProviderXendit, ProviderEnvironment: ProviderEnvironmentTest, Scope: PaymentInquiryScopePayment, ProviderStatusCode: "PENDING"}); !errors.Is(err, ErrInvalidInquiryIdentity) {
+		t.Fatalf("unsafe identity error = %v; want ErrInvalidInquiryIdentity", err)
+	}
+}
+
 func TestRepositoryLateCaptureAndMismatchRollback(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
 	repo := NewRepository(pool)
@@ -274,6 +594,80 @@ func TestRepositoryLateCaptureAndMismatchRollback(t *testing.T) {
 	}
 }
 
+func TestRepositoryMarksPendingCaptureLateAfterBookingCancellationOrExpiry(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	repo := NewRepository(pool)
+
+	tests := []struct {
+		name       string
+		localState func(string) error
+	}{
+		{
+			name: "booking cancelled",
+			localState: func(bookingID string) error {
+				_, err := pool.Exec(ctx, `UPDATE bookings SET status = 'CANCELLED' WHERE id = $1`, bookingID)
+				return err
+			},
+		},
+		{
+			name: "booking expired before sweep",
+			localState: func(bookingID string) error {
+				_, err := pool.Exec(ctx, `
+					UPDATE bookings
+					SET expires_at = transaction_timestamp() - interval '1 second'
+					WHERE id = $1
+				`, bookingID)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bookingID := seedRepositoryBooking(t, ctx, pool, true)
+			attempt, err := repo.CreateOrReplayAttempt(
+				ctx,
+				validCreateParams(bookingID, "payment:create:booking-late:"+strings.ReplaceAll(uuid.NewString(), "-", "")),
+			)
+			if err != nil {
+				t.Fatalf("create attempt: %v", err)
+			}
+			if _, err := repo.TransitionState(ctx, attempt.ID, AttemptStateCreated, AttemptStatePending); err != nil {
+				t.Fatalf("transition attempt to pending: %v", err)
+			}
+			if err := test.localState(bookingID); err != nil {
+				t.Fatalf("apply local booking terminal state: %v", err)
+			}
+
+			capturedAt := time.Now().UTC().Truncate(time.Microsecond)
+			result, err := repo.RecordCapture(
+				ctx,
+				validCaptureParams(attempt.ID, "booking-late-"+strings.ReplaceAll(uuid.NewString(), "-", ""), capturedAt),
+			)
+			if err != nil {
+				t.Fatalf("record capture after local booking terminal state: %v", err)
+			}
+			if !result.LateCapture || result.Attempt.State != AttemptStateCaptured {
+				t.Fatalf("capture result = %#v; want late captured", result)
+			}
+
+			var exceptionCount int
+			if err := pool.QueryRow(ctx, `
+				SELECT count(*)
+				FROM platform_audit_logs
+				WHERE entity_id = $1
+				  AND action = $2
+				  AND metadata->>'reason' = 'LATE_CAPTURE'
+			`, attempt.ID, audit.ActionReconciliationException).Scan(&exceptionCount); err != nil {
+				t.Fatalf("count late-capture reconciliation audit: %v", err)
+			}
+			if exceptionCount != 1 {
+				t.Fatalf("late-capture reconciliation audit count = %d; want 1", exceptionCount)
+			}
+		})
+	}
+}
+
 func openPaymentTestDB(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	if os.Getenv("TEST_ROLLBACK_HARDENING_DISPOSABLE") != "1" {
@@ -299,43 +693,65 @@ func openPaymentTestDB(t *testing.T) (context.Context, *pgxpool.Pool) {
 	adminDB.Close()
 	parsed.Path = "/" + dbName
 	targetDSN := parsed.String()
+	var pool *pgxpool.Pool
+	err = initializePaymentDisposableAfterCreate(
+		t.Cleanup,
+		func() {
+			if pool != nil {
+				pool.Close()
+			}
+			cleanupDB, cleanupErr := sql.Open("postgres", adminDSN)
+			if cleanupErr == nil {
+				defer cleanupDB.Close()
+				_, _ = cleanupDB.Exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, dbName)
+				_, _ = cleanupDB.Exec("DROP DATABASE " + dbName)
+			}
+		},
+		func() error {
+			targetDB, setupErr := sql.Open("postgres", targetDSN)
+			if setupErr != nil {
+				return fmt.Errorf("open target database: %w", setupErr)
+			}
+			defer targetDB.Close()
+			driver, setupErr := postgres.WithInstance(targetDB, &postgres.Config{})
+			if setupErr != nil {
+				return fmt.Errorf("create migration driver: %w", setupErr)
+			}
+			m, setupErr := migrate.NewWithDatabaseInstance("file://../../../../db/migrations", "postgres", driver)
+			if setupErr != nil {
+				return fmt.Errorf("create migration runner: %w", setupErr)
+			}
+			if setupErr = m.Up(); setupErr != nil && setupErr != migrate.ErrNoChange {
+				_, _ = m.Close()
+				return fmt.Errorf("run migrations: %w", setupErr)
+			}
+			_, _ = m.Close()
 
-	targetDB, err := sql.Open("postgres", targetDSN)
+			pool, setupErr = pgxpool.New(context.Background(), targetDSN)
+			if setupErr != nil {
+				return fmt.Errorf("open target pool: %w", setupErr)
+			}
+			if setupErr = pool.Ping(context.Background()); setupErr != nil {
+				pool.Close()
+				pool = nil
+				return fmt.Errorf("ping target pool: %w", setupErr)
+			}
+			return nil
+		},
+	)
 	if err != nil {
-		t.Fatalf("open target database: %v", err)
+		t.Fatalf("initialize disposable payment database: %v", err)
 	}
-	driver, err := postgres.WithInstance(targetDB, &postgres.Config{})
-	if err != nil {
-		t.Fatalf("create migration driver: %v", err)
-	}
-	m, err := migrate.NewWithDatabaseInstance("file://../../../../db/migrations", "postgres", driver)
-	if err != nil {
-		t.Fatalf("create migration runner: %v", err)
-	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		t.Fatalf("run migrations: %v", err)
-	}
-	m.Close()
-	targetDB.Close()
-
-	pool, err := pgxpool.New(context.Background(), targetDSN)
-	if err != nil {
-		t.Fatalf("open target pool: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
-		t.Fatalf("ping target pool: %v", err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		cleanupDB, err := sql.Open("postgres", adminDSN)
-		if err == nil {
-			defer cleanupDB.Close()
-			cleanupDB.Exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, dbName)
-			cleanupDB.Exec("DROP DATABASE " + dbName)
-		}
-	})
 	return context.Background(), pool
+}
+
+func initializePaymentDisposableAfterCreate(
+	registerCleanup func(func()),
+	cleanup func(),
+	initialize func() error,
+) error {
+	registerCleanup(cleanup)
+	return initialize()
 }
 
 func seedRepositoryBooking(t *testing.T, ctx context.Context, pool *pgxpool.Pool, withSnapshot bool) string {
@@ -367,7 +783,7 @@ func seedRepositoryBooking(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 	if _, err := pool.Exec(ctx, `INSERT INTO courts (id, venue_id, sport_id, name, location_type, price_per_hour, status) VALUES ($1, $2, $3, $4, 'INDOOR', 10000, 'ACTIVE')`, courtID, venueID, sportID, "Payment Repository Court "+suffix); err != nil {
 		t.Fatalf("seed court: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO bookings (id, customer_id, court_id, booking_date, start_time, end_time, total_price, status) VALUES ($1, $2, $3, CURRENT_DATE + 1, '10:00', '11:00', 10000, 'PENDING_PAYMENT')`, bookingID, customerID, courtID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO bookings (id, customer_id, court_id, booking_date, start_time, end_time, total_price, status, expires_at) VALUES ($1, $2, $3, CURRENT_DATE + 1, '10:00', '11:00', 10000, 'PENDING_PAYMENT', transaction_timestamp() + interval '2 hours')`, bookingID, customerID, courtID); err != nil {
 		t.Fatalf("seed booking: %v", err)
 	}
 	if !withSnapshot {

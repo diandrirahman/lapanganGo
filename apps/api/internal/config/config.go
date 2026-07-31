@@ -3,10 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
+
+	"lapangango-api/internal/paymentreturn"
 
 	"github.com/joho/godotenv"
 )
@@ -80,6 +81,9 @@ func (c *Config) Validate() error {
 	if (c.PaymentCreateEnabled || c.PaymentInquiryEnabled || c.PaymentRefundEnabled) && strings.TrimSpace(c.XenditSecretKey) == "" {
 		return errors.New("XENDIT_SECRET_KEY is required for enabled payment commands")
 	}
+	if c.PaymentCreateEnabled && strings.TrimSpace(c.PaymentReturnOrigin) == "" {
+		return errors.New("PAYMENT_RETURN_ORIGIN is required when payment create is enabled")
+	}
 	if c.PaymentWebhookIngressEnabled && strings.TrimSpace(c.XenditWebhookToken) == "" {
 		return errors.New("XENDIT_WEBHOOK_TOKEN is required when webhook ingress is enabled")
 	}
@@ -93,7 +97,7 @@ func (c *Config) Validate() error {
 		return errors.New("PAYMENT_ISOLATED_TEST_LEDGER_ENABLED is restricted to isolated tests")
 	}
 	if c.PaymentReturnOrigin != "" && !isAllowlistedHTTPSOrigin(c.PaymentReturnOrigin) {
-		return errors.New("PAYMENT_RETURN_ORIGIN must be an HTTPS origin without path, query, or fragment")
+		return errors.New("PAYMENT_RETURN_ORIGIN must be an HTTPS origin with a supported DNS/IPv4 hostname and valid port")
 	}
 	return nil
 }
@@ -105,9 +109,8 @@ func paymentCapabilityEnabled(c *Config) bool {
 }
 
 func isAllowlistedHTTPSOrigin(value string) bool {
-	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
-		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
+	_, err := paymentreturn.NormalizeOrigin(value)
+	return err == nil
 }
 
 func parseStrictBool(value string) (bool, error) {

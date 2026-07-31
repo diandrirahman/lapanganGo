@@ -36,6 +36,15 @@ func TestPaymentConfigFailsClosedForCapabilityDependencies(t *testing.T) {
 			want: "XENDIT_SECRET_KEY",
 		},
 		{
+			name: "create requires return origin",
+			set: map[string]string{
+				"PAYMENT_SANDBOX_ENABLED": "true",
+				"PAYMENT_CREATE_ENABLED":  "true",
+				"XENDIT_SECRET_KEY":       "test-secret",
+			},
+			want: "PAYMENT_RETURN_ORIGIN",
+		},
+		{
 			name: "webhook ingress requires token",
 			set:  map[string]string{"PAYMENT_SANDBOX_ENABLED": "true", "PAYMENT_WEBHOOK_INGRESS_ENABLED": "true"},
 			want: "XENDIT_WEBHOOK_TOKEN",
@@ -103,6 +112,39 @@ func TestPaymentConfigRejectsNonOriginReturnURL(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "PAYMENT_RETURN_ORIGIN") {
 		t.Fatalf("return URL config error = %v", err)
+	}
+}
+
+func TestPaymentConfigReturnOriginMatchesDatabaseContract(t *testing.T) {
+	accepted := []string{
+		"https://demo.example.test",
+		"https://DEMO.EXAMPLE.TEST:443",
+		"https://127.0.0.1:3000",
+	}
+	for _, origin := range accepted {
+		t.Run("accept "+origin, func(t *testing.T) {
+			if _, err := LoadFrom(paymentConfigEnv(map[string]string{"PAYMENT_RETURN_ORIGIN": origin})); err != nil {
+				t.Fatalf("supported return origin rejected: %v", err)
+			}
+		})
+	}
+
+	rejected := []string{
+		"https://[::1]:3000",
+		"https://demo.example.test:0",
+		"https://demo.example.test:65536",
+		"https://-",
+		"https://..example",
+		"https://999.999.999.999",
+		"https://demo_example.test",
+		"https://démø.example.test",
+	}
+	for _, origin := range rejected {
+		t.Run("reject "+origin, func(t *testing.T) {
+			if _, err := LoadFrom(paymentConfigEnv(map[string]string{"PAYMENT_RETURN_ORIGIN": origin})); err == nil {
+				t.Fatalf("unsupported return origin accepted: %q", origin)
+			}
+		})
 	}
 }
 

@@ -47,6 +47,50 @@ func TestPaymentAuditContract(t *testing.T) {
 			},
 		},
 		{
+			name: "missing attempt command invariant",
+			params: CreatePlatformAuditLogParams{
+				ActorRole:     "SYSTEM",
+				Action:        ActionPaymentCommandInvariantViolation,
+				EntityType:    EntityPaymentAttempt,
+				EntityID:      &entityID,
+				CorrelationID: &correlationID,
+				Metadata: map[string]any{
+					"command_type": "PAYMENT_INQUIRY",
+					"reason":       "ATTEMPT_NOT_FOUND",
+				},
+			},
+		},
+		{
+			name: "command invariant reason is fixed",
+			params: CreatePlatformAuditLogParams{
+				ActorRole:     "SYSTEM",
+				Action:        ActionPaymentCommandInvariantViolation,
+				EntityType:    EntityPaymentAttempt,
+				EntityID:      &entityID,
+				CorrelationID: &correlationID,
+				Metadata: map[string]any{
+					"command_type": "PAYMENT_CREATE",
+					"reason":       "OTHER",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "command invariant rejects global audit reason",
+			params: CreatePlatformAuditLogParams{
+				ActorRole:     "SYSTEM",
+				Action:        ActionPaymentCommandInvariantViolation,
+				EntityType:    EntityPaymentAttempt,
+				EntityID:      &entityID,
+				CorrelationID: &correlationID,
+				Metadata: map[string]any{
+					"command_type": "PAYMENT_CREATE",
+					"reason":       "LIVE_NOT_ALLOWED",
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "payment action requires payment entity",
 			params: CreatePlatformAuditLogParams{
 				ActorRole:     "SYSTEM",
@@ -124,5 +168,48 @@ func TestSanitizePaymentAuditMetadata(t *testing.T) {
 	}
 	if metadata["attempt_no"] != 2 {
 		t.Fatalf("attempt_no was not normalized: %#v", metadata["attempt_no"])
+	}
+}
+
+func TestSanitizePaymentInvariantReasonIsActionSpecific(t *testing.T) {
+	metadata := SanitizePlatformAuditMetadata(ActionPaymentCommandInvariantViolation, map[string]any{
+		"command_type": "PAYMENT_CREATE",
+		"reason":       "LIVE_NOT_ALLOWED",
+	})
+	if _, ok := metadata["reason"]; ok {
+		t.Fatalf("global audit reason leaked into payment invariant metadata: %#v", metadata)
+	}
+}
+
+func TestPaymentCreateAuditActionsAreBounded(t *testing.T) {
+	entityID := uuid.NewString()
+	correlationID := "pa-create-audit"
+	fingerprint := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	valid := []CreatePlatformAuditLogParams{
+		{
+			ActorRole: "CUSTOMER", Action: ActionPaymentCommandEnqueued, EntityType: EntityPaymentAttempt,
+			EntityID: &entityID, CorrelationID: &correlationID,
+			Metadata: map[string]any{"attempt_no": 1, "command_type": "PAYMENT_CREATE"},
+		},
+		{
+			ActorRole: "SYSTEM", Action: ActionPaymentCommandEnqueued, EntityType: EntityPaymentAttempt,
+			EntityID: &entityID, CorrelationID: &correlationID,
+			Metadata: map[string]any{"attempt_no": 1, "command_type": "PAYMENT_INQUIRY"},
+		},
+		{
+			ActorRole: "CUSTOMER", Action: ActionPaymentCreateFlagOffRejected, EntityType: EntityPaymentAttempt,
+			CorrelationID: &correlationID,
+			Metadata:      map[string]any{"reason": "CREATE_DISABLED", "requested_method": "QRIS", "request_fingerprint": fingerprint},
+		},
+	}
+	for _, params := range valid {
+		if err := params.Validate(); err != nil {
+			t.Fatalf("valid payment create audit rejected: %v", err)
+		}
+	}
+	invalid := valid[0]
+	invalid.Metadata["command_type"] = "UNKNOWN_COMMAND"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("invalid provider command audit accepted")
 	}
 }

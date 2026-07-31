@@ -1,6 +1,7 @@
 package payments
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"lapangango-api/internal/paymentflow"
 	"lapangango-api/internal/paymentoutbox"
 )
 
@@ -16,10 +19,7 @@ func TestPaymentProviderOutboxAtomicReplayConflictAndLeaseRecovery(t *testing.T)
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-atomic"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-atomic")
 
 	params := outboxParams(attempt)
 	tx, err := pool.Begin(ctx)
@@ -215,10 +215,7 @@ func TestPaymentProviderOutboxMalformedResponseRetriesOnlyOnce(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-malformed"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-malformed")
 	params := outboxParams(attempt)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -272,10 +269,7 @@ func TestPaymentProviderOutboxLeaseDurationUsesDatabasePrecision(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-lease-duration"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-lease-duration")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin command transaction: %v", err)
@@ -316,14 +310,73 @@ func TestPaymentProviderOutboxLeaseDurationUsesDatabasePrecision(t *testing.T) {
 	}
 }
 
+func TestPaymentProviderOutboxLeaseStartsAfterBookingFlowLock(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-lock-wait")
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin command transaction: %v", err)
+	}
+	if _, err := outbox.EnqueueTx(ctx, tx, outboxParams(attempt)); err != nil {
+		t.Fatalf("enqueue command: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit command: %v", err)
+	}
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin booking-flow blocker: %v", err)
+	}
+	defer blocker.Rollback(ctx)
+	if err := paymentflow.LockBooking(ctx, blocker, bookingID); err != nil {
+		t.Fatalf("lock booking flow: %v", err)
+	}
+
+	type claimResult struct {
+		command paymentoutbox.Command
+		err     error
+	}
+	result := make(chan claimResult, 1)
+	go func() {
+		command, claimErr := outbox.ClaimNext(ctx, "worker:"+uuid.NewString(), 50*time.Millisecond)
+		result <- claimResult{command: command, err: claimErr}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release booking-flow blocker: %v", err)
+	}
+
+	claimed := <-result
+	if claimed.err != nil || claimed.command.LeaseExpiresAt == nil {
+		t.Fatalf("claim after booking-flow wait = %#v, %v", claimed.command, claimed.err)
+	}
+	var databaseNow time.Time
+	if err := pool.QueryRow(ctx, `SELECT statement_timestamp()`).Scan(&databaseNow); err != nil {
+		t.Fatalf("read database clock after claim: %v", err)
+	}
+	if !claimed.command.LeaseExpiresAt.After(databaseNow) {
+		t.Fatalf(
+			"lease expired during advisory wait: expires=%s database_now=%s",
+			claimed.command.LeaseExpiresAt,
+			databaseNow,
+		)
+	}
+	if claimed.command.LeaseExpiresAt.Sub(claimed.command.UpdatedAt) != 50*time.Millisecond {
+		t.Fatalf(
+			"lease duration after advisory wait = %s; want 50ms",
+			claimed.command.LeaseExpiresAt.Sub(claimed.command.UpdatedAt),
+		)
+	}
+}
+
 func TestPaymentProviderOutboxRetryDelayUsesDatabaseClock(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-retry-delay"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-retry-delay")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin command transaction: %v", err)
@@ -392,10 +445,7 @@ func TestPaymentProviderOutboxMalformedRetryBudgetIgnoresPriorClaims(t *testing.
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-mixed-malformed"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-mixed-malformed")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin command transaction: %v", err)
@@ -447,10 +497,7 @@ func TestPaymentProviderOutboxMarkTerminalCompletesAndCannotReplay(t *testing.T)
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-terminal"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-terminal")
 	params := outboxParams(attempt)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -506,10 +553,7 @@ func TestPaymentProviderOutboxConcurrentClaimDoesNotDuplicate(t *testing.T) {
 	ctx, pool := openPaymentTestDB(t)
 	outbox := paymentoutbox.NewRepository(pool)
 	bookingID := seedRepositoryBooking(t, ctx, pool, true)
-	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, "payment:create:outbox-concurrent"))
-	if err != nil {
-		t.Fatalf("create attempt: %v", err)
-	}
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:create:outbox-concurrent")
 	params := outboxParams(attempt)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -557,6 +601,54 @@ func TestPaymentProviderOutboxConcurrentClaimDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestPaymentProviderOutboxClaimsInquiryAfterBookingCancellation(t *testing.T) {
+	ctx, pool := openPaymentTestDB(t)
+	outbox := paymentoutbox.NewRepository(pool)
+	bookingID := seedRepositoryBooking(t, ctx, pool, true)
+	attempt := createOutboxTestAttempt(t, ctx, pool, bookingID, "payment:inquiry:cancelled-booking")
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE payment_attempts
+		SET state = 'PENDING', updated_at = transaction_timestamp()
+		WHERE id = $1
+	`, attempt.ID); err != nil {
+		t.Fatalf("mark uncertain payment attempt pending: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE bookings
+		SET status = 'CANCELLED', updated_at = transaction_timestamp()
+		WHERE id = $1
+	`, bookingID); err != nil {
+		t.Fatalf("cancel booking before inquiry: %v", err)
+	}
+
+	params := outboxParams(attempt)
+	params.CommandType = paymentoutbox.CommandPaymentInquiry
+	params.IdempotencyKey = paymentoutbox.DeterministicInquiryKey(attempt.ID)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin inquiry enqueue: %v", err)
+	}
+	enqueued, err := outbox.EnqueueTx(ctx, tx, params)
+	if err != nil {
+		tx.Rollback(ctx)
+		t.Fatalf("enqueue reserved payment inquiry: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit inquiry enqueue: %v", err)
+	}
+
+	claimed, err := outbox.ClaimNext(ctx, "worker:"+uuid.NewString(), time.Minute)
+	if err != nil {
+		t.Fatalf("claim inquiry after booking cancellation: %v", err)
+	}
+	if claimed.ID != enqueued.Command.ID ||
+		claimed.CommandType != paymentoutbox.CommandPaymentInquiry ||
+		claimed.State != paymentoutbox.StateLeased {
+		t.Fatalf("claimed command = %#v; want leased inquiry %s", claimed, enqueued.Command.ID)
+	}
+}
+
 func outboxParams(attempt PaymentAttempt) paymentoutbox.EnqueueParams {
 	return paymentoutbox.EnqueueParams{
 		CommandType:      paymentoutbox.CommandPaymentCreate,
@@ -572,4 +664,23 @@ func outboxParams(attempt PaymentAttempt) paymentoutbox.EnqueueParams {
 			RequestedMethod: string(attempt.RequestedMethod),
 		},
 	}
+}
+
+func createOutboxTestAttempt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, bookingID, reference string) PaymentAttempt {
+	t.Helper()
+	attempt, err := NewRepository(pool).CreateOrReplayAttempt(ctx, validCreateParams(bookingID, reference))
+	if err != nil {
+		t.Fatalf("create outbox test attempt: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payment_create_contracts (
+			payment_attempt_id, request_hash, requested_expires_at,
+			success_return_url, cancel_return_url
+		) VALUES ($1, $2, $3, $4, $5)
+	`, attempt.ID, attempt.RequestHash, attempt.ExpiresAt,
+		"https://demo.example.test/payments/return/"+attempt.LocalReference+"/success",
+		"https://demo.example.test/payments/return/"+attempt.LocalReference+"/cancel"); err != nil {
+		t.Fatalf("create outbox test contract: %v", err)
+	}
+	return attempt
 }

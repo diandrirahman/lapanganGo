@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,13 +12,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestSetupRouterFailsClosedWhenPaymentWorkerActivationIsRequested(t *testing.T) {
+	cfg := config.Config{PaymentCreateEnabled: true}
+	_, _, err := setupRouter(context.Background(), cfg, nil, true)
+	if !errors.Is(err, errPaymentProviderAdapterContractBlocked) {
+		t.Fatalf("error = %v; want provider adapter contract guard", err)
+	}
+}
+
 func TestRouterWiring_FinanceAdminDisabled(t *testing.T) {
 	// Only run this test if a database is available (we can reuse the logic of starting a test pool or just skip if we can't easily mock)
 	// Since setupRouter requires a real pgxpool due to all repositories being initialized, we should test it with a test database if available.
-	
+
 	// Skip for simple unit tests if no DB URL is provided.
 	dbURL := "postgres://lapangango_user:lapangango_password@localhost:5432/lapangango_db?sslmode=disable"
-	
+
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -49,7 +58,7 @@ func TestRouterWiring_FinanceAdminDisabled(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Expected 404 Not Found when finance admin is disabled, got %d", w.Code)
 	}
-	
+
 	// Test a normal route - it should exist (might return 401 Unauthorized but NOT 404)
 	req2, _ := http.NewRequest("GET", "/admin/users", nil)
 	w2 := httptest.NewRecorder()

@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"time"
 
+	"lapangango-api/internal/audit"
+	"lapangango-api/internal/paymentflow"
+
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Repository struct {
-	db *pgxpool.Pool
+	db                   *pgxpool.Pool
+	platformAuditService audit.PlatformService
 }
 
 type CourtValidationInfo struct {
@@ -130,7 +135,10 @@ type OwnerBooking struct {
 var ErrCourtNotFound = errors.New("court not found")
 
 func NewRepository(db *pgxpool.Pool) *Repository {
-	return &Repository{db: db}
+	return &Repository{
+		db:                   db,
+		platformAuditService: audit.NewPlatformService(audit.NewPlatformRepository()),
+	}
 }
 
 func (r *Repository) LockCourtValidationInfo(ctx context.Context, tx pgx.Tx, courtID string) (CourtValidationInfo, error) {
@@ -508,20 +516,157 @@ func (r *Repository) InsertOfflineBookingTx(ctx context.Context, tx pgx.Tx, para
 }
 
 func (r *Repository) CancelPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error) {
+	return r.cancelPendingByIDAndCustomerID(ctx, bookingID, customerID, &customerID, "CUSTOMER", false)
+}
+
+func (r *Repository) cancelPendingByIDAndCustomerID(
+	ctx context.Context,
+	bookingID string,
+	customerID string,
+	actorUserID *string,
+	actorRole string,
+	requireExpired bool,
+) (Booking, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Booking{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return Booking{}, err
+	}
+	attempts, err := lockUndispatchedPaymentAttemptsTx(ctx, tx, bookingID)
+	if err != nil {
+		return Booking{}, err
+	}
+	if err := r.cancelUndispatchedPaymentAttemptsTx(ctx, tx, attempts, actorUserID, actorRole); err != nil {
+		return Booking{}, err
+	}
+
 	query := `
 		UPDATE bookings
 		SET status = 'CANCELLED', updated_at = now()
 		WHERE id = $1 AND customer_id = $2 AND status = 'PENDING_PAYMENT'
+		  AND (
+		      NOT $3::boolean
+		      OR (expires_at IS NOT NULL AND expires_at <= transaction_timestamp())
+		  )
 		RETURNING id::text, customer_id::text, court_id::text, booking_date, start_time, end_time, original_price, discount_amount, final_price, promo_id::text, promo_code, total_price, status, payment_reference, expires_at, created_at, updated_at
 	`
-	b, err := scanBooking(r.db.QueryRow(ctx, query, bookingID, customerID))
+	b, err := scanBooking(tx.QueryRow(ctx, query, bookingID, customerID, requireExpired))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
 		}
 		return b, err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return Booking{}, err
+	}
 	return b, nil
+}
+
+type undispatchedPaymentAttempt struct {
+	ID             string
+	AttemptNo      int16
+	LocalReference string
+}
+
+func lockUndispatchedPaymentAttemptsTx(ctx context.Context, tx pgx.Tx, bookingID string) ([]undispatchedPaymentAttempt, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, attempt_no, local_reference
+		FROM payment_attempts
+		WHERE booking_id = $1
+		  AND state = 'CREATED'
+		ORDER BY attempt_no
+		FOR UPDATE
+	`, bookingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attempts []undispatchedPaymentAttempt
+	for rows.Next() {
+		var attempt undispatchedPaymentAttempt
+		if err := rows.Scan(&attempt.ID, &attempt.AttemptNo, &attempt.LocalReference); err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
+func (r *Repository) cancelUndispatchedPaymentAttemptsTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	attempts []undispatchedPaymentAttempt,
+	actorUserID *string,
+	actorRole string,
+) error {
+	for _, attempt := range attempts {
+		var commandID string
+		var commandState string
+		var commandAttemptCount int
+		err := tx.QueryRow(ctx, `
+			SELECT id::text, state, attempt_count
+			FROM payment_provider_commands
+			WHERE command_type = 'PAYMENT_CREATE'
+			  AND payment_attempt_id = $1
+			FOR UPDATE
+		`, attempt.ID).Scan(&commandID, &commandState, &commandAttemptCount)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSandboxPaymentCancelUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if commandState != "PENDING" || commandAttemptCount != 0 {
+			return ErrSandboxPaymentCancelUnavailable
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE payment_attempts
+			SET state = 'CANCELLED',
+			    updated_at = transaction_timestamp()
+			WHERE id = $1
+			  AND state = 'CREATED'
+		`, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrSandboxPaymentCancelUnavailable
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO payment_create_cancellations (
+				payment_attempt_id, command_id, actor_user_id, reason
+			) VALUES ($1, $2, $3, 'BOOKING_CANCELLED')
+		`, attempt.ID, commandID, actorUserID); err != nil {
+			return err
+		}
+
+		entityID := attempt.ID
+		correlationID := attempt.LocalReference
+		if err := r.platformAuditService.Record(ctx, tx, audit.CreatePlatformAuditLogParams{
+			ActorUserID:   actorUserID,
+			ActorRole:     actorRole,
+			Action:        audit.ActionPaymentStateTransition,
+			EntityType:    audit.EntityPaymentAttempt,
+			EntityID:      &entityID,
+			CorrelationID: &correlationID,
+			Metadata: map[string]any{
+				"from_state":   "CREATED",
+				"to_state":     "CANCELLED",
+				"attempt_no":   int(attempt.AttemptNo),
+				"late_capture": false,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) ConfirmPendingByIDAndCustomerID(ctx context.Context, bookingID, customerID string) (Booking, error) {
@@ -539,7 +684,7 @@ func (r *Repository) ConfirmPendingByIDAndCustomerID(ctx context.Context, bookin
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
 		}
-		return b, err
+		return b, mapSandboxPaymentFlowError(err)
 	}
 	return b, nil
 }
@@ -558,7 +703,7 @@ func (r *Repository) UpdatePaymentReference(ctx context.Context, bookingID, cust
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
 		}
-		return b, err
+		return b, mapSandboxPaymentFlowError(err)
 	}
 	return b, nil
 }
@@ -589,7 +734,7 @@ func (r *Repository) VerifyPayment(ctx context.Context, ownerUserID string, book
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
 		}
-		return b, err
+		return b, mapSandboxPaymentFlowError(err)
 	}
 
 	if isApproved {
@@ -617,7 +762,7 @@ func (r *Repository) VerifyPayment(ctx context.Context, ownerUserID string, book
 		`
 		_, err = tx.Exec(ctx, financeQuery, bookingID, ownerUserID)
 		if err != nil {
-			return b, err
+			return b, mapSandboxPaymentFlowError(err)
 		}
 	}
 
@@ -647,7 +792,7 @@ func (r *Repository) MarkBookingPaid(ctx context.Context, ownerUserID string, bo
 		if err == pgx.ErrNoRows {
 			return b, pgx.ErrNoRows
 		}
-		return b, err
+		return b, mapSandboxPaymentFlowError(err)
 	}
 
 	financeQuery := `
@@ -673,7 +818,7 @@ func (r *Repository) MarkBookingPaid(ctx context.Context, ownerUserID string, bo
 	`
 	_, err = tx.Exec(ctx, financeQuery, bookingID, ownerUserID)
 	if err != nil {
-		return b, err
+		return b, mapSandboxPaymentFlowError(err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -987,18 +1132,64 @@ func (r *Repository) GetOwnerMetrics(ctx context.Context, ownerProfileID string,
 }
 
 func (r *Repository) CancelExpiredPendingBookings(ctx context.Context) (int64, error) {
-	query := `
-		UPDATE bookings
-		SET status = 'CANCELLED', updated_at = NOW()
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, customer_id::text
+		FROM bookings
 		WHERE status = 'PENDING_PAYMENT'
 		  AND expires_at IS NOT NULL
-		  AND expires_at <= NOW()
-	`
-	cmdTag, err := r.db.Exec(ctx, query)
+		  AND expires_at <= transaction_timestamp()
+		ORDER BY expires_at, id
+	`)
 	if err != nil {
 		return 0, err
 	}
-	return cmdTag.RowsAffected(), nil
+	type expiredBooking struct {
+		ID         string
+		CustomerID string
+	}
+	var candidates []expiredBooking
+	for rows.Next() {
+		var candidate expiredBooking
+		if err := rows.Scan(&candidate.ID, &candidate.CustomerID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	var cancelled int64
+	var failed int
+	var firstErr error
+	for _, candidate := range candidates {
+		_, err := r.cancelPendingByIDAndCustomerID(
+			ctx,
+			candidate.ID,
+			candidate.CustomerID,
+			nil,
+			"SYSTEM",
+			true,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cancelled++
+	}
+	if firstErr != nil {
+		return cancelled, fmt.Errorf("failed to cancel %d expired bookings: %w", failed, firstErr)
+	}
+	return cancelled, nil
 }
 
 func (r *Repository) ListOwnerBookings(ctx context.Context, ownerProfileID string, query OwnerBookingsQuery, limit, offset int) ([]OwnerBooking, int, error) {
@@ -1326,4 +1517,15 @@ func scanBooking(row pgx.Row) (Booking, error) {
 		&b.UpdatedAt,
 	)
 	return b, err
+}
+
+func mapSandboxPaymentFlowError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) &&
+		pgErr.Code == "55000" &&
+		(pgErr.Message == "legacy booking payment transition blocked by sandbox payment attempt" ||
+			pgErr.Message == "legacy owner cash insertion blocked by sandbox payment attempt") {
+		return ErrSandboxPaymentFlowConflict
+	}
+	return err
 }

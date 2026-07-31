@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"lapangango-api/internal/audit"
+	"lapangango-api/internal/paymentflow"
 	"strconv"
 	"strings"
 	"time"
@@ -15,17 +16,19 @@ import (
 )
 
 var (
-	ErrAttemptNotFound      = errors.New("payment attempt not found")
-	ErrBookingNotFound      = errors.New("booking not found")
-	ErrSnapshotNotFound     = errors.New("payment fee snapshot not found")
-	ErrStateConflict        = errors.New("payment state conflict")
-	ErrInvalidTransition    = errors.New("invalid payment state transition")
-	ErrIdempotencyConflict  = errors.New("payment idempotency conflict")
-	ErrCaptureConflict      = errors.New("payment capture conflict")
-	ErrAlreadyCaptured      = errors.New("payment already captured")
-	ErrPaymentIntegrity     = errors.New("payment integrity error")
-	ErrInvalidCapture       = errors.New("invalid payment capture")
-	ErrInvalidCreateAttempt = errors.New("invalid payment attempt creation")
+	ErrAttemptNotFound        = errors.New("payment attempt not found")
+	ErrBookingNotFound        = errors.New("booking not found")
+	ErrSnapshotNotFound       = errors.New("payment fee snapshot not found")
+	ErrStateConflict          = errors.New("payment state conflict")
+	ErrInvalidTransition      = errors.New("invalid payment state transition")
+	ErrIdempotencyConflict    = errors.New("payment idempotency conflict")
+	ErrCaptureConflict        = errors.New("payment capture conflict")
+	ErrAlreadyCaptured        = errors.New("payment already captured")
+	ErrPaymentIntegrity       = errors.New("payment integrity error")
+	ErrInvalidCapture         = errors.New("invalid payment capture")
+	ErrInvalidCreateAttempt   = errors.New("invalid payment attempt creation")
+	ErrInvalidInquiryIdentity = errors.New("invalid payment inquiry identity")
+	ErrBookingNotPayable      = errors.New("booking is not eligible for payment")
 )
 
 type DBTX interface {
@@ -40,15 +43,48 @@ type Repository struct {
 }
 
 type CreateAttemptParams struct {
-	BookingID           string
-	Provider            Provider
-	ProviderEnvironment ProviderEnvironment
-	RequestedMethod     RequestedMethod
-	IntegrationMode     IntegrationMode
-	CaptureMethod       CaptureMethod
-	LocalReference      string
-	RequestHash         string
-	ExpiresAt           time.Time
+	BookingID            string
+	CustomerID           string
+	ActorUserID          *string
+	ActorRole            string
+	CorrelationID        string
+	RejectActiveAttempt  bool
+	RequireCanonicalHash bool
+	Provider             Provider
+	ProviderEnvironment  ProviderEnvironment
+	RequestedMethod      RequestedMethod
+	IntegrationMode      IntegrationMode
+	CaptureMethod        CaptureMethod
+	LocalReference       string
+	RequestHash          string
+	ExpiresAt            time.Time
+	SuccessReturnURL     string
+	CancelReturnURL      string
+}
+
+type PaymentCreationFacts struct {
+	AmountRupiah     int64
+	BookingCreatedAt time.Time
+	BookingExpiresAt time.Time
+}
+
+type PaymentCreateContract struct {
+	PaymentAttemptID   string
+	RequestHash        string
+	RequestedExpiresAt time.Time
+	SuccessReturnURL   string
+	CancelReturnURL    string
+	CreatedAt          time.Time
+}
+
+type PaymentAttemptCreateFacts struct {
+	Attempt  PaymentAttempt
+	Contract PaymentCreateContract
+}
+
+type CustomerPaymentAttemptStatus struct {
+	Attempt          PaymentAttempt
+	CheckoutEligible bool
 }
 
 type PaymentAttempt struct {
@@ -76,6 +112,23 @@ type PaymentAttempt struct {
 	UpdatedAt            time.Time
 }
 
+// ApplyCreateProviderResultParams contains only normalized provider facts.
+// Raw provider bodies and credentials are intentionally not representable.
+type ApplyCreateProviderResultParams struct {
+	AttemptID            string
+	Provider             Provider
+	ProviderEnvironment  ProviderEnvironment
+	ProviderSessionID    string
+	ProviderPaymentReqID *string
+	ProviderPaymentID    *string
+	ProviderStatusCode   string
+	CheckoutURL          *string
+	ProviderExpiresAt    *time.Time
+	Status               PaymentStatus
+	AmountRupiah         int64
+	Currency             Currency
+}
+
 type CaptureParams struct {
 	AttemptID            string
 	Provider             Provider
@@ -89,6 +142,21 @@ type CaptureParams struct {
 	Authority            string
 	SourceReference      string
 	PayloadHash          string
+}
+
+// ApplyInquiryIdentityParams contains only provider-neutral identity facts
+// discovered while querying an existing checkout session or payment object.
+// It deliberately cannot carry state, amount, currency, expiry, or raw
+// provider data.
+type ApplyInquiryIdentityParams struct {
+	AttemptID            string
+	Provider             Provider
+	ProviderEnvironment  ProviderEnvironment
+	Scope                PaymentInquiryScope
+	ProviderSessionID    *string
+	ProviderPaymentReqID *string
+	ProviderPaymentID    *string
+	ProviderStatusCode   string
 }
 
 type CaptureResult struct {
@@ -135,28 +203,91 @@ func (r *Repository) CreateOrReplayAttempt(ctx context.Context, params CreateAtt
 	}
 	defer tx.Rollback(ctx)
 
-	if err := lockCreateIdempotency(ctx, tx, params.Provider, params.ProviderEnvironment, params.LocalReference); err != nil {
+	attempt, _, err := r.CreateOrReplayAttemptTx(ctx, tx, params)
+	if err != nil {
 		return PaymentAttempt{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PaymentAttempt{}, err
+	}
+	return attempt, nil
+}
+
+// CreateOrReplayAttemptTx creates or replays an attempt inside the caller's
+// transaction. It never begins, commits, or rolls back the transaction. The
+// bool result is true when the existing immutable attempt was replayed.
+func (r *Repository) CreateOrReplayAttemptTx(ctx context.Context, tx pgx.Tx, params CreateAttemptParams) (PaymentAttempt, bool, error) {
+	// PostgreSQL stores timestamptz at microsecond precision. Normalize before
+	// idempotency comparison and hashing so the first insert and later replay
+	// use the exact same immutable expiry value.
+	params.ExpiresAt = params.ExpiresAt.UTC().Truncate(time.Microsecond)
+	if err := validateCreateAttemptParams(params); err != nil {
+		return PaymentAttempt{}, false, err
+	}
+
+	if err := paymentflow.LockBooking(ctx, tx, params.BookingID); err != nil {
+		return PaymentAttempt{}, false, err
+	}
+	if err := lockCreateIdempotency(ctx, tx, params.Provider, params.ProviderEnvironment, params.LocalReference); err != nil {
+		return PaymentAttempt{}, false, err
 	}
 
 	if existing, err := findAttemptByProviderReference(ctx, tx, params.Provider, params.ProviderEnvironment, params.LocalReference, true); err != nil {
-		return PaymentAttempt{}, err
+		return PaymentAttempt{}, false, err
 	} else if existing != nil {
-		if !sameCreateAttempt(existing, params) {
-			return PaymentAttempt{}, ErrIdempotencyConflict
+		if !sameCreateAttemptIdentity(existing, params) {
+			return PaymentAttempt{}, false, ErrIdempotencyConflict
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return PaymentAttempt{}, err
+		if params.RequireCanonicalHash {
+			contract, contractErr := findPaymentCreateContract(ctx, tx, existing.ID, true)
+			if contractErr != nil {
+				return PaymentAttempt{}, false, contractErr
+			}
+			if contract == nil {
+				return PaymentAttempt{}, false, ErrPaymentIntegrity
+			}
+			if !samePaymentCreateContract(*contract, params) {
+				return PaymentAttempt{}, false, ErrIdempotencyConflict
+			}
+		} else if !existing.ExpiresAt.Equal(params.ExpiresAt) {
+			return PaymentAttempt{}, false, ErrIdempotencyConflict
 		}
-		return *existing, nil
+		if params.CustomerID != "" {
+			if err := verifyPaymentBookingCustomer(ctx, tx, params.BookingID, params.CustomerID); err != nil {
+				return PaymentAttempt{}, false, err
+			}
+		}
+		return *existing, true, nil
 	}
 
-	if !params.ExpiresAt.After(time.Now()) {
-		return PaymentAttempt{}, ErrInvalidCreateAttempt
+	var notExpired bool
+	if err := tx.QueryRow(ctx, `SELECT $1::timestamptz > transaction_timestamp()`, params.ExpiresAt).Scan(&notExpired); err != nil {
+		return PaymentAttempt{}, false, err
+	}
+	if !notExpired {
+		return PaymentAttempt{}, false, ErrInvalidCreateAttempt
 	}
 
-	if err := lockBooking(ctx, tx, params.BookingID); err != nil {
-		return PaymentAttempt{}, err
+	bookingExpiresAt, err := lockPaymentBooking(ctx, tx, params.BookingID, params.CustomerID)
+	if err != nil {
+		return PaymentAttempt{}, false, err
+	}
+	if params.ExpiresAt.After(bookingExpiresAt) {
+		return PaymentAttempt{}, false, ErrInvalidCreateAttempt
+	}
+	if params.RejectActiveAttempt {
+		var active bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM payment_attempts
+				WHERE booking_id = $1 AND state IN ('CREATED', 'PENDING')
+			)
+		`, params.BookingID).Scan(&active); err != nil {
+			return PaymentAttempt{}, false, err
+		}
+		if active {
+			return PaymentAttempt{}, false, ErrStateConflict
+		}
 	}
 
 	var snapshotAmount int64
@@ -170,10 +301,24 @@ func (r *Repository) CreateOrReplayAttempt(ctx context.Context, params CreateAtt
 		FOR KEY SHARE
 	`, params.BookingID).Scan(&snapshotAmount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return PaymentAttempt{}, ErrSnapshotNotFound
+		return PaymentAttempt{}, false, ErrSnapshotNotFound
 	}
 	if err != nil {
-		return PaymentAttempt{}, err
+		return PaymentAttempt{}, false, err
+	}
+	if params.RequireCanonicalHash {
+		expectedHash := createRequestHash(createRequestHashInput{
+			AmountRupiah:     snapshotAmount,
+			BookingID:        params.BookingID,
+			CancelReturnURL:  params.CancelReturnURL,
+			ExpiresAt:        params.ExpiresAt,
+			LocalReference:   params.LocalReference,
+			RequestedMethod:  params.RequestedMethod,
+			SuccessReturnURL: params.SuccessReturnURL,
+		})
+		if params.RequestHash != expectedHash {
+			return PaymentAttempt{}, false, ErrInvalidCreateAttempt
+		}
 	}
 
 	if _, err := ValidatePaymentAttemptInput(PaymentAttemptInput{
@@ -188,7 +333,7 @@ func (r *Repository) CreateOrReplayAttempt(ctx context.Context, params CreateAtt
 		LocalReference:      params.LocalReference,
 		RequestHash:         params.RequestHash,
 	}); err != nil {
-		return PaymentAttempt{}, ErrInvalidCreateAttempt
+		return PaymentAttempt{}, false, ErrInvalidCreateAttempt
 	}
 
 	var attempt PaymentAttempt
@@ -220,18 +365,22 @@ func (r *Repository) CreateOrReplayAttempt(ctx context.Context, params CreateAtt
 		params.ExpiresAt), &attempt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return PaymentAttempt{}, ErrSnapshotNotFound
+			return PaymentAttempt{}, false, ErrSnapshotNotFound
 		}
-		return PaymentAttempt{}, mapPaymentRepositoryError(err)
+		return PaymentAttempt{}, false, mapPaymentRepositoryError(err)
 	}
 
-	if err := r.writePaymentAudit(ctx, tx, attempt, "", string(AttemptStateCreated), false); err != nil {
-		return PaymentAttempt{}, err
+	if params.RequireCanonicalHash {
+		if err := insertPaymentCreateContract(ctx, tx, attempt.ID, params); err != nil {
+			return PaymentAttempt{}, false, err
+		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return PaymentAttempt{}, err
+
+	if err := r.writePaymentAuditWithActor(ctx, tx, attempt, "", string(AttemptStateCreated), false,
+		params.ActorUserID, params.ActorRole, params.CorrelationID); err != nil {
+		return PaymentAttempt{}, false, err
 	}
-	return attempt, nil
+	return attempt, false, nil
 }
 
 func (r *Repository) GetAttemptByID(ctx context.Context, id string) (PaymentAttempt, error) {
@@ -244,6 +393,194 @@ func (r *Repository) GetAttemptByID(ctx context.Context, id string) (PaymentAtte
 		return PaymentAttempt{}, ErrAttemptNotFound
 	}
 	return attempt, err
+}
+
+// GetAttemptTx reads an attempt using the caller's transaction. Worker
+// terminal/audit paths use this to keep the observed attempt facts and the
+// command lifecycle in the same atomic boundary without taking a second
+// mutable row lock after the command lease row has been finalized.
+func (r *Repository) GetAttemptTx(ctx context.Context, tx pgx.Tx, id string) (PaymentAttempt, error) {
+	if tx == nil {
+		return PaymentAttempt{}, ErrPaymentIntegrity
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	var attempt PaymentAttempt
+	err := scanPaymentAttempt(tx.QueryRow(ctx, paymentAttemptSelect+` WHERE id = $1`, id), &attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	return attempt, err
+}
+
+// LockAttemptForFinalizationTx obtains the booking-flow lock before locking
+// the latest attempt row. Worker finalizers use it before changing a leased
+// command so a terminal attempt and the command's no-op completion share one
+// atomic boundary and preserve the global booking -> attempt -> command order.
+func (r *Repository) LockAttemptForFinalizationTx(ctx context.Context, tx pgx.Tx, id string) (PaymentAttempt, error) {
+	if tx == nil {
+		return PaymentAttempt{}, ErrPaymentIntegrity
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	var bookingID string
+	if err := tx.QueryRow(ctx, `SELECT booking_id::text FROM payment_attempts WHERE id = $1::uuid`, id).Scan(&bookingID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, ErrAttemptNotFound
+		}
+		return PaymentAttempt{}, err
+	}
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return PaymentAttempt{}, err
+	}
+	var attempt PaymentAttempt
+	err := scanPaymentAttempt(tx.QueryRow(ctx, paymentAttemptSelect+` WHERE id = $1::uuid FOR UPDATE`, id), &attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	return attempt, err
+}
+
+// GetAttemptByIDForCustomer applies ownership at the database boundary and
+// deliberately returns the same not-found error for an unknown or foreign
+// attempt to avoid resource enumeration.
+func (r *Repository) GetAttemptByIDForCustomer(ctx context.Context, id, customerID string) (CustomerPaymentAttemptStatus, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return CustomerPaymentAttemptStatus{}, ErrAttemptNotFound
+	}
+	if _, err := uuid.Parse(customerID); err != nil {
+		return CustomerPaymentAttemptStatus{}, ErrAttemptNotFound
+	}
+	var status CustomerPaymentAttemptStatus
+	err := scanCustomerPaymentAttemptStatus(r.db.QueryRow(ctx, paymentAttemptStatusSelectForCustomer+`
+		WHERE pa.id = $1 AND b.customer_id = $2`, id, customerID), &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CustomerPaymentAttemptStatus{}, ErrAttemptNotFound
+	}
+	return status, err
+}
+
+// GetAttemptByReferenceForCustomer allows the orchestration boundary to
+// recover an original idempotent result before re-evaluating mutable booking
+// eligibility. Unknown and foreign references remain indistinguishable.
+func (r *Repository) GetAttemptByReferenceForCustomer(ctx context.Context, bookingID, customerID, localReference string) (PaymentAttempt, error) {
+	if _, err := uuid.Parse(bookingID); err != nil {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	if _, err := uuid.Parse(customerID); err != nil || !isSafeLocalReference(localReference) {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	var attempt PaymentAttempt
+	err := scanPaymentAttempt(r.db.QueryRow(ctx, paymentAttemptSelectForCustomer+`
+		WHERE pa.booking_id = $1
+		  AND b.customer_id = $2
+		  AND pa.provider = $3
+		  AND pa.provider_environment = $4
+		  AND pa.local_reference = $5
+	`, bookingID, customerID, ProviderXendit, ProviderEnvironmentTest, localReference), &attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	return attempt, err
+}
+
+// GetAttemptCreateFactsByReferenceForCustomer returns the original immutable
+// provider-create facts together with the current local attempt. It is used for
+// replay so mutable provider result fields and current runtime configuration
+// can never alter the canonical request.
+func (r *Repository) GetAttemptCreateFactsByReferenceForCustomer(ctx context.Context, bookingID, customerID, localReference string) (PaymentAttemptCreateFacts, error) {
+	attempt, err := r.GetAttemptByReferenceForCustomer(ctx, bookingID, customerID, localReference)
+	if err != nil {
+		return PaymentAttemptCreateFacts{}, err
+	}
+	contract, err := r.GetCreateContractByAttemptID(ctx, attempt.ID)
+	if err != nil {
+		if errors.Is(err, ErrAttemptNotFound) {
+			return PaymentAttemptCreateFacts{}, ErrPaymentIntegrity
+		}
+		return PaymentAttemptCreateFacts{}, err
+	}
+	return PaymentAttemptCreateFacts{Attempt: attempt, Contract: contract}, nil
+}
+
+// GetAttemptByLocalReferenceForCustomer resolves the opaque checkout return
+// reference without exposing whether a foreign reference exists.
+func (r *Repository) GetAttemptByLocalReferenceForCustomer(ctx context.Context, customerID, localReference string) (CustomerPaymentAttemptStatus, error) {
+	if _, err := uuid.Parse(customerID); err != nil || !isSafeLocalReference(localReference) {
+		return CustomerPaymentAttemptStatus{}, ErrAttemptNotFound
+	}
+	var status CustomerPaymentAttemptStatus
+	err := scanCustomerPaymentAttemptStatus(r.db.QueryRow(ctx, paymentAttemptStatusSelectForCustomer+`
+		WHERE b.customer_id = $1
+		  AND pa.provider = $2
+		  AND pa.provider_environment = $3
+		  AND pa.local_reference = $4
+	`, customerID, ProviderXendit, ProviderEnvironmentTest, localReference), &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CustomerPaymentAttemptStatus{}, ErrAttemptNotFound
+	}
+	return status, err
+}
+
+// GetCreateContractByAttemptID is the future provider worker's durable source
+// for the exact expiry and return URLs that were hashed at enqueue time.
+func (r *Repository) GetCreateContractByAttemptID(ctx context.Context, attemptID string) (PaymentCreateContract, error) {
+	if _, err := uuid.Parse(attemptID); err != nil {
+		return PaymentCreateContract{}, ErrAttemptNotFound
+	}
+	contract, err := findPaymentCreateContract(ctx, r.db, attemptID, false)
+	if err != nil {
+		return PaymentCreateContract{}, err
+	}
+	if contract == nil {
+		return PaymentCreateContract{}, ErrAttemptNotFound
+	}
+	return *contract, nil
+}
+
+func (r *Repository) GetPaymentCreationFacts(ctx context.Context, bookingID, customerID string) (PaymentCreationFacts, error) {
+	if _, err := uuid.Parse(bookingID); err != nil {
+		return PaymentCreationFacts{}, ErrBookingNotFound
+	}
+	if _, err := uuid.Parse(customerID); err != nil {
+		return PaymentCreationFacts{}, ErrBookingNotFound
+	}
+	var facts PaymentCreationFacts
+	var amount *int64
+	var bookingExpiresAt *time.Time
+	var status string
+	var payable bool
+	err := r.db.QueryRow(ctx, `
+		SELECT b.status, b.created_at, b.expires_at,
+		       COALESCE(b.expires_at > transaction_timestamp(), false),
+		       (
+		           SELECT s.customer_charge_amount_rupiah
+		           FROM booking_fee_snapshots s
+		           WHERE s.booking_id = b.id
+		             AND s.booking_channel = 'MARKETPLACE_ONLINE'
+		             AND s.finance_mode = 'SIMULATION'
+		             AND s.currency = 'IDR'
+		       )
+		FROM bookings b
+		WHERE b.id = $1 AND b.customer_id = $2
+	`, bookingID, customerID).Scan(&status, &facts.BookingCreatedAt, &bookingExpiresAt, &payable, &amount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PaymentCreationFacts{}, ErrBookingNotFound
+	}
+	if err != nil {
+		return PaymentCreationFacts{}, err
+	}
+	if status != "PENDING_PAYMENT" || bookingExpiresAt == nil || !payable {
+		return PaymentCreationFacts{}, ErrBookingNotPayable
+	}
+	if amount == nil {
+		return PaymentCreationFacts{}, ErrSnapshotNotFound
+	}
+	facts.AmountRupiah = *amount
+	facts.BookingExpiresAt = bookingExpiresAt.UTC()
+	return facts, nil
 }
 
 func (r *Repository) GetAttemptsByBooking(ctx context.Context, bookingID string) ([]PaymentAttempt, error) {
@@ -287,6 +624,237 @@ func (r *Repository) GetNextAttemptNumber(ctx context.Context, bookingID string)
 	return next, err
 }
 
+// ApplyCreateProviderResultTx stores a normalized create result while keeping
+// the attempt in a non-terminal state. A create response never proves capture;
+// capture remains exclusive to an authenticated inquiry/webhook fact path.
+func (r *Repository) ApplyCreateProviderResultTx(ctx context.Context, tx pgx.Tx, params ApplyCreateProviderResultParams) (PaymentAttempt, error) {
+	if tx == nil || !validProviderResultIdentity(params) || params.Status != PaymentStatusPending ||
+		params.ProviderStatusCode == "" || params.ProviderStatusCode == "CAPTURED" {
+		return PaymentAttempt{}, ErrInvalidCapture
+	}
+	if params.CheckoutURL != nil && !safeCheckoutURL(*params.CheckoutURL) {
+		return PaymentAttempt{}, ErrInvalidCreateAttempt
+	}
+	if params.ProviderExpiresAt != nil {
+		value := params.ProviderExpiresAt.UTC().Truncate(time.Microsecond)
+		params.ProviderExpiresAt = &value
+	}
+
+	var bookingID string
+	if err := tx.QueryRow(ctx, `SELECT booking_id::text FROM payment_attempts WHERE id = $1::uuid`, params.AttemptID).Scan(&bookingID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, ErrAttemptNotFound
+		}
+		return PaymentAttempt{}, err
+	}
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return PaymentAttempt{}, err
+	}
+
+	var current PaymentAttempt
+	if err := scanPaymentAttempt(tx.QueryRow(ctx, paymentAttemptSelect+` WHERE id = $1::uuid FOR UPDATE`, params.AttemptID), &current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, ErrAttemptNotFound
+		}
+		return PaymentAttempt{}, err
+	}
+	if current.Provider != params.Provider || current.ProviderEnvironment != params.ProviderEnvironment ||
+		current.AmountRupiah != params.AmountRupiah || current.Currency != params.Currency {
+		return PaymentAttempt{}, ErrCaptureConflict
+	}
+	if current.ProviderSessionID != nil && *current.ProviderSessionID != params.ProviderSessionID {
+		return PaymentAttempt{}, ErrCaptureConflict
+	}
+	if params.ProviderPaymentReqID != nil && current.ProviderPaymentReqID != nil && *current.ProviderPaymentReqID != *params.ProviderPaymentReqID {
+		return PaymentAttempt{}, ErrCaptureConflict
+	}
+	if params.ProviderPaymentID != nil && current.ProviderPaymentID != nil && *current.ProviderPaymentID != *params.ProviderPaymentID {
+		return PaymentAttempt{}, ErrCaptureConflict
+	}
+	if current.State != AttemptStateCreated && current.State != AttemptStatePending {
+		// A terminal no-op is allowed only after every response identity that
+		// is already bound locally has compared exactly. Identities that remain
+		// unbound are not attached after terminal state. A conflicting late
+		// result is surfaced to reconciliation as an idempotency breach.
+		return current, nil
+	}
+
+	from := current.State
+	query := `
+		UPDATE payment_attempts
+		SET state = 'PENDING',
+		    provider_session_id = COALESCE($2, provider_session_id),
+		    provider_payment_request_id = COALESCE($3, provider_payment_request_id),
+		    provider_payment_id = COALESCE($4, provider_payment_id),
+		    provider_status_code = $5,
+		    checkout_url = COALESCE($6, checkout_url),
+		    expires_at = CASE
+		        WHEN $7::timestamptz IS NULL THEN expires_at
+		        WHEN $7::timestamptz < expires_at THEN $7::timestamptz
+		        ELSE expires_at
+		    END,
+		    updated_at = transaction_timestamp()
+		WHERE id = $1::uuid AND state IN ('CREATED', 'PENDING')
+		RETURNING id::text, booking_id::text, attempt_no, provider, provider_environment,
+		          requested_method, integration_mode, capture_method, state, currency::text,
+		          amount_rupiah, local_reference, request_hash, provider_session_id,
+		          provider_payment_request_id, provider_payment_id, provider_status_code,
+		          checkout_url, expires_at, captured_at, created_at, updated_at
+	`
+	var updated PaymentAttempt
+	if err := scanPaymentAttempt(tx.QueryRow(ctx, query, params.AttemptID, params.ProviderSessionID,
+		params.ProviderPaymentReqID, params.ProviderPaymentID, params.ProviderStatusCode,
+		params.CheckoutURL, params.ProviderExpiresAt), &updated); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, ErrStateConflict
+		}
+		return PaymentAttempt{}, mapPaymentRepositoryError(err)
+	}
+	if from != AttemptStatePending {
+		if err := r.writePaymentAudit(ctx, tx, updated, string(from), string(AttemptStatePending), false); err != nil {
+			return PaymentAttempt{}, err
+		}
+	}
+	return updated, nil
+}
+
+func validProviderResultIdentity(params ApplyCreateProviderResultParams) bool {
+	_, err := uuid.Parse(params.AttemptID)
+	return err == nil &&
+		params.Provider == ProviderXendit && params.ProviderEnvironment == ProviderEnvironmentTest &&
+		ValidProviderIdentity(params.ProviderSessionID, true) &&
+		isSafeProviderStatusCode(params.ProviderStatusCode) &&
+		validOptionalProviderIdentity(params.ProviderPaymentReqID) &&
+		validOptionalProviderIdentity(params.ProviderPaymentID) &&
+		params.AmountRupiah > 0 && params.Currency == CurrencyIDR &&
+		params.Status == PaymentStatusPending
+}
+
+// ApplyInquiryIdentityTx binds provider identities discovered by an inquiry
+// without changing payment authority. It is intentionally transaction-only:
+// the caller must mark the same leased command retryable/succeeded in the
+// same transaction before committing.
+func (r *Repository) ApplyInquiryIdentityTx(ctx context.Context, tx pgx.Tx, params ApplyInquiryIdentityParams) (PaymentAttempt, bool, error) {
+	if tx == nil || !validInquiryIdentityParams(params) {
+		return PaymentAttempt{}, false, ErrInvalidInquiryIdentity
+	}
+
+	var bookingID string
+	if err := tx.QueryRow(ctx, `SELECT booking_id::text FROM payment_attempts WHERE id = $1::uuid`, params.AttemptID).Scan(&bookingID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, false, ErrAttemptNotFound
+		}
+		return PaymentAttempt{}, false, err
+	}
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return PaymentAttempt{}, false, err
+	}
+
+	var current PaymentAttempt
+	if err := scanPaymentAttempt(tx.QueryRow(ctx, paymentAttemptSelect+` WHERE id = $1::uuid FOR UPDATE`, params.AttemptID), &current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, false, ErrAttemptNotFound
+		}
+		return PaymentAttempt{}, false, err
+	}
+	if current.Provider != params.Provider || current.ProviderEnvironment != params.ProviderEnvironment {
+		return current, false, ErrStateConflict
+	}
+
+	if params.Scope == PaymentInquiryScopeCheckoutSession {
+		if current.ProviderSessionID != nil &&
+			(params.ProviderSessionID == nil || *current.ProviderSessionID != *params.ProviderSessionID) {
+			return current, false, ErrCaptureConflict
+		}
+		if current.ProviderPaymentReqID != nil &&
+			(params.ProviderPaymentReqID == nil || *current.ProviderPaymentReqID != *params.ProviderPaymentReqID) {
+			return current, false, ErrCaptureConflict
+		}
+	} else if params.Scope == PaymentInquiryScopePayment {
+		if current.ProviderPaymentReqID != nil &&
+			(params.ProviderPaymentReqID == nil || *current.ProviderPaymentReqID != *params.ProviderPaymentReqID) {
+			return current, false, ErrCaptureConflict
+		}
+		if params.ProviderSessionID != nil && current.ProviderSessionID != nil && *current.ProviderSessionID != *params.ProviderSessionID {
+			return current, false, ErrCaptureConflict
+		}
+		if current.ProviderPaymentID != nil && (params.ProviderPaymentID == nil || *current.ProviderPaymentID != *params.ProviderPaymentID) {
+			return current, false, ErrCaptureConflict
+		}
+	} else {
+		return current, false, ErrInvalidInquiryIdentity
+	}
+	if current.State != AttemptStatePending {
+		return current, false, ErrStateConflict
+	}
+	if params.Scope == PaymentInquiryScopeCheckoutSession {
+		if current.ProviderSessionID == nil || params.ProviderSessionID == nil {
+			return current, false, ErrCaptureConflict
+		}
+		if params.ProviderPaymentReqID == nil {
+			return current, false, ErrInvalidInquiryIdentity
+		}
+	} else if current.ProviderPaymentReqID == nil || params.ProviderPaymentReqID == nil {
+		return current, false, ErrCaptureConflict
+	}
+
+	newIdentity := current.ProviderPaymentReqID == nil && params.ProviderPaymentReqID != nil || current.ProviderPaymentID == nil && params.ProviderPaymentID != nil
+	var updated PaymentAttempt
+	err := scanPaymentAttempt(tx.QueryRow(ctx, `
+		UPDATE payment_attempts
+		SET provider_payment_request_id = COALESCE($2, provider_payment_request_id),
+		    provider_payment_id = COALESCE($3, provider_payment_id),
+		    provider_status_code = $4,
+		    updated_at = transaction_timestamp()
+		WHERE id = $1::uuid AND state = 'PENDING'
+		RETURNING id::text, booking_id::text, attempt_no, provider, provider_environment,
+		          requested_method, integration_mode, capture_method, state, currency::text,
+		          amount_rupiah, local_reference, request_hash, provider_session_id,
+		          provider_payment_request_id, provider_payment_id, provider_status_code,
+		          checkout_url, expires_at, captured_at, created_at, updated_at
+	`, params.AttemptID, params.ProviderPaymentReqID, params.ProviderPaymentID, params.ProviderStatusCode), &updated)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PaymentAttempt{}, false, ErrStateConflict
+		}
+		return PaymentAttempt{}, false, mapPaymentRepositoryError(err)
+	}
+	return updated, newIdentity, nil
+}
+
+func validInquiryIdentityParams(params ApplyInquiryIdentityParams) bool {
+	_, err := uuid.Parse(params.AttemptID)
+	if err != nil || params.Provider != ProviderXendit || params.ProviderEnvironment != ProviderEnvironmentTest || !params.Scope.IsValid() || !isSafeProviderStatusCode(params.ProviderStatusCode) {
+		return false
+	}
+	if !validOptionalProviderIdentity(params.ProviderSessionID) ||
+		!validOptionalProviderIdentity(params.ProviderPaymentReqID) ||
+		!validOptionalProviderIdentity(params.ProviderPaymentID) {
+		return false
+	}
+	switch params.Scope {
+	case PaymentInquiryScopeCheckoutSession:
+		return params.ProviderSessionID != nil && params.ProviderPaymentReqID != nil && params.ProviderPaymentID == nil
+	case PaymentInquiryScopePayment:
+		return params.ProviderPaymentReqID != nil
+	default:
+		return false
+	}
+}
+
+func isSafeProviderStatusCode(value string) bool {
+	if value == "" || len(value) > 64 || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') &&
+			(char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // TransitionState performs a compare-and-set transition. CAPTURED is only
 // reachable through RecordCapture, which atomically writes the capture fact.
 func (r *Repository) TransitionState(ctx context.Context, id string, expected, next AttemptState) (PaymentAttempt, error) {
@@ -302,9 +870,31 @@ func (r *Repository) TransitionState(ctx context.Context, id string, expected, n
 		return PaymentAttempt{}, err
 	}
 	defer tx.Rollback(ctx)
+	attempt, err := r.TransitionStateTx(ctx, tx, id, expected, next)
+	if err != nil {
+		return PaymentAttempt{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PaymentAttempt{}, err
+	}
+	return attempt, nil
+}
+
+// TransitionStateTx performs a guarded state transition in the caller's
+// transaction. CAPTURED remains exclusive to RecordCaptureTx.
+func (r *Repository) TransitionStateTx(ctx context.Context, tx pgx.Tx, id string, expected, next AttemptState) (PaymentAttempt, error) {
+	if tx == nil {
+		return PaymentAttempt{}, ErrPaymentIntegrity
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return PaymentAttempt{}, ErrAttemptNotFound
+	}
+	if !allowedStateTransition(expected, next) {
+		return PaymentAttempt{}, ErrInvalidTransition
+	}
 
 	var current AttemptState
-	err = tx.QueryRow(ctx, `SELECT state FROM payment_attempts WHERE id = $1 FOR UPDATE`, id).Scan(&current)
+	err := tx.QueryRow(ctx, `SELECT state FROM payment_attempts WHERE id = $1 FOR UPDATE`, id).Scan(&current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PaymentAttempt{}, ErrAttemptNotFound
 	}
@@ -335,9 +925,6 @@ func (r *Repository) TransitionState(ctx context.Context, id string, expected, n
 	if err := r.writePaymentAudit(ctx, tx, attempt, string(expected), string(next), false); err != nil {
 		return PaymentAttempt{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return PaymentAttempt{}, err
-	}
 	return attempt, nil
 }
 
@@ -358,12 +945,70 @@ func (r *Repository) RecordCapture(ctx context.Context, params CaptureParams) (C
 		return CaptureResult{}, err
 	}
 	defer tx.Rollback(ctx)
+	result, err := r.RecordCaptureTx(ctx, tx, params)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CaptureResult{}, err
+	}
+	return result, nil
+}
+
+// RecordCaptureTx applies an authenticated capture inside the caller's
+// transaction. It never begins, commits, or rolls back a transaction. This is
+// required when a provider command lifecycle and capture fact must commit
+// atomically.
+func (r *Repository) RecordCaptureTx(ctx context.Context, tx pgx.Tx, params CaptureParams) (CaptureResult, error) {
+	if tx == nil {
+		return CaptureResult{}, ErrPaymentIntegrity
+	}
+	if err := validateCaptureParams(params); err != nil {
+		return CaptureResult{}, err
+	}
+	// PostgreSQL TIMESTAMPTZ stores microsecond precision. Canonicalize before
+	// persistence so an identical retry compares equal to the first fact.
+	params.CapturedAt = params.CapturedAt.UTC().Truncate(time.Microsecond)
+	params.ObservedAt = params.ObservedAt.UTC().Truncate(time.Microsecond)
+
+	var bookingID string
+	err := tx.QueryRow(ctx, `
+		SELECT booking_id::text
+		FROM payment_attempts
+		WHERE id = $1
+	`, params.AttemptID).Scan(&bookingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CaptureResult{}, ErrAttemptNotFound
+	}
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if err := paymentflow.LockBooking(ctx, tx, bookingID); err != nil {
+		return CaptureResult{}, err
+	}
 
 	var attempt PaymentAttempt
 	if err := scanPaymentAttempt(tx.QueryRow(ctx, paymentAttemptSelect+` WHERE id = $1 FOR UPDATE`, params.AttemptID), &attempt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CaptureResult{}, ErrAttemptNotFound
 		}
+		return CaptureResult{}, err
+	}
+	if attempt.BookingID != bookingID {
+		return CaptureResult{}, ErrPaymentIntegrity
+	}
+
+	var bookingStatus string
+	var bookingExpired bool
+	err = tx.QueryRow(ctx, `
+		SELECT status, COALESCE(expires_at <= transaction_timestamp(), false)
+		FROM bookings
+		WHERE id = $1
+	`, bookingID).Scan(&bookingStatus, &bookingExpired)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CaptureResult{}, ErrPaymentIntegrity
+	}
+	if err != nil {
 		return CaptureResult{}, err
 	}
 
@@ -383,13 +1028,10 @@ func (r *Repository) RecordCapture(ctx context.Context, params CaptureParams) (C
 		if attempt.State != AttemptStateCaptured || attempt.CapturedAt == nil {
 			return CaptureResult{}, ErrPaymentIntegrity
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return CaptureResult{}, err
-		}
 		return CaptureResult{Attempt: attempt, Fact: *existing, Duplicate: true}, nil
 	}
 
-	lateCapture := false
+	lateCapture := bookingStatus == "CANCELLED" || bookingExpired
 	switch attempt.State {
 	case AttemptStatePending:
 	case AttemptStateFailed, AttemptStateExpired, AttemptStateCancelled:
@@ -439,9 +1081,6 @@ func (r *Repository) RecordCapture(ctx context.Context, params CaptureParams) (C
 	if err := r.writePaymentAudit(ctx, tx, updated, string(attempt.State), string(AttemptStateCaptured), lateCapture); err != nil {
 		return CaptureResult{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return CaptureResult{}, err
-	}
 	return CaptureResult{Attempt: updated, Fact: fact, LateCapture: lateCapture}, nil
 }
 
@@ -453,6 +1092,31 @@ const paymentAttemptSelect = `
 	       checkout_url, expires_at, captured_at, created_at, updated_at
 	FROM payment_attempts`
 
+const paymentAttemptSelectForCustomer = `
+	SELECT pa.id::text, pa.booking_id::text, pa.attempt_no, pa.provider, pa.provider_environment,
+	       pa.requested_method, pa.integration_mode, pa.capture_method, pa.state, pa.currency::text,
+	       pa.amount_rupiah, pa.local_reference, pa.request_hash, pa.provider_session_id,
+	       pa.provider_payment_request_id, pa.provider_payment_id, pa.provider_status_code,
+	       pa.checkout_url, pa.expires_at, pa.captured_at, pa.created_at, pa.updated_at
+	FROM payment_attempts pa
+	JOIN bookings b ON b.id = pa.booking_id`
+
+const paymentAttemptStatusSelectForCustomer = `
+	SELECT pa.id::text, pa.booking_id::text, pa.attempt_no, pa.provider, pa.provider_environment,
+	       pa.requested_method, pa.integration_mode, pa.capture_method, pa.state, pa.currency::text,
+	       pa.amount_rupiah, pa.local_reference, pa.request_hash, pa.provider_session_id,
+	       pa.provider_payment_request_id, pa.provider_payment_id, pa.provider_status_code,
+	       pa.checkout_url, pa.expires_at, pa.captured_at, pa.created_at, pa.updated_at,
+	       (
+	           pa.state = 'PENDING'
+	           AND pa.expires_at > transaction_timestamp()
+	           AND b.status = 'PENDING_PAYMENT'
+	           AND b.expires_at IS NOT NULL
+	           AND b.expires_at > transaction_timestamp()
+	       ) AS checkout_eligible
+	FROM payment_attempts pa
+	JOIN bookings b ON b.id = pa.booking_id`
+
 func scanPaymentAttempt(row interface{ Scan(...any) error }, attempt *PaymentAttempt) error {
 	return row.Scan(&attempt.ID, &attempt.BookingID, &attempt.AttemptNo, &attempt.Provider,
 		&attempt.ProviderEnvironment, &attempt.RequestedMethod, &attempt.IntegrationMode,
@@ -461,6 +1125,20 @@ func scanPaymentAttempt(row interface{ Scan(...any) error }, attempt *PaymentAtt
 		&attempt.ProviderPaymentReqID, &attempt.ProviderPaymentID, &attempt.ProviderStatusCode,
 		&attempt.CheckoutURL, &attempt.ExpiresAt, &attempt.CapturedAt, &attempt.CreatedAt,
 		&attempt.UpdatedAt)
+}
+
+func scanCustomerPaymentAttemptStatus(
+	row interface{ Scan(...any) error },
+	status *CustomerPaymentAttemptStatus,
+) error {
+	attempt := &status.Attempt
+	return row.Scan(&attempt.ID, &attempt.BookingID, &attempt.AttemptNo, &attempt.Provider,
+		&attempt.ProviderEnvironment, &attempt.RequestedMethod, &attempt.IntegrationMode,
+		&attempt.CaptureMethod, &attempt.State, &attempt.Currency, &attempt.AmountRupiah,
+		&attempt.LocalReference, &attempt.RequestHash, &attempt.ProviderSessionID,
+		&attempt.ProviderPaymentReqID, &attempt.ProviderPaymentID, &attempt.ProviderStatusCode,
+		&attempt.CheckoutURL, &attempt.ExpiresAt, &attempt.CapturedAt, &attempt.CreatedAt,
+		&attempt.UpdatedAt, &status.CheckoutEligible)
 }
 
 func scanPaymentCaptureFact(row interface{ Scan(...any) error }, fact *PaymentCaptureFact) error {
@@ -480,14 +1158,18 @@ func validateCreateAttemptParams(params CreateAttemptParams) error {
 		!isLowerSHA256(params.RequestHash) {
 		return ErrInvalidCreateAttempt
 	}
+	if params.RequireCanonicalHash &&
+		!validPaymentReturnURLs(params.LocalReference, params.SuccessReturnURL, params.CancelReturnURL) {
+		return ErrInvalidCreateAttempt
+	}
 	return nil
 }
 
 func validateCaptureParams(params CaptureParams) error {
 	if _, err := uuid.Parse(params.AttemptID); err != nil || params.Provider != ProviderXendit ||
 		params.ProviderEnvironment != ProviderEnvironmentTest || params.Currency != CurrencyIDR ||
-		params.AmountRupiah <= 0 || !isBoundedReference(params.ProviderPaymentID, 191) ||
-		!isBoundedOptionalReference(params.ProviderPaymentReqID, 191) ||
+		params.AmountRupiah <= 0 || !ValidProviderIdentity(params.ProviderPaymentID, true) ||
+		!validOptionalProviderIdentity(params.ProviderPaymentReqID) ||
 		(params.Authority != "VERIFIED_WEBHOOK" && params.Authority != "AUTHENTICATED_INQUIRY") ||
 		!isBoundedReference(params.SourceReference, 191) || !isLowerSHA256(params.PayloadHash) ||
 		params.CapturedAt.IsZero() || params.ObservedAt.IsZero() || params.ObservedAt.Before(params.CapturedAt) {
@@ -510,6 +1192,46 @@ func lockBooking(ctx context.Context, db DBTX, bookingID string) error {
 	return err
 }
 
+func lockPaymentBooking(ctx context.Context, db DBTX, bookingID, customerID string) (time.Time, error) {
+	var id string
+	var status string
+	var expiresAt *time.Time
+	var notExpired bool
+	query := `SELECT id::text, status, expires_at, COALESCE(expires_at > transaction_timestamp(), false) FROM bookings WHERE id = $1`
+	args := []any{bookingID}
+	if customerID != "" {
+		query += ` AND customer_id = $2`
+		args = append(args, customerID)
+	}
+	query += ` FOR UPDATE`
+	if err := db.QueryRow(ctx, query, args...).Scan(&id, &status, &expiresAt, &notExpired); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, ErrBookingNotFound
+		}
+		return time.Time{}, err
+	}
+	if customerID != "" && (status != "PENDING_PAYMENT" || expiresAt == nil || !notExpired) {
+		return time.Time{}, ErrBookingNotPayable
+	}
+	if expiresAt == nil || !notExpired {
+		return time.Time{}, ErrInvalidCreateAttempt
+	}
+	return expiresAt.UTC(), nil
+}
+
+func verifyPaymentBookingCustomer(ctx context.Context, db DBTX, bookingID, customerID string) error {
+	var id string
+	err := db.QueryRow(ctx, `
+		SELECT id::text FROM bookings
+		WHERE id = $1 AND customer_id = $2
+		FOR UPDATE
+	`, bookingID, customerID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrBookingNotFound
+	}
+	return err
+}
+
 func findAttemptByProviderReference(ctx context.Context, db DBTX, provider Provider, environment ProviderEnvironment, reference string, lock bool) (*PaymentAttempt, error) {
 	query := paymentAttemptSelect + ` WHERE provider = $1 AND provider_environment = $2 AND local_reference = $3`
 	if lock {
@@ -523,11 +1245,53 @@ func findAttemptByProviderReference(ctx context.Context, db DBTX, provider Provi
 	return &attempt, err
 }
 
-func sameCreateAttempt(existing *PaymentAttempt, params CreateAttemptParams) bool {
+func sameCreateAttemptIdentity(existing *PaymentAttempt, params CreateAttemptParams) bool {
 	return existing.BookingID == params.BookingID && existing.Provider == params.Provider &&
 		existing.ProviderEnvironment == params.ProviderEnvironment && existing.RequestedMethod == params.RequestedMethod &&
 		existing.IntegrationMode == params.IntegrationMode && existing.CaptureMethod == params.CaptureMethod &&
 		existing.LocalReference == params.LocalReference && existing.RequestHash == params.RequestHash
+}
+
+func samePaymentCreateContract(existing PaymentCreateContract, params CreateAttemptParams) bool {
+	return existing.RequestHash == params.RequestHash &&
+		existing.RequestedExpiresAt.Equal(params.ExpiresAt) &&
+		existing.SuccessReturnURL == params.SuccessReturnURL &&
+		existing.CancelReturnURL == params.CancelReturnURL
+}
+
+func insertPaymentCreateContract(ctx context.Context, db DBTX, attemptID string, params CreateAttemptParams) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO payment_create_contracts (
+			payment_attempt_id, request_hash, requested_expires_at,
+			success_return_url, cancel_return_url
+		) VALUES ($1, $2, $3, $4, $5)
+	`, attemptID, params.RequestHash, params.ExpiresAt,
+		params.SuccessReturnURL, params.CancelReturnURL)
+	return err
+}
+
+func findPaymentCreateContract(ctx context.Context, db DBTX, attemptID string, lock bool) (*PaymentCreateContract, error) {
+	query := `
+		SELECT payment_attempt_id::text, request_hash, requested_expires_at,
+		       success_return_url, cancel_return_url, created_at
+		FROM payment_create_contracts
+		WHERE payment_attempt_id = $1`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var contract PaymentCreateContract
+	err := db.QueryRow(ctx, query, attemptID).Scan(
+		&contract.PaymentAttemptID,
+		&contract.RequestHash,
+		&contract.RequestedExpiresAt,
+		&contract.SuccessReturnURL,
+		&contract.CancelReturnURL,
+		&contract.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &contract, err
 }
 
 func findCaptureByAttemptOrProviderID(ctx context.Context, db DBTX, attemptID string, provider Provider, environment ProviderEnvironment, providerPaymentID string) (*PaymentCaptureFact, error) {
@@ -588,20 +1352,31 @@ func allowedStateTransition(from, to AttemptState) bool {
 }
 
 func (r *Repository) writePaymentAudit(ctx context.Context, db DBTX, attempt PaymentAttempt, from, to string, lateCapture bool) error {
-	metadata := map[string]any{
-		"to_state":     to,
-		"attempt_no":   int(attempt.AttemptNo),
-		"late_capture": lateCapture,
-	}
-	if from != "" {
+	return r.writePaymentAuditWithActor(ctx, db, attempt, from, to, lateCapture, nil, "SYSTEM", "")
+}
+
+func (r *Repository) writePaymentAuditWithActor(ctx context.Context, db DBTX, attempt PaymentAttempt, from, to string, lateCapture bool, actorUserID *string, actorRole, correlationID string) error {
+	action := audit.ActionPaymentStateTransition
+	metadata := map[string]any{"attempt_no": int(attempt.AttemptNo)}
+	if from == "" {
+		action = audit.ActionPaymentAttemptCreated
+	} else {
 		metadata["from_state"] = from
+		metadata["to_state"] = to
+		metadata["late_capture"] = lateCapture
 	}
 
 	entityID := attempt.ID
-	correlationID := attempt.LocalReference
+	if correlationID == "" {
+		correlationID = attempt.LocalReference
+	}
+	if actorRole == "" {
+		actorRole = "SYSTEM"
+	}
 	if err := r.auditService.Record(ctx, db, audit.CreatePlatformAuditLogParams{
-		ActorRole:     "SYSTEM",
-		Action:        audit.ActionPaymentStateTransition,
+		ActorUserID:   actorUserID,
+		ActorRole:     actorRole,
+		Action:        action,
 		EntityType:    audit.EntityPaymentAttempt,
 		EntityID:      &entityID,
 		CorrelationID: &correlationID,
@@ -632,14 +1407,14 @@ func isBoundedReference(value string, max int) bool {
 	return value != "" && value == strings.TrimSpace(value) && len(value) <= max
 }
 
-func isBoundedOptionalReference(value *string, max int) bool {
-	return value == nil || isBoundedReference(*value, max)
-}
-
 func mapPaymentRepositoryError(err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return err
+	}
+	if pgErr.Code == "55000" &&
+		pgErr.Message == "sandbox payment attempt blocked by legacy booking payment facts" {
+		return ErrBookingNotPayable
 	}
 	if pgErr.Code != "23505" {
 		return err

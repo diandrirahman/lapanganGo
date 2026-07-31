@@ -193,3 +193,67 @@ func TestFakeAdapterCarriesRefundRequestHash(t *testing.T) {
 		t.Fatalf("refund request hash = %q; want %q", received.RequestHash, requestHash)
 	}
 }
+
+func TestFakeAdapterCarriesProviderNeutralInquiryIdentity(t *testing.T) {
+	var received GetPaymentStatusRequest
+	fake := NewFakeAdapter(FakeAdapterScript{
+		GetPaymentStatus: func(_ context.Context, req GetPaymentStatusRequest) (PaymentStatusResponse, error) {
+			received = req
+			return PaymentStatusResponse{
+				Scope:                PaymentInquiryScopeCheckoutSession,
+				ProviderSessionID:    "session-test",
+				ProviderPaymentReqID: "payment-request-test",
+				Status:               PaymentStatusPending,
+			}, nil
+		},
+	})
+
+	_, err := fake.GetPaymentStatus(context.Background(), GetPaymentStatusRequest{
+		AttemptID:            "attempt-test",
+		ProviderSessionID:    "session-test",
+		ProviderPaymentReqID: "payment-request-test",
+		ProviderPaymentID:    "payment-test",
+		IdempotencyKey:       "payment:inquiry:00000000-0000-4000-8000-000000000001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received.ProviderSessionID != "session-test" || received.ProviderPaymentReqID != "payment-request-test" ||
+		received.ProviderPaymentID != "payment-test" || received.IdempotencyKey == "" {
+		t.Fatalf("inquiry identity was not delegated exactly: %+v", received)
+	}
+}
+
+func TestFakeAdapterScriptCanProveCreateRetryUsesSameKeyAndRequestFacts(t *testing.T) {
+	var received []CreatePaymentRequest
+	fake := NewFakeAdapter(FakeAdapterScript{
+		CreatePayment: func(_ context.Context, req CreatePaymentRequest) (CreatePaymentResponse, error) {
+			received = append(received, req)
+			if len(received) == 1 {
+				return CreatePaymentResponse{}, ErrRetryableTimeout
+			}
+			return CreatePaymentResponse{
+				ProviderSessionID: "ps-661f87c614802d6c402cd82d0",
+				Status:            PaymentStatusPending,
+				AmountRupiah:      10000,
+				Currency:          CurrencyIDR,
+				CheckoutURL:       "https://checkout-staging.xendit.co/sessions/ps-661f87c614802d6c402cd82d0",
+			}, nil
+		},
+	})
+	request := CreatePaymentRequest{
+		AttemptID: "00000000-0000-4000-8000-000000000001", AmountRupiah: 10000,
+		Currency: CurrencyIDR, IdempotencyKey: "payment:create:00000000-0000-4000-8000-000000000002:1",
+		RequestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	if _, err := fake.CreatePayment(context.Background(), request); !errors.Is(err, ErrRetryableTimeout) {
+		t.Fatalf("first create error = %v; want timeout", err)
+	}
+	if _, err := fake.CreatePayment(context.Background(), request); err != nil {
+		t.Fatalf("replayed create error = %v", err)
+	}
+	if len(received) != 2 || received[0].IdempotencyKey != received[1].IdempotencyKey ||
+		received[0].RequestHash != received[1].RequestHash || received[0].AttemptID != received[1].AttemptID {
+		t.Fatalf("create retry changed immutable request facts: %+v", received)
+	}
+}

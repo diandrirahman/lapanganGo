@@ -24,6 +24,10 @@ const (
 	ActionPlatformExpenseVoided              = "PLATFORM_EXPENSE_VOIDED"
 	ActionPaymentStateTransition             = "payment_state_transition"
 	ActionReconciliationException            = "reconciliation_exception"
+	ActionPaymentAttemptCreated              = "PAYMENT_ATTEMPT_CREATED"
+	ActionPaymentCommandEnqueued             = "PAYMENT_COMMAND_ENQUEUED"
+	ActionPaymentCommandInvariantViolation   = "PAYMENT_COMMAND_INVARIANT_VIOLATION"
+	ActionPaymentCreateFlagOffRejected       = "PAYMENT_CREATE_FLAG_OFF_REJECTED"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
@@ -44,6 +48,10 @@ var allowedPlatformActions = map[string]bool{
 	ActionPlatformExpenseVoided:              true,
 	ActionPaymentStateTransition:             true,
 	ActionReconciliationException:            true,
+	ActionPaymentAttemptCreated:              true,
+	ActionPaymentCommandEnqueued:             true,
+	ActionPaymentCommandInvariantViolation:   true,
+	ActionPaymentCreateFlagOffRejected:       true,
 }
 
 var allowedPlatformEntities = map[string]bool{
@@ -66,6 +74,10 @@ var platformActionEntity = map[string]string{
 	ActionPlatformExpenseVoided:              EntityPlatformExpense,
 	ActionPaymentStateTransition:             EntityPaymentAttempt,
 	ActionReconciliationException:            EntityPaymentAttempt,
+	ActionPaymentAttemptCreated:              EntityPaymentAttempt,
+	ActionPaymentCommandEnqueued:             EntityPaymentAttempt,
+	ActionPaymentCommandInvariantViolation:   EntityPaymentAttempt,
+	ActionPaymentCreateFlagOffRejected:       EntityPaymentAttempt,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -133,6 +145,22 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"attempt_no": true,
 		"reason":     true,
 	},
+	ActionPaymentAttemptCreated: {
+		"attempt_no": true,
+	},
+	ActionPaymentCommandEnqueued: {
+		"attempt_no":   true,
+		"command_type": true,
+	},
+	ActionPaymentCommandInvariantViolation: {
+		"command_type": true,
+		"reason":       true,
+	},
+	ActionPaymentCreateFlagOffRejected: {
+		"reason":              true,
+		"requested_method":    true,
+		"request_fingerprint": true,
+	},
 }
 
 var requiredMetadataKeysPerAction = map[string][]string{
@@ -140,6 +168,10 @@ var requiredMetadataKeysPerAction = map[string][]string{
 	ActionPlatformFinanceLiveWriteRejected: {"reason", "write_kind", "request_fingerprint"},
 	ActionPaymentStateTransition:           {"to_state", "attempt_no", "late_capture"},
 	ActionReconciliationException:          {"from_state", "to_state", "attempt_no", "reason"},
+	ActionPaymentAttemptCreated:            {"attempt_no"},
+	ActionPaymentCommandEnqueued:           {"attempt_no", "command_type"},
+	ActionPaymentCommandInvariantViolation: {"command_type", "reason"},
+	ActionPaymentCreateFlagOffRejected:     {"reason", "requested_method", "request_fingerprint"},
 }
 
 var allowedLiveWriteKinds = map[string]bool{
@@ -260,8 +292,11 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if (p.Action == ActionPlatformExpenseCancelled || p.Action == ActionPlatformExpenseApproved || p.Action == ActionPlatformExpensePosted || p.Action == ActionPlatformExpenseVoided) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for expense action")
 	}
-	if (p.Action == ActionPaymentStateTransition || p.Action == ActionReconciliationException) && (p.EntityID == nil || p.CorrelationID == nil) {
+	if (p.Action == ActionPaymentStateTransition || p.Action == ActionReconciliationException || p.Action == ActionPaymentAttemptCreated || p.Action == ActionPaymentCommandEnqueued || p.Action == ActionPaymentCommandInvariantViolation) && (p.EntityID == nil || p.CorrelationID == nil) {
 		return errors.New("payment audit entity and correlation id are required")
+	}
+	if p.Action == ActionPaymentCreateFlagOffRejected && p.CorrelationID == nil {
+		return errors.New("correlation id is required for payment create rejection audit")
 	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
@@ -327,14 +362,8 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				if !ok {
 					return errors.New("reason must be string")
 				}
-				if p.Action == ActionReconciliationException && v == "LATE_CAPTURE" {
-					break
-				}
-				// Strict enum for reason
-				if v != "LIVE_NOT_ALLOWED" && v != "BPS_OUT_OF_BOUNDS" && v != "OVERLAP" && v != "INVALID_TIME" && v != "VALIDATION_ERROR" {
-					if (p.Action != ActionPlatformExpenseCancelled && p.Action != ActionPlatformExpenseVoided) || strings.TrimSpace(v) == "" || len([]byte(v)) > 500 || containsSecret(v) {
-						return errors.New("reason must be an allowed code")
-					}
+				if !isAllowedReasonForAction(p.Action, v) {
+					return errors.New("reason must be an allowed code")
 				}
 			case "from_state", "to_state":
 				v, ok := val.(string)
@@ -349,6 +378,16 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 			case "late_capture":
 				if _, ok := val.(bool); !ok {
 					return errors.New("late_capture must be boolean")
+				}
+			case "command_type":
+				v, ok := val.(string)
+				if !ok || (v != "PAYMENT_CREATE" && v != "PAYMENT_INQUIRY") {
+					return errors.New("command_type must be a supported payment command")
+				}
+			case "requested_method":
+				v, ok := val.(string)
+				if !ok || (v != "BCA_VA" && v != "QRIS" && v != "CARD") {
+					return errors.New("requested_method must be an allowed payment method")
 				}
 			case "transition":
 				v, ok := val.(string)
@@ -489,14 +528,8 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 				}
 			}
 		case "reason":
-			if value, ok := value.(string); ok {
-				if action == ActionReconciliationException && value == "LATE_CAPTURE" {
-					out[key] = value
-				} else if (action == ActionPlatformExpenseCancelled || action == ActionPlatformExpenseVoided) && strings.TrimSpace(value) != "" && len([]byte(value)) <= 500 && !containsSecret(value) {
-					out[key] = value
-				} else if value == "LIVE_NOT_ALLOWED" || value == "BPS_OUT_OF_BOUNDS" || value == "OVERLAP" || value == "INVALID_TIME" || value == "VALIDATION_ERROR" {
-					out[key] = value
-				}
+			if value, ok := value.(string); ok && isAllowedReasonForAction(action, value) {
+				out[key] = value
 			}
 		case "from_state", "to_state":
 			if value, ok := value.(string); ok && isPaymentAttemptAuditState(value) {
@@ -508,6 +541,14 @@ func SanitizePlatformAuditMetadata(action string, metadata map[string]any) map[s
 			}
 		case "late_capture":
 			if value, ok := value.(bool); ok {
+				out[key] = value
+			}
+		case "command_type":
+			if value == "PAYMENT_CREATE" || value == "PAYMENT_INQUIRY" {
+				out[key] = value
+			}
+		case "requested_method":
+			if value, ok := value.(string); ok && (value == "BCA_VA" || value == "QRIS" || value == "CARD") {
 				out[key] = value
 			}
 		case "source_journal_id":
@@ -581,6 +622,40 @@ func isPaymentAttemptAuditState(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isPaymentReconciliationReason(value string) bool {
+	switch value {
+	case "LATE_CAPTURE", "REFERENCE_MISMATCH", "AMOUNT_MISMATCH", "CURRENCY_MISMATCH", "INQUIRY_UNRESOLVED", "PROVIDER_CONTRACT_BLOCKED":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPaymentCommandInvariantReason(value string) bool {
+	return value == "ATTEMPT_NOT_FOUND"
+}
+
+func isAllowedReasonForAction(action, value string) bool {
+	switch action {
+	case ActionReconciliationException:
+		return isPaymentReconciliationReason(value)
+	case ActionPaymentCommandInvariantViolation:
+		return isPaymentCommandInvariantReason(value)
+	case ActionPlatformExpenseCancelled, ActionPlatformExpenseVoided:
+		return strings.TrimSpace(value) != "" &&
+			len([]byte(value)) <= 500 &&
+			!containsSecret(value)
+	default:
+		switch value {
+		case "LIVE_NOT_ALLOWED", "BPS_OUT_OF_BOUNDS", "OVERLAP",
+			"INVALID_TIME", "VALIDATION_ERROR", "CREATE_DISABLED":
+			return true
+		default:
+			return false
+		}
 	}
 }
 

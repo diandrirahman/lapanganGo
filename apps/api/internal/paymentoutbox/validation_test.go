@@ -73,12 +73,15 @@ func TestValidateEnqueueParamsRejectsUnsafeOrInvalidValues(t *testing.T) {
 	}
 }
 
-func TestValidateEnqueueParamsDefersInquiryCommands(t *testing.T) {
+func TestValidateEnqueueParamsAcceptsReservedInquiryCommand(t *testing.T) {
 	params := validEnqueueParams()
 	params.CommandType = CommandPaymentInquiry
 	params.IdempotencyKey = "payment:inquiry:" + validAggregateID
-	if _, err := ValidateEnqueueParams(params); !errors.Is(err, ErrPaymentInquiryNotReady) {
-		t.Fatalf("inquiry validation error = %v; want ErrPaymentInquiryNotReady", err)
+	if _, err := ValidateEnqueueParams(params); err != nil {
+		t.Fatalf("reserved inquiry command rejected: %v", err)
+	}
+	if got := DeterministicInquiryKey(validAggregateID); got != params.IdempotencyKey {
+		t.Fatalf("deterministic inquiry key = %q; want %q", got, params.IdempotencyKey)
 	}
 }
 
@@ -89,6 +92,34 @@ func TestValidateEnqueueParamsDefersRefundCommands(t *testing.T) {
 	params.PaymentAttemptID = ""
 	if _, err := ValidateEnqueueParams(params); !errors.Is(err, ErrRefundOutboxNotReady) {
 		t.Fatalf("refund validation error = %v; want ErrRefundOutboxNotReady", err)
+	}
+}
+
+func TestCommandTypeFilterIsAllowlistedAndDeterministic(t *testing.T) {
+	filter, err := commandTypeFilter([]CommandType{CommandPaymentInquiry, CommandPaymentCreate, CommandPaymentInquiry})
+	if err != nil {
+		t.Fatalf("valid command filter rejected: %v", err)
+	}
+	if filter != "c.command_type IN ('PAYMENT_CREATE','PAYMENT_INQUIRY')" {
+		t.Fatalf("filter = %q", filter)
+	}
+	for _, types := range [][]CommandType{{}, {CommandRefundCreate}, {"UNKNOWN"}} {
+		if _, err := commandTypeFilter(types); !errors.Is(err, ErrInvalidCommand) {
+			t.Fatalf("types %v error = %v; want ErrInvalidCommand", types, err)
+		}
+	}
+}
+
+func TestTxFinalizersNeverOpenTheirOwnTransaction(t *testing.T) {
+	owner := "worker:" + validAggregateID
+	if _, err := (&Repository{}).MarkRetryableTx(nil, nil, validAggregateID, owner, validAggregateID, "RETRYABLE_PROVIDER", time.Second); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("nil retryable tx error = %v; want ErrInvalidCommand", err)
+	}
+	if _, err := (&Repository{}).MarkSucceededTx(nil, nil, validAggregateID, owner, validAggregateID, "sha256:"+strings.Repeat("a", 64)); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("nil succeeded tx error = %v; want ErrInvalidCommand", err)
+	}
+	if _, err := (&Repository{}).MarkTerminalTx(nil, nil, validAggregateID, owner, validAggregateID, "INVALID_REQUEST"); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("nil terminal tx error = %v; want ErrInvalidCommand", err)
 	}
 }
 
@@ -107,7 +138,8 @@ func TestValidateLeaseAndErrorInputs(t *testing.T) {
 	if !validateLeaseOwner("worker:"+validAggregateID) ||
 		!validateLeaseDuration(time.Microsecond) ||
 		!validateLeaseDuration(time.Minute) ||
-		!validateLeaseDuration(24*time.Hour) {
+		!validateLeaseDuration(24*time.Hour) ||
+		!ValidateLeaseDuration(time.Minute) {
 		t.Fatal("valid lease input was rejected")
 	}
 	if validateLeaseDuration(-time.Nanosecond) ||
@@ -116,17 +148,20 @@ func TestValidateLeaseAndErrorInputs(t *testing.T) {
 		validateLeaseDuration(time.Microsecond-time.Nanosecond) ||
 		validateLeaseDuration(time.Microsecond+time.Nanosecond) ||
 		validateLeaseDuration(24*time.Hour-time.Nanosecond) ||
-		validateLeaseDuration(24*time.Hour+time.Microsecond) {
+		validateLeaseDuration(24*time.Hour+time.Microsecond) ||
+		ValidateLeaseDuration(time.Second+time.Nanosecond) {
 		t.Fatal("invalid lease duration was accepted")
 	}
 	if !validateRetryDelay(0) || !validateRetryDelay(time.Microsecond) ||
-		!validateRetryDelay(time.Minute) || !validateRetryDelay(24*time.Hour) {
+		!validateRetryDelay(time.Minute) || !validateRetryDelay(24*time.Hour) ||
+		!ValidateRetryDelay(24*time.Hour) {
 		t.Fatal("valid retry delay was rejected")
 	}
 	if validateRetryDelay(-time.Nanosecond) ||
 		validateRetryDelay(time.Nanosecond) ||
 		validateRetryDelay(24*time.Hour-time.Nanosecond) ||
-		validateRetryDelay(24*time.Hour+time.Nanosecond) {
+		validateRetryDelay(24*time.Hour+time.Nanosecond) ||
+		ValidateRetryDelay(time.Minute+time.Nanosecond) {
 		t.Fatal("invalid retry delay was accepted")
 	}
 	if !validateLeaseToken(validAggregateID) || validateLeaseToken("not-a-token") {

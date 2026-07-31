@@ -13,6 +13,7 @@ import { OpenMatchesPage } from './pages/OpenMatchesPage';
 import { MabarDetailPage } from './pages/MabarDetailPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { StaffSetupPasswordPage } from './pages/StaffSetupPasswordPage';
+import { PaymentReturnPage } from './pages/PaymentReturnPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { SuperAdminRoute } from './components/SuperAdminRoute';
 import { isPlatformFinanceAdminEnabled } from './config/features';
@@ -80,6 +81,7 @@ function App() {
           <Route element={<ProtectedRoute requiredRole="CUSTOMER" />}>
             <Route path="/bookings" element={<CustomerBookingsPage />} />
             <Route path="/bookings/:id" element={<CustomerBookingDetailPage />} />
+            <Route path="/payments/return/:reference/:outcome" element={<PaymentReturnPage />} />
           </Route>
 
           {/* Owner Routes */}
