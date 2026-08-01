@@ -27,6 +27,7 @@ import (
 	"lapangango-api/internal/owners"
 	"lapangango-api/internal/paymentoutbox"
 	"lapangango-api/internal/payments"
+	"lapangango-api/internal/paymentwebhooks"
 	"lapangango-api/internal/platformfinance"
 	"lapangango-api/internal/promos"
 	"lapangango-api/internal/refunds"
@@ -73,6 +74,26 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 		})
 	})
 
+	// Webhook routes are registered before the customer-facing limiter. They
+	// own a stricter dedicated limiter and must not inherit JWT or general-rate
+	// behavior.
+	platformAuditRepository := audit.NewPlatformRepository()
+	if cfg.PaymentWebhookIngressEnabled {
+		if cfg.PaymentWebhookContractVersion != payments.XenditWebhookAuthContractVersion {
+			return nil, nil, fmt.Errorf("webhook ingress contract version is not implemented: %s", cfg.PaymentWebhookContractVersion)
+		}
+		verifier, err := payments.NewXenditTestWebhookVerifier(cfg.XenditWebhookToken)
+		if err != nil {
+			return nil, nil, fmt.Errorf("initialize webhook verifier: %w", err)
+		}
+		webhookRepository := paymentwebhooks.NewPostgresRepository(dbPool, platformAuditRepository)
+		webhookService, err := paymentwebhooks.NewService(verifier, webhookRepository, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("initialize webhook ingress: %w", err)
+		}
+		paymentwebhooks.NewHandler(webhookService).RegisterRoutes(r)
+	}
+
 	generalRateLimiter := middleware.NewRateLimiter(cfg.RedisURL, "general", cfg.GeneralRateLimitPerMinute, time.Minute)
 	r.Use(generalRateLimiter)
 
@@ -102,7 +123,6 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 
 	auditRepository := audit.NewRepository(dbPool)
 	auditService := audit.NewService(auditRepository)
-	platformAuditRepository := audit.NewPlatformRepository()
 	platformAuditService := audit.NewPlatformService(platformAuditRepository)
 
 	var emailService email.Service

@@ -20,6 +20,46 @@ func TestSetupRouterFailsClosedWhenPaymentWorkerActivationIsRequested(t *testing
 	}
 }
 
+func TestSetupRouterWebhookRoutesAreFlagGatedAndIsolated(t *testing.T) {
+	base := config.Config{
+		JWTSecret:                 "test-jwt-secret",
+		JWTExpiresInHours:         1,
+		GeneralRateLimitPerMinute: 0,
+		AuthRateLimitPerMinute:    100,
+	}
+
+	disabled, cancel, err := setupRouter(context.Background(), base, nil, false)
+	if err != nil {
+		t.Fatalf("setup disabled router: %v", err)
+	}
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/webhooks/xendit/payment", nil)
+	response := httptest.NewRecorder()
+	disabled.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("disabled webhook status=%d; want 404", response.Code)
+	}
+
+	enabledConfig := base
+	enabledConfig.PaymentWebhookIngressEnabled = true
+	enabledConfig.PaymentWebhookContractVersion = "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL"
+	enabledConfig.XenditWebhookToken = "test-callback-token"
+	enabled, enabledCancel, err := setupRouter(context.Background(), enabledConfig, nil, false)
+	if err != nil {
+		t.Fatalf("setup enabled router: %v", err)
+	}
+	defer enabledCancel()
+	for attempt := 0; attempt < 2; attempt++ {
+		request = httptest.NewRequest(http.MethodPost, "/webhooks/xendit/payment", nil)
+		request.Header.Set("Content-Type", "text/plain")
+		response = httptest.NewRecorder()
+		enabled.ServeHTTP(response, request)
+		if response.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("enabled webhook attempt %d status=%d; route inherited JWT or general limiter", attempt+1, response.Code)
+		}
+	}
+}
+
 func TestRouterWiring_FinanceAdminDisabled(t *testing.T) {
 	// Only run this test if a database is available (we can reuse the logic of starting a test pool or just skip if we can't easily mock)
 	// Since setupRouter requires a real pgxpool due to all repositories being initialized, we should test it with a test database if available.

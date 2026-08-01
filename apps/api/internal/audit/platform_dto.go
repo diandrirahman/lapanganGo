@@ -28,11 +28,18 @@ const (
 	ActionPaymentCommandEnqueued             = "PAYMENT_COMMAND_ENQUEUED"
 	ActionPaymentCommandInvariantViolation   = "PAYMENT_COMMAND_INVARIANT_VIOLATION"
 	ActionPaymentCreateFlagOffRejected       = "PAYMENT_CREATE_FLAG_OFF_REJECTED"
+	ActionWebhookReceived                    = "webhook_received"
+	ActionWebhookAuthPassed                  = "webhook_auth_passed"
+	ActionWebhookAuthFailed                  = "webhook_auth_failed"
+	ActionWebhookReplay                      = "webhook_replay"
+	ActionWebhookDuplicate                   = "webhook_duplicate"
+	ActionWebhookConflict                    = "webhook_conflict"
 
 	EntityPlatformCommercialTerm = "PLATFORM_COMMERCIAL_TERM"
 	EntityPlatformFinanceJournal = "PLATFORM_FINANCE_JOURNAL"
 	EntityPlatformExpense        = "PLATFORM_EXPENSE"
 	EntityPaymentAttempt         = "PAYMENT_ATTEMPT"
+	EntityPaymentWebhook         = "PAYMENT_WEBHOOK"
 )
 
 var allowedPlatformActions = map[string]bool{
@@ -52,6 +59,12 @@ var allowedPlatformActions = map[string]bool{
 	ActionPaymentCommandEnqueued:             true,
 	ActionPaymentCommandInvariantViolation:   true,
 	ActionPaymentCreateFlagOffRejected:       true,
+	ActionWebhookReceived:                    true,
+	ActionWebhookAuthPassed:                  true,
+	ActionWebhookAuthFailed:                  true,
+	ActionWebhookReplay:                      true,
+	ActionWebhookDuplicate:                   true,
+	ActionWebhookConflict:                    true,
 }
 
 var allowedPlatformEntities = map[string]bool{
@@ -59,6 +72,7 @@ var allowedPlatformEntities = map[string]bool{
 	EntityPlatformFinanceJournal: true,
 	EntityPlatformExpense:        true,
 	EntityPaymentAttempt:         true,
+	EntityPaymentWebhook:         true,
 }
 
 var platformActionEntity = map[string]string{
@@ -78,6 +92,12 @@ var platformActionEntity = map[string]string{
 	ActionPaymentCommandEnqueued:             EntityPaymentAttempt,
 	ActionPaymentCommandInvariantViolation:   EntityPaymentAttempt,
 	ActionPaymentCreateFlagOffRejected:       EntityPaymentAttempt,
+	ActionWebhookReceived:                    EntityPaymentWebhook,
+	ActionWebhookAuthPassed:                  EntityPaymentWebhook,
+	ActionWebhookAuthFailed:                  EntityPaymentWebhook,
+	ActionWebhookReplay:                      EntityPaymentWebhook,
+	ActionWebhookDuplicate:                   EntityPaymentWebhook,
+	ActionWebhookConflict:                    EntityPaymentWebhook,
 }
 
 var allowedMetadataKeysPerAction = map[string]map[string]bool{
@@ -161,6 +181,16 @@ var allowedMetadataKeysPerAction = map[string]map[string]bool{
 		"requested_method":    true,
 		"request_fingerprint": true,
 	},
+	ActionWebhookReceived:   webhookAuditMetadataKeys(),
+	ActionWebhookAuthPassed: webhookAuditMetadataKeys(),
+	ActionWebhookAuthFailed: webhookAuditMetadataKeys(),
+	ActionWebhookReplay:     webhookAuditMetadataKeys(),
+	ActionWebhookDuplicate:  webhookAuditMetadataKeys(),
+	ActionWebhookConflict:   webhookAuditMetadataKeys(),
+}
+
+func webhookAuditMetadataKeys() map[string]bool {
+	return map[string]bool{"provider": true, "environment": true, "route_family": true, "result": true, "reason": true, "raw_body_hash": true}
 }
 
 var requiredMetadataKeysPerAction = map[string][]string{
@@ -172,6 +202,12 @@ var requiredMetadataKeysPerAction = map[string][]string{
 	ActionPaymentCommandEnqueued:           {"attempt_no", "command_type"},
 	ActionPaymentCommandInvariantViolation: {"command_type", "reason"},
 	ActionPaymentCreateFlagOffRejected:     {"reason", "requested_method", "request_fingerprint"},
+	ActionWebhookReceived:                  {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
+	ActionWebhookAuthPassed:                {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
+	ActionWebhookAuthFailed:                {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
+	ActionWebhookReplay:                    {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
+	ActionWebhookDuplicate:                 {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
+	ActionWebhookConflict:                  {"provider", "environment", "route_family", "result", "reason", "raw_body_hash"},
 }
 
 var allowedLiveWriteKinds = map[string]bool{
@@ -298,6 +334,9 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 	if p.Action == ActionPaymentCreateFlagOffRejected && p.CorrelationID == nil {
 		return errors.New("correlation id is required for payment create rejection audit")
 	}
+	if isWebhookAuditAction(p.Action) && (p.CorrelationID == nil || p.EntityID != nil || p.ActorRole != "SYSTEM") {
+		return errors.New("webhook audit requires system actor, nil entity id, and correlation id")
+	}
 	if (p.Action == ActionPlatformFinanceJournalReversed || p.Action == ActionPlatformFinanceLiveWriteRejected) && p.CorrelationID == nil {
 		return errors.New("correlation id is required for finance audit action")
 	}
@@ -364,6 +403,30 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 				}
 				if !isAllowedReasonForAction(p.Action, v) {
 					return errors.New("reason must be an allowed code")
+				}
+			case "provider":
+				if val != "XENDIT" {
+					return errors.New("provider must be XENDIT")
+				}
+			case "environment":
+				if val != "TEST" {
+					return errors.New("environment must be TEST")
+				}
+			case "route_family":
+				if value, ok := val.(string); !ok || (value != "payment_session" && value != "payment" && value != "refund") {
+					return errors.New("route_family must be a supported webhook route")
+				}
+			case "result":
+				if value, ok := val.(string); !ok || (value != "NEW" && value != "DUPLICATE" && value != "CONFLICT" && value != "UNSUPPORTED" && value != "AUTH_FAILED") {
+					return errors.New("result must be a supported webhook result")
+				}
+			case "raw_body_hash":
+				value, ok := val.(string)
+				if !ok || len(value) != 64 || value != strings.ToLower(value) {
+					return errors.New("raw_body_hash must be a lowercase SHA-256 hex string")
+				}
+				if _, err := hex.DecodeString(value); err != nil {
+					return errors.New("raw_body_hash must be valid hexadecimal")
 				}
 			case "from_state", "to_state":
 				v, ok := val.(string)
@@ -640,6 +703,13 @@ func isPaymentCommandInvariantReason(value string) bool {
 
 func isAllowedReasonForAction(action, value string) bool {
 	switch action {
+	case ActionWebhookReceived, ActionWebhookAuthPassed, ActionWebhookAuthFailed, ActionWebhookReplay, ActionWebhookDuplicate, ActionWebhookConflict:
+		switch value {
+		case "NONE", "AUTHENTICATION_FAILED", "INVALID_REQUEST", "IDEMPOTENCY_CONFLICT", "REFERENCE_MISMATCH", "AMOUNT_MISMATCH", "CURRENCY_MISMATCH", "FUTURE_CREATED_SEMANTIC", "TERMINAL_PROVIDER":
+			return true
+		default:
+			return false
+		}
 	case ActionReconciliationException:
 		return isPaymentReconciliationReason(value)
 	case ActionPaymentCommandInvariantViolation:
@@ -656,6 +726,15 @@ func isAllowedReasonForAction(action, value string) bool {
 		default:
 			return false
 		}
+	}
+}
+
+func isWebhookAuditAction(action string) bool {
+	switch action {
+	case ActionWebhookReceived, ActionWebhookAuthPassed, ActionWebhookAuthFailed, ActionWebhookReplay, ActionWebhookDuplicate, ActionWebhookConflict:
+		return true
+	default:
+		return false
 	}
 }
 
