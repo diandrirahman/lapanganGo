@@ -60,17 +60,18 @@ const (
 type AdapterErrorCode string
 
 const (
-	AdapterErrorRetryableTimeout     AdapterErrorCode = "RETRYABLE_TIMEOUT"
-	AdapterErrorRetryableProvider    AdapterErrorCode = "RETRYABLE_PROVIDER"
-	AdapterErrorRateLimited          AdapterErrorCode = "RATE_LIMITED"
-	AdapterErrorAuthenticationFailed AdapterErrorCode = "AUTHENTICATION_FAILED"
-	AdapterErrorInvalidRequest       AdapterErrorCode = "INVALID_REQUEST"
-	AdapterErrorIdempotencyConflict  AdapterErrorCode = "IDEMPOTENCY_CONFLICT"
-	AdapterErrorReferenceMismatch    AdapterErrorCode = "REFERENCE_MISMATCH"
-	AdapterErrorAmountMismatch       AdapterErrorCode = "AMOUNT_MISMATCH"
-	AdapterErrorCurrencyMismatch     AdapterErrorCode = "CURRENCY_MISMATCH"
-	AdapterErrorTerminalProvider     AdapterErrorCode = "TERMINAL_PROVIDER"
-	AdapterErrorMalformedResponse    AdapterErrorCode = "MALFORMED_RESPONSE"
+	AdapterErrorRetryableTimeout      AdapterErrorCode = "RETRYABLE_TIMEOUT"
+	AdapterErrorRetryableProvider     AdapterErrorCode = "RETRYABLE_PROVIDER"
+	AdapterErrorRateLimited           AdapterErrorCode = "RATE_LIMITED"
+	AdapterErrorAuthenticationFailed  AdapterErrorCode = "AUTHENTICATION_FAILED"
+	AdapterErrorInvalidRequest        AdapterErrorCode = "INVALID_REQUEST"
+	AdapterErrorIdempotencyConflict   AdapterErrorCode = "IDEMPOTENCY_CONFLICT"
+	AdapterErrorReferenceMismatch     AdapterErrorCode = "REFERENCE_MISMATCH"
+	AdapterErrorAmountMismatch        AdapterErrorCode = "AMOUNT_MISMATCH"
+	AdapterErrorCurrencyMismatch      AdapterErrorCode = "CURRENCY_MISMATCH"
+	AdapterErrorTerminalProvider      AdapterErrorCode = "TERMINAL_PROVIDER"
+	AdapterErrorMalformedResponse     AdapterErrorCode = "MALFORMED_RESPONSE"
+	AdapterErrorFutureCreatedSemantic AdapterErrorCode = "FUTURE_CREATED_SEMANTIC"
 )
 
 var (
@@ -131,7 +132,8 @@ func (c AdapterErrorCode) IsValid() bool {
 		AdapterErrorAmountMismatch,
 		AdapterErrorCurrencyMismatch,
 		AdapterErrorTerminalProvider,
-		AdapterErrorMalformedResponse:
+		AdapterErrorMalformedResponse,
+		AdapterErrorFutureCreatedSemantic:
 		return true
 	default:
 		return false
@@ -215,9 +217,10 @@ type PaymentStatusResponse struct {
 }
 
 type VerifyWebhookRequest struct {
-	RawBody    []byte
-	Headers    map[string]string
-	ReceivedAt time.Time
+	RawBody      []byte
+	Headers      map[string]string
+	ReceivedAt   time.Time
+	MaxBodyBytes int
 }
 
 type WebhookVerification struct {
@@ -229,7 +232,96 @@ type WebhookVerification struct {
 }
 
 type ParseWebhookRequest struct {
-	RawBody []byte
+	RawBody                  []byte
+	ObservedAt               time.Time
+	MaxBodyBytes             int
+	ExpectedAmountRupiah     int64
+	ExpectedCurrency         Currency
+	ExpectedPaymentRequestID string
+	ExpectedPaymentID        string
+}
+
+type WebhookVerificationState string
+
+const (
+	WebhookVerificationDiagnostic  WebhookVerificationState = "DIAGNOSTIC"
+	WebhookVerificationQuarantined WebhookVerificationState = "QUARANTINED"
+)
+
+func (s WebhookVerificationState) IsValid() bool {
+	return s == WebhookVerificationDiagnostic || s == WebhookVerificationQuarantined
+}
+
+type WebhookReplayDecision string
+
+const (
+	WebhookReplayNew               WebhookReplayDecision = "NEW"
+	WebhookReplayDuplicateSameBody WebhookReplayDecision = "DUPLICATE_SAME_BODY"
+	WebhookReplayConflicting       WebhookReplayDecision = "CONFLICTING_REPLAY"
+)
+
+type WebhookReplayClassification struct {
+	Decision          WebhookReplayDecision
+	VerificationState WebhookVerificationState
+	ReasonCode        string
+	MayMutate         bool
+}
+
+// WebhookReplayInput separates an absent prior event from an invalid prior
+// hash. The body hashes are exact lowercase SHA-256 digests.
+type WebhookReplayInput struct {
+	ExistingEventFound bool
+	ExistingBodyHash   string
+	IncomingBodyHash   string
+}
+
+var ErrWebhookReplayInputInvalid = errors.New("invalid webhook replay input")
+
+// ClassifyWebhookReplay is a pure decision for an already-resolved
+// deterministic event identity. It validates all supplied hashes before
+// returning a result that could permit a later state mutation.
+func ClassifyWebhookReplay(input WebhookReplayInput) (WebhookReplayClassification, error) {
+	if !isLowercaseSHA256(input.IncomingBodyHash) {
+		return WebhookReplayClassification{}, ErrWebhookReplayInputInvalid
+	}
+	if !input.ExistingEventFound {
+		if input.ExistingBodyHash != "" {
+			return WebhookReplayClassification{}, ErrWebhookReplayInputInvalid
+		}
+		return WebhookReplayClassification{
+			Decision:          WebhookReplayNew,
+			VerificationState: WebhookVerificationDiagnostic,
+			MayMutate:         true,
+		}, nil
+	}
+	if !isLowercaseSHA256(input.ExistingBodyHash) {
+		return WebhookReplayClassification{}, ErrWebhookReplayInputInvalid
+	}
+	if input.ExistingBodyHash == input.IncomingBodyHash {
+		return WebhookReplayClassification{
+			Decision:          WebhookReplayDuplicateSameBody,
+			VerificationState: WebhookVerificationDiagnostic,
+			MayMutate:         false,
+		}, nil
+	}
+	return WebhookReplayClassification{
+		Decision:          WebhookReplayConflicting,
+		VerificationState: WebhookVerificationQuarantined,
+		ReasonCode:        string(AdapterErrorIdempotencyConflict),
+		MayMutate:         false,
+	}, nil
+}
+
+func isLowercaseSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] < '0' || value[i] > '9') && (value[i] < 'a' || value[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type WebhookEventState string
@@ -276,6 +368,7 @@ type WebhookEvent struct {
 	SourceReference      string
 	PayloadHash          string
 	ReasonCode           string
+	VerificationState    WebhookVerificationState
 }
 
 type RefundRequest struct {
