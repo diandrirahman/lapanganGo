@@ -28,9 +28,10 @@ var downMigrations = map[int]string{
 	25: "025_payment_attempts.down.sql",
 	26: "026_payment_provider_outbox.down.sql",
 	29: "029_payment_webhook_inbox.down.sql",
+	30: "030_gateway_booking_payment_finalization.down.sql",
 }
 
-const latestMigrationVersion = 29
+const latestMigrationVersion = 30
 
 func checkOptIn(t *testing.T) string {
 	t.Helper()
@@ -222,7 +223,7 @@ func TestRollbackHardening_PreFactDown(t *testing.T) {
 
 	_, m := setupMigrate(t, targetDSN)
 
-	err := m.Steps(-11) // From 29 down to 18
+	err := m.Steps(-12) // From 30 down to 18
 	if err != nil {
 		t.Fatalf("expected pre-fact down migration to succeed, got: %v", err)
 	}

@@ -46,8 +46,8 @@ func TestPaymentWorkerDisposableMigrationVersion(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty); err != nil {
 		t.Fatal(err)
 	}
-	if version != 29 || dirty {
-		t.Fatalf("disposable migration state = %d|%t; want 29|false", version, dirty)
+	if version != 30 || dirty {
+		t.Fatalf("disposable migration state = %d|%t; want 30|false", version, dirty)
 	}
 }
 
@@ -350,6 +350,13 @@ func TestProcessorSessionHandoffPersistsIdentityAndCapturesOnPaymentScope(t *tes
 	}
 	if captureCount != 1 {
 		t.Fatalf("capture fact count = %d; want 1", captureCount)
+	}
+	var bookingStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM bookings WHERE id = $1`, attempt.BookingID).Scan(&bookingStatus); err != nil {
+		t.Fatal(err)
+	}
+	if bookingStatus != "PAID" {
+		t.Fatalf("booking after authenticated inquiry capture = %q; want PAID", bookingStatus)
 	}
 	var factCapturedAt time.Time
 	var factHash string

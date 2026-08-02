@@ -40,7 +40,7 @@ type paymentAttemptRepository interface {
 	GetCreateContractByAttemptID(context.Context, string) (payments.PaymentCreateContract, error)
 	ApplyCreateProviderResultTx(context.Context, pgx.Tx, payments.ApplyCreateProviderResultParams) (payments.PaymentAttempt, error)
 	ApplyInquiryIdentityTx(context.Context, pgx.Tx, payments.ApplyInquiryIdentityParams) (payments.PaymentAttempt, bool, error)
-	RecordCaptureTx(context.Context, pgx.Tx, payments.CaptureParams) (payments.CaptureResult, error)
+	FinalizeGatewayCaptureTx(context.Context, pgx.Tx, payments.CaptureParams) (payments.CaptureResult, error)
 	TransitionStateTx(context.Context, pgx.Tx, string, payments.AttemptState, payments.AttemptState) (payments.PaymentAttempt, error)
 	LockAttemptForFinalizationTx(context.Context, pgx.Tx, string) (payments.PaymentAttempt, error)
 	GetAttemptTx(context.Context, pgx.Tx, string) (payments.PaymentAttempt, error)
@@ -492,7 +492,7 @@ func (p *Processor) processInquiry(ctx context.Context, command paymentoutbox.Co
 	switch response.Status {
 	case payments.PaymentStatusCaptured:
 		capturedAt := response.CapturedAt
-		_, err = p.attempts.RecordCaptureTx(ctx, tx, payments.CaptureParams{
+		_, err = p.attempts.FinalizeGatewayCaptureTx(ctx, tx, payments.CaptureParams{
 			AttemptID:            attempt.ID,
 			Provider:             attempt.Provider,
 			ProviderEnvironment:  attempt.ProviderEnvironment,

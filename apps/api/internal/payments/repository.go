@@ -164,6 +164,7 @@ type CaptureResult struct {
 	Fact        PaymentCaptureFact
 	Duplicate   bool
 	LateCapture bool
+	BookingPaid bool
 }
 
 type PaymentCaptureFact struct {
@@ -1082,6 +1083,43 @@ func (r *Repository) RecordCaptureTx(ctx context.Context, tx pgx.Tx, params Capt
 		return CaptureResult{}, err
 	}
 	return CaptureResult{Attempt: updated, Fact: fact, LateCapture: lateCapture}, nil
+}
+
+// FinalizeGatewayCaptureTx is the only repository path that couples an
+// already-authenticated gateway capture to the booking lifecycle. It keeps
+// capture facts, the CAPTURED attempt state, and PENDING_PAYMENT -> PAID in
+// the caller's transaction. Late captures deliberately record their immutable
+// payment fact without reopening or paying the booking.
+func (r *Repository) FinalizeGatewayCaptureTx(ctx context.Context, tx pgx.Tx, params CaptureParams) (CaptureResult, error) {
+	result, err := r.RecordCaptureTx(ctx, tx, params)
+	if err != nil || result.LateCapture {
+		return result, err
+	}
+
+	command, err := tx.Exec(ctx, `
+		UPDATE bookings
+		SET status = 'PAID', updated_at = transaction_timestamp()
+		WHERE id = $1::uuid AND status = 'PENDING_PAYMENT'
+	`, result.Attempt.BookingID)
+	if err != nil {
+		return CaptureResult{}, mapPaymentRepositoryError(err)
+	}
+	if command.RowsAffected() == 1 {
+		result.BookingPaid = true
+		return result, nil
+	}
+
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM bookings WHERE id = $1::uuid`, result.Attempt.BookingID).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CaptureResult{}, ErrBookingNotFound
+		}
+		return CaptureResult{}, err
+	}
+	if status == "PAID" && result.Duplicate {
+		return result, nil
+	}
+	return CaptureResult{}, ErrStateConflict
 }
 
 const paymentAttemptSelect = `

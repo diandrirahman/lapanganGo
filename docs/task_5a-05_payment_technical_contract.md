@@ -634,6 +634,22 @@ The safe activation order is:
 
 There is no UI or admin API for these flags.
 
+### 10.1 Gateway capture booking finalization
+
+A sandbox booking with a payment attempt remains `PENDING_PAYMENT` until an
+authorized capture has matched its attempt, provider identity, amount, and
+currency. `AUTHENTICATED_INQUIRY` is the only active capture authority while
+Payment Session is the only controlled-proven webhook family. A future
+`VERIFIED_WEBHOOK` capture requires its own controlled proof and explicit
+contract marker. The same database transaction records the immutable capture
+fact, captures the attempt, writes a sanitized audit, and moves the booking to
+`PAID`. `CONFIRMED` remains a legacy/manual status.
+
+`payment_session.completed`, a browser return, an ingress HTTP `200`, a
+provisional event, and a quarantined event are not capture authority and cannot
+move a booking to `PAID`. A capture after booking expiry or cancellation is
+recorded without reopening or paying the booking.
+
 ## 11. Metrics, alerts, and log contract
 
 Prometheus-style metric names are frozen; implementations may add only
