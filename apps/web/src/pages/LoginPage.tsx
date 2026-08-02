@@ -7,7 +7,10 @@ import { consumePaymentReturnPath } from '../lib/authReturn';
 import { PageShell } from '../components/layout/PageShell';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, ShieldCheck, Store, UserRound } from 'lucide-react';
+import { isPortfolioDemo } from '../demo/config';
+import { startPortfolioDemoSession } from '../demo/state';
+import type { PortfolioDemoRole } from '../demo/config';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
@@ -20,6 +23,22 @@ export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
 
+  const handleDemoLogin = (role: PortfolioDemoRole) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const session = startPortfolioDemoSession(role);
+      login(session.token, session.user);
+      toast.success(`Demo ${role === 'SUPER_ADMIN' ? 'Superadmin' : role === 'OWNER' ? 'Owner' : 'Customer'} aktif`);
+      navigate(getRoleHomeRoute(role), { replace: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Demo tidak dapat dimulai';
+      setError(message);
+      toast.error(message);
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -27,7 +46,7 @@ export const LoginPage: React.FC = () => {
 
     try {
       // Mock mode fallback
-      if (import.meta.env.VITE_USE_MOCK_AUTH === 'true') {
+      if (!isPortfolioDemo && import.meta.env.VITE_USE_MOCK_AUTH === 'true') {
         setTimeout(() => {
           const user = {
             id: 'mock-user-1',
@@ -108,6 +127,26 @@ export const LoginPage: React.FC = () => {
                 <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                 <p>{error}</p>
               </div>
+            )}
+
+            {isPortfolioDemo && (
+              <section className="mb-8 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4" aria-label="Pilihan role demo">
+                <p className="text-sm font-extrabold text-emerald-950">Masuk satu klik ke Portfolio Demo</p>
+                <p className="mt-1 text-xs font-medium leading-relaxed text-emerald-800">
+                  Semua data bersifat sintetis dan tersimpan hanya di browser ini.
+                </p>
+                <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                  <Button type="button" size="sm" onClick={() => handleDemoLogin('CUSTOMER')} disabled={isLoading} className="gap-2 rounded-xl">
+                    <UserRound className="h-4 w-4" /> Customer
+                  </Button>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => handleDemoLogin('OWNER')} disabled={isLoading} className="gap-2 rounded-xl">
+                    <Store className="h-4 w-4" /> Owner
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => handleDemoLogin('SUPER_ADMIN')} disabled={isLoading} className="gap-2 rounded-xl">
+                    <ShieldCheck className="h-4 w-4" /> Superadmin
+                  </Button>
+                </div>
+              </section>
             )}
 
             <form onSubmit={handleSubmit} className="space-y-5">

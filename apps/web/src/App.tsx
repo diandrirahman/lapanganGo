@@ -17,6 +17,7 @@ import { PaymentReturnPage } from './pages/PaymentReturnPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { SuperAdminRoute } from './components/SuperAdminRoute';
 import { isPlatformFinanceAdminEnabled } from './config/features';
+import { PortfolioDemoBanner } from './components/PortfolioDemoBanner';
 
 // Admin Pages
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
@@ -66,6 +67,7 @@ function App() {
             },
           }}
         />
+        <PortfolioDemoBanner />
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage />} />

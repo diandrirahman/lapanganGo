@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { User } from '../types/auth';
+import { isPortfolioDemo, PORTFOLIO_DEMO_SESSION_KEY } from '../demo/config';
 
 interface AuthContextType {
   user: User | null;
@@ -32,7 +33,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       try {
         // If we want to support mock mode for auth as well:
-        if (import.meta.env.VITE_USE_MOCK_AUTH === 'true') {
+        if (!isPortfolioDemo && import.meta.env.VITE_USE_MOCK_AUTH === 'true') {
           setUser({
             id: 'mock-user-1',
             name: 'QA Tester',
@@ -76,6 +77,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = () => {
     localStorage.removeItem('auth_token');
+    if (isPortfolioDemo) localStorage.removeItem(PORTFOLIO_DEMO_SESSION_KEY);
     setToken(null);
     setUser(null);
   };
