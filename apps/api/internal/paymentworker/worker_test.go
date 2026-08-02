@@ -12,9 +12,15 @@ import (
 type workerClaimerFake struct {
 	commands []paymentoutbox.Command
 	claimErr error
+	claims   int
+	onClaim  func()
 }
 
 func (f *workerClaimerFake) ClaimNextForTypes(context.Context, string, time.Duration, []paymentoutbox.CommandType) (paymentoutbox.Command, error) {
+	f.claims++
+	if f.onClaim != nil {
+		f.onClaim()
+	}
 	if f.claimErr != nil {
 		return paymentoutbox.Command{}, f.claimErr
 	}
@@ -30,14 +36,18 @@ type workerProcessorFake struct {
 	timeout time.Duration
 	panic   bool
 	calls   int
+	process func(context.Context, paymentoutbox.Command) error
 }
 
 func (f *workerProcessorFake) CallTimeout() time.Duration { return f.timeout }
 
-func (f *workerProcessorFake) Process(context.Context, paymentoutbox.Command) error {
+func (f *workerProcessorFake) Process(ctx context.Context, command paymentoutbox.Command) error {
 	f.calls++
 	if f.panic {
 		panic("provider response must never kill worker")
+	}
+	if f.process != nil {
+		return f.process(ctx, command)
 	}
 	return nil
 }
@@ -160,4 +170,86 @@ func TestWorkerStartStopsCleanlyOnCancelledContext(t *testing.T) {
 		t.Fatalf("stop observer events = %#v", observer.events)
 	}
 	noopWorkerObserver{}.Record(WorkerEvent{Code: "IGNORED"})
+}
+
+func TestWorkerCancellationDoesNotClaimOrProcessNewCommand(t *testing.T) {
+	claimer := &workerClaimerFake{commands: []paymentoutbox.Command{{ID: "command-cancelled"}}}
+	processor := &workerProcessorFake{timeout: time.Second}
+	worker, err := NewWorker(claimer, processor, WorkerOptions{Lease: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	worker.processOne(ctx)
+	if claimer.claims != 0 || processor.calls != 0 {
+		t.Fatalf("cancelled worker claim/process counts = %d/%d; want 0/0", claimer.claims, processor.calls)
+	}
+}
+
+func TestWorkerCancellationAfterClaimDefersCommandWithoutProcessing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	claimer := &workerClaimerFake{
+		commands: []paymentoutbox.Command{{ID: "command-deferred"}},
+		onClaim:  cancel,
+	}
+	processor := &workerProcessorFake{timeout: time.Second}
+	worker, err := NewWorker(claimer, processor, WorkerOptions{Lease: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.processOne(ctx)
+	if claimer.claims != 1 || processor.calls != 0 {
+		t.Fatalf("post-claim cancellation counts = %d/%d; want 1/0", claimer.claims, processor.calls)
+	}
+}
+
+func TestWorkerCancellationAllowsInFlightProcessorToReturnWithoutFailureEvent(t *testing.T) {
+	started := make(chan struct{})
+	completed := make(chan struct{})
+	claimer := &workerClaimerFake{commands: []paymentoutbox.Command{{ID: "command-in-flight"}}}
+	processor := &workerProcessorFake{
+		timeout: time.Second,
+		process: func(ctx context.Context, _ paymentoutbox.Command) error {
+			close(started)
+			<-ctx.Done()
+			close(completed)
+			return ctx.Err()
+		},
+	}
+	observer := &workerObserverFake{}
+	worker, err := NewWorker(claimer, processor, WorkerOptions{Lease: 10 * time.Second, Poll: time.Millisecond, Observer: observer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		worker.Start(ctx)
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin processing")
+	}
+	cancel()
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight processor did not receive cancellation")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+	if claimer.claims != 1 || processor.calls != 1 {
+		t.Fatalf("in-flight cancellation claim/process counts = %d/%d; want 1/1", claimer.claims, processor.calls)
+	}
+	if len(observer.events) != 1 || observer.events[0].Code != "WORKER_STOPPED" {
+		t.Fatalf("in-flight cancellation events = %#v; want only WORKER_STOPPED", observer.events)
+	}
 }

@@ -190,6 +190,24 @@ func TestProcessorCallTimeoutIsNilSafe(t *testing.T) {
 	}
 }
 
+func TestProcessorCancelledContextFailsClosedBeforeCommandHandling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	adapterCalls := 0
+	processor := &Processor{adapter: payments.NewFakeAdapter(payments.FakeAdapterScript{
+		CreatePayment: func(context.Context, payments.CreatePaymentRequest) (payments.CreatePaymentResponse, error) {
+			adapterCalls++
+			return payments.CreatePaymentResponse{}, nil
+		},
+	})}
+	if err := processor.Process(ctx, paymentoutbox.Command{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled processor error = %v; want context.Canceled", err)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("cancelled processor adapter calls = %d; want 0", adapterCalls)
+	}
+}
+
 func TestCommandExecutionDecisionMatrix(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	attemptID := "00000000-0000-4000-8000-000000000001"

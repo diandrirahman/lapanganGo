@@ -39,6 +39,18 @@ func TestPaymentWorkerDisposableEvidenceGate(t *testing.T) {
 	t.Log("PAYMENT_WORKER_DISPOSABLE_SUITE_ENABLED")
 }
 
+func TestPaymentWorkerDisposableMigrationVersion(t *testing.T) {
+	ctx, pool := openWorkerTestDB(t)
+	var version int
+	var dirty bool
+	if err := pool.QueryRow(ctx, `SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty); err != nil {
+		t.Fatal(err)
+	}
+	if version != 29 || dirty {
+		t.Fatalf("disposable migration state = %d|%t; want 29|false", version, dirty)
+	}
+}
+
 func TestProcessorCreateEnqueuesExactlyOneInquiry(t *testing.T) {
 	ctx, pool := openWorkerTestDB(t)
 	attempt, outbox, processor, _ := newWorkerProcessorFixture(t, ctx, pool, payments.PaymentStatusPending)

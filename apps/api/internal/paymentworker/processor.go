@@ -120,6 +120,9 @@ func isNilDependency(value any) bool {
 }
 
 func (p *Processor) Process(ctx context.Context, command paymentoutbox.Command) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !commandLeaseActive(command, p.now()) {
 		return paymentoutbox.ErrLeaseConflict
 	}
@@ -172,6 +175,9 @@ func (p *Processor) processCreate(ctx context.Context, command paymentoutbox.Com
 	}
 	if !commandLeaseActive(command, p.now()) {
 		return paymentoutbox.ErrLeaseConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	adapterCtx, cancel := context.WithTimeout(ctx, p.adapterTimeout)
 	response, err := p.adapter.CreatePayment(adapterCtx, payments.CreatePaymentRequest{
@@ -409,6 +415,9 @@ func (p *Processor) processInquiry(ctx context.Context, command paymentoutbox.Co
 	}
 	if !commandLeaseActive(command, p.now()) {
 		return paymentoutbox.ErrLeaseConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	adapterCtx, cancel := context.WithTimeout(ctx, p.adapterTimeout)
 	response, err := p.adapter.GetPaymentStatus(adapterCtx, payments.GetPaymentStatusRequest{

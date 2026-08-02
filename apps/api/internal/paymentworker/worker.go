@@ -131,6 +131,12 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 func (w *Worker) processOne(ctx context.Context) {
+	// A cancelled worker is a kill switch: it must not claim new work, and a
+	// command claimed immediately before cancellation is left for lease-expiry
+	// recovery rather than being sent to the provider.
+	if ctx.Err() != nil {
+		return
+	}
 	var command paymentoutbox.Command
 	claimed := false
 	defer func() {
@@ -153,7 +159,13 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 	claimed = true
+	if ctx.Err() != nil {
+		return
+	}
 	if err := w.processor.Process(ctx, command); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		if errors.Is(err, paymentoutbox.ErrLeaseConflict) {
 			w.emit(commandEvent("LEASE_CONFLICT", command))
 			return
