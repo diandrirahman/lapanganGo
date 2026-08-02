@@ -27,6 +27,7 @@ import (
 	"lapangango-api/internal/owners"
 	"lapangango-api/internal/paymentoutbox"
 	"lapangango-api/internal/payments"
+	"lapangango-api/internal/paymentwebhookprocessor"
 	"lapangango-api/internal/paymentwebhooks"
 	"lapangango-api/internal/platformfinance"
 	"lapangango-api/internal/promos"
@@ -242,6 +243,19 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	if startWorkers {
 		go bookingsService.StartExpiryWorker(workerCtx, time.Duration(cfg.BookingExpirySweepIntervalSeconds)*time.Second)
 		go bookingsService.StartAutoCompleteWorker(workerCtx, time.Duration(cfg.BookingAutoCompleteIntervalSeconds)*time.Second)
+		if cfg.PaymentWebhookProcessorEnabled {
+			webhookProcessor, err := paymentwebhookprocessor.NewProcessor(dbPool, paymentAttemptRepository, platformAuditService)
+			if err != nil {
+				workerCancel()
+				return nil, nil, fmt.Errorf("initialize payment webhook processor: %w", err)
+			}
+			webhookWorker, err := paymentwebhookprocessor.NewWorker(webhookProcessor, time.Second)
+			if err != nil {
+				workerCancel()
+				return nil, nil, fmt.Errorf("initialize payment webhook worker: %w", err)
+			}
+			go webhookWorker.Start(workerCtx)
+		}
 	}
 
 	return r, workerCancel, nil

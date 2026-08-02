@@ -417,7 +417,7 @@ func (p *CreatePlatformAuditLogParams) Validate() error {
 					return errors.New("route_family must be a supported webhook route")
 				}
 			case "result":
-				if value, ok := val.(string); !ok || (value != "NEW" && value != "DUPLICATE" && value != "CONFLICT" && value != "UNSUPPORTED" && value != "AUTH_FAILED") {
+				if value, ok := val.(string); !ok || (value != "NEW" && value != "DUPLICATE" && value != "CONFLICT" && value != "UNSUPPORTED" && value != "AUTH_FAILED" && value != "PROCESSED" && value != "TERMINAL") {
 					return errors.New("result must be a supported webhook result")
 				}
 			case "raw_body_hash":
