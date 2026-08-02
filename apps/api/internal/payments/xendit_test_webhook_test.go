@@ -17,7 +17,9 @@ import (
 const xenditWebhookTestToken = "xendit-test-callback-token"
 
 type xenditWebhookFixtureManifest struct {
-	Fixtures []xenditWebhookFixtureExpectation `json:"fixtures"`
+	FixtureVersion string                            `json:"fixture_version"`
+	APIVersion     string                            `json:"api_version"`
+	Fixtures       []xenditWebhookFixtureExpectation `json:"fixtures"`
 }
 
 type xenditWebhookFixtureExpectation struct {
@@ -119,12 +121,15 @@ func TestXenditTestWebhookParserFrozenFixtures(t *testing.T) {
 	manifest := loadXenditWebhookFixtureManifest(t)
 	defaultObservedAt := time.Date(2026, time.January, 15, 11, 0, 0, 0, time.UTC)
 	errorsByFixture := map[string]WebhookErrorCode{
-		"malformed-json":           WebhookJSONMalformed,
-		"unsupported-event":        WebhookEventUnsupported,
-		"unsupported-version":      WebhookSchemaUnsupported,
-		"missing-primary-identity": WebhookPrimaryIDMissing,
-		"oversized-body":           WebhookBodyTooLarge,
-		"invalid-amount":           WebhookAmountInvalid,
+		"malformed-json":                 WebhookJSONMalformed,
+		"unsupported-event":              WebhookEventUnsupported,
+		"unsupported-version":            WebhookSchemaUnsupported,
+		"session-completed":              WebhookSchemaUnsupported,
+		"session-completed-not-captured": WebhookSchemaUnsupported,
+		"session-expired":                WebhookSchemaUnsupported,
+		"missing-primary-identity":       WebhookPrimaryIDMissing,
+		"oversized-body":                 WebhookBodyTooLarge,
+		"invalid-amount":                 WebhookAmountInvalid,
 	}
 
 	for _, fixture := range manifest.Fixtures {
@@ -171,6 +176,96 @@ func TestXenditTestWebhookParserFrozenFixtures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestXenditTestWebhookParserPaymentSessionV2Fixtures(t *testing.T) {
+	verifier := newXenditWebhookVerifier(t)
+	manifest := loadXenditPaymentSessionV2FixtureManifest(t)
+	if manifest.FixtureVersion != "XENDIT_PAYMENT_SESSION_FIXTURES_V2" || manifest.APIVersion != XenditPaymentSessionAPIVersion {
+		t.Fatalf("unexpected Payment Session fixture freeze: version=%q api=%q", manifest.FixtureVersion, manifest.APIVersion)
+	}
+	observedAt := time.Date(2026, time.January, 15, 11, 0, 0, 0, time.UTC)
+
+	for _, fixture := range manifest.Fixtures {
+		fixture := fixture
+		t.Run(fixture.ID, func(t *testing.T) {
+			raw := mustXenditPaymentSessionV2Fixture(t, fixture.File)
+			event, err := verifier.ParseWebhook(context.Background(), ParseWebhookRequest{
+				RawBody: raw, Headers: map[string]string{XenditWebhookAPIVersionHeader: XenditPaymentSessionAPIVersion}, ObservedAt: observedAt,
+			})
+			if err != nil {
+				t.Fatalf("fixture parser rejected: %v", err)
+			}
+			if event.EventKey != fixture.EventKey || event.PrimaryObjectID != fixture.PrimaryObjectID || event.EventType != fixture.EventType || event.PayloadHash != fixture.Hash {
+				t.Fatalf("fixture identity/hash mismatch: %+v", event)
+			}
+			if event.VerificationState != WebhookVerificationDiagnostic || event.ReasonCode != "" {
+				t.Fatalf("Payment Session was not diagnostic: %+v", event)
+			}
+			assertNormalizedWebhookEventRedacted(t, event)
+		})
+	}
+
+	raw := mustXenditPaymentSessionV2Fixture(t, "payment_session_completed_actual.json")
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "missing api version", headers: nil},
+		{name: "wrong api version", headers: map[string]string{XenditWebhookAPIVersionHeader: "2024-11-11"}},
+		{name: "wrong case api version", headers: map[string]string{XenditWebhookAPIVersionHeader: "V1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := verifier.ParseWebhook(context.Background(), ParseWebhookRequest{RawBody: raw, Headers: tc.headers, ObservedAt: observedAt})
+			assertWebhookErrorCode(t, err, WebhookSchemaUnsupported)
+		})
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		t.Fatal("Payment Session fixture data is not an object")
+	}
+	invalidIdentity := cloneJSONMap(payload)
+	invalidData := cloneJSONMap(data)
+	invalidData["id"] = float64(123)
+	invalidIdentity["data"] = invalidData
+	invalidRaw, err := json.Marshal(invalidIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifier.ParseWebhook(context.Background(), ParseWebhookRequest{RawBody: invalidRaw, Headers: map[string]string{XenditWebhookAPIVersionHeader: XenditPaymentSessionAPIVersion}, ObservedAt: observedAt})
+	assertWebhookErrorCode(t, err, WebhookSchemaUnsupported)
+
+	malformedEnvelope := cloneJSONMap(payload)
+	malformedEnvelope["version"] = "2024-11-11"
+	malformedRaw, err := json.Marshal(malformedEnvelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifier.ParseWebhook(context.Background(), ParseWebhookRequest{RawBody: malformedRaw, Headers: map[string]string{XenditWebhookAPIVersionHeader: XenditPaymentSessionAPIVersion}, ObservedAt: observedAt})
+	assertWebhookErrorCode(t, err, WebhookSchemaUnsupported)
+
+	verification, err := verifier.VerifyWebhook(context.Background(), VerifyWebhookRequest{RawBody: raw, Headers: map[string]string{XenditWebhookCallbackTokenHeader: xenditWebhookTestToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := append([]byte(nil), raw...)
+	changed[len(changed)-2] ^= 1
+	changedVerification, err := verifier.VerifyWebhook(context.Background(), VerifyWebhookRequest{RawBody: changed, Headers: map[string]string{XenditWebhookCallbackTokenHeader: xenditWebhookTestToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.PayloadHash == changedVerification.PayloadHash {
+		t.Fatal("modified Payment Session body retained hash")
+	}
+
+	legacyRaw := mustXenditWebhookFixture(t, "payment_session_completed.json")
+	_, err = verifier.ParseWebhook(context.Background(), ParseWebhookRequest{RawBody: legacyRaw, Headers: map[string]string{XenditWebhookAPIVersionHeader: XenditPaymentSessionAPIVersion}, ObservedAt: observedAt})
+	assertWebhookErrorCode(t, err, WebhookSchemaUnsupported)
 }
 
 func TestXenditTestWebhookParserTimestampSemanticsAndDeterminism(t *testing.T) {
@@ -508,7 +603,17 @@ func assertWebhookErrorCode(t *testing.T, err error, want WebhookErrorCode) {
 
 func loadXenditWebhookFixtureManifest(t *testing.T) xenditWebhookFixtureManifest {
 	t.Helper()
-	contents, err := os.ReadFile(filepath.Join(xenditWebhookFixtureDir(t), "manifest.json"))
+	return loadXenditWebhookFixtureManifestFromDir(t, xenditWebhookFixtureDir(t))
+}
+
+func loadXenditPaymentSessionV2FixtureManifest(t *testing.T) xenditWebhookFixtureManifest {
+	t.Helper()
+	return loadXenditWebhookFixtureManifestFromDir(t, xenditPaymentSessionV2FixtureDir(t))
+}
+
+func loadXenditWebhookFixtureManifestFromDir(t *testing.T, dir string) xenditWebhookFixtureManifest {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,6 +633,15 @@ func mustXenditWebhookFixture(t *testing.T, name string) []byte {
 	return raw
 }
 
+func mustXenditPaymentSessionV2Fixture(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(xenditPaymentSessionV2FixtureDir(t), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func xenditWebhookFixtureDir(t *testing.T) string {
 	t.Helper()
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -535,6 +649,23 @@ func xenditWebhookFixtureDir(t *testing.T) string {
 		t.Fatal("locate webhook fixture test")
 	}
 	return filepath.Join(filepath.Dir(sourceFile), "testdata", "xendit_webhooks_v1")
+}
+
+func xenditPaymentSessionV2FixtureDir(t *testing.T) string {
+	t.Helper()
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate Payment Session fixture test")
+	}
+	return filepath.Join(filepath.Dir(sourceFile), "testdata", "xendit_payment_sessions_v2")
+}
+
+func cloneJSONMap(values map[string]any) map[string]any {
+	clone := make(map[string]any, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func assertNormalizedWebhookEventRedacted(t *testing.T, event WebhookEvent) {

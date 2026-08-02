@@ -80,6 +80,63 @@ func TestIngressAcceptsNormalizedWebhookWithoutJWT(t *testing.T) {
 	}
 }
 
+func TestIngressAcceptsObservedPaymentSessionV2WithoutPersistingDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	verifier, err := payments.NewXenditTestWebhookVerifier("test-callback-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &memoryRepository{}
+	service, err := NewService(verifier, repo, func() time.Time { return time.Date(2026, 1, 15, 11, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(service)
+	handler.correlationID = func() string { return "webhook:payment-session-v2" }
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	body := `{"event":"payment_session.completed","business_id":"biz_fixture_0001","created":"2020-04-20T16:25:52Z","data":{"id":"ps_ingress_v2_0001","amount":125000,"currency":"IDR","payment_request_id":"pr_ingress_v2_0001","status":"COMPLETED","customer_id":"<redacted>","payment_token_id":"<redacted>","payment_link_url":"<redacted>","metadata":{"<redacted>":"<redacted>"},"allowed_payment_channels":["QRIS"]}}`
+	request := httptest.NewRequest(http.MethodPost, "/webhooks/xendit/payment-session", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Callback-Token", "test-callback-token")
+	request.Header.Set("Api-Version", "v1")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(repo.accepted) != 1 || len(repo.unsupported) != 0 {
+		t.Fatalf("status=%d accepted=%d unsupported=%d", response.Code, len(repo.accepted), len(repo.unsupported))
+	}
+	event := repo.accepted[0].Event
+	if event.EventKey != "XENDIT|payment_session.completed|ps_ingress_v2_0001" || event.ProviderSessionID != "ps_ingress_v2_0001" || event.ProviderPaymentReqID != "pr_ingress_v2_0001" || event.State != payments.WebhookEventStatePending {
+		t.Fatalf("Payment Session V2 normalization = %#v", event)
+	}
+	for _, forbidden := range []string{"customer", "token", "checkout", "redacted"} {
+		if strings.Contains(strings.ToLower(response.Body.String()+" "+event.SourceReference+" "+event.EventKey), forbidden) {
+			t.Fatalf("response or normalized event leaked %q", forbidden)
+		}
+	}
+}
+
+func TestIngressPaymentSessionV2WithoutExactAPIVersionCreatesOnlyUnsupportedAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	verifier, _ := payments.NewXenditTestWebhookVerifier("test-callback-token")
+	repo := &memoryRepository{}
+	service, _ := NewService(verifier, repo, nil)
+	router := gin.New()
+	NewHandler(service).RegisterRoutes(router)
+	body := `{"event":"payment_session.expired","business_id":"biz_fixture_0001","created":"2020-04-20T16:25:52Z","data":{"id":"ps_ingress_v2_0002","amount":125000,"currency":"IDR","payment_request_id":"pr_ingress_v2_0002","status":"EXPIRED"}}`
+	request := httptest.NewRequest(http.MethodPost, "/webhooks/xendit/payment-session", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Callback-Token", "test-callback-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(repo.accepted) != 0 || len(repo.unsupported) != 1 {
+		t.Fatalf("status=%d accepted=%d unsupported=%d", response.Code, len(repo.accepted), len(repo.unsupported))
+	}
+	if strings.Contains(strings.ToLower(response.Body.String()), "api-version") {
+		t.Fatalf("generic response leaked version requirement: %s", response.Body.String())
+	}
+}
+
 func TestIngressRejectsInvalidAuthAndDoesNotPersist(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	verifier, _ := payments.NewXenditTestWebhookVerifier("test-callback-token")

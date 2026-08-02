@@ -63,6 +63,10 @@ func (h *Handler) receive(family RouteFamily) gin.HandlerFunc {
 		if len(values) == 1 {
 			headers["x-callback-token"] = values[0]
 		}
+		apiVersions := c.Request.Header.Values("Api-Version")
+		if len(apiVersions) == 1 {
+			headers["api-version"] = apiVersions[0]
+		}
 		result, _ := h.service.Receive(ctx, ReceiveRequest{RouteFamily: family, RawBody: body, Headers: headers, ReceivedAt: receivedAt, CorrelationID: correlationID})
 		respond(c, result.Status, result.Category, correlationID)
 	}

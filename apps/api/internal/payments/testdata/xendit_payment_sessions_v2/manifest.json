@@ -1,0 +1,10 @@
+{
+  "fixture_version": "XENDIT_PAYMENT_SESSION_FIXTURES_V2",
+  "auth_contract_version": "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL",
+  "api_version": "v1",
+  "fixtures": [
+    {"id":"session-completed-actual","file":"payment_session_completed_actual.json","family":"payment_session","event_type":"payment_session.completed","event_key":"XENDIT|payment_session.completed|ps_fixture_live_completed_0001","primary_object_id":"ps_fixture_live_completed_0001","hash":"1570a442b641c047d122ffd2e49e0d25ef8ba10d6e59b26f58b964481ae53f14","headers":"x-callback-token:PRESENT_CURRENT,api-version:v1","verification":"DIAGNOSTIC","processing":"RECEIVED","reason":"NONE","duplicate":"NEW","normalized":{"state":"PENDING","amount_rupiah":125000,"currency":"IDR","payment_request_id":"pr_fixture_live_completed_0001"}},
+    {"id":"session-expired-actual","file":"payment_session_expired_actual.json","family":"payment_session","event_type":"payment_session.expired","event_key":"XENDIT|payment_session.expired|ps_fixture_live_expired_0001","primary_object_id":"ps_fixture_live_expired_0001","hash":"bb16b976653bf6473155a8858652ab3311be00f3cad5b2c70f7bd799fe0f1639","headers":"x-callback-token:PRESENT_CURRENT,api-version:v1","verification":"DIAGNOSTIC","processing":"RECEIVED","reason":"NONE","duplicate":"NEW","normalized":{"state":"EXPIRED","amount_rupiah":100000,"currency":"IDR","payment_request_id":"pr_fixture_live_expired_0001"}},
+    {"id":"session-completed-duplicate","file":"payment_session_completed_actual.json","family":"payment_session","event_type":"payment_session.completed","event_key":"XENDIT|payment_session.completed|ps_fixture_live_completed_0001","primary_object_id":"ps_fixture_live_completed_0001","hash":"1570a442b641c047d122ffd2e49e0d25ef8ba10d6e59b26f58b964481ae53f14","headers":"x-callback-token:PRESENT_CURRENT,api-version:v1","verification":"DIAGNOSTIC","processing":"DUPLICATE","reason":"NONE","duplicate":"SAME_KEY_SAME_HASH_NOOP","normalized":{"state":"PENDING","amount_rupiah":125000,"currency":"IDR","payment_request_id":"pr_fixture_live_completed_0001"}}
+  ]
+}

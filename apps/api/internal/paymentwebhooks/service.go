@@ -81,7 +81,7 @@ func (s *Service) Receive(ctx context.Context, request ReceiveRequest) (ReceiveR
 	}
 
 	event, err := s.verifier.ParseWebhook(ctx, payments.ParseWebhookRequest{
-		RawBody: request.RawBody, ObservedAt: request.ReceivedAt, MaxBodyBytes: payments.XenditWebhookMaxBodyBytes,
+		RawBody: request.RawBody, Headers: request.Headers, ObservedAt: request.ReceivedAt, MaxBodyBytes: payments.XenditWebhookMaxBodyBytes,
 	})
 	if err != nil {
 		if isUnsupportedParseError(err) {
@@ -107,7 +107,7 @@ func (s *Service) Receive(ctx context.Context, request ReceiveRequest) (ReceiveR
 		if attempt != nil {
 			paymentAttemptID = &attempt.ID
 			event, err = s.verifier.ParseWebhook(ctx, payments.ParseWebhookRequest{
-				RawBody: request.RawBody, ObservedAt: request.ReceivedAt, MaxBodyBytes: payments.XenditWebhookMaxBodyBytes,
+				RawBody: request.RawBody, Headers: request.Headers, ObservedAt: request.ReceivedAt, MaxBodyBytes: payments.XenditWebhookMaxBodyBytes,
 				ExpectedAmountRupiah: attempt.AmountRupiah, ExpectedCurrency: attempt.Currency,
 				ExpectedPaymentRequestID: attempt.PaymentRequestID, ExpectedPaymentID: attempt.PaymentID,
 			})

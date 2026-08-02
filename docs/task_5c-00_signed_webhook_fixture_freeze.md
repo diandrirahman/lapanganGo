@@ -34,4 +34,11 @@ Each valid-token Payment Session row remains `DIAGNOSTIC` because runtime delive
 
 Fixtures, manifest headers, normalized payloads, audit expectations, and metrics contain no callback token, authorization value, API key, PAN, CVV, credential, saved-payment token, real customer identity, sensitive checkout URL, raw provider error, or raw webhook storage/log evidence. Metrics use only event-category counters; provider/object IDs are not metric labels.
 
-The Payment Session callback-token header and the synthetic Payment/capture schema remain provisional provider assumptions. The documented refund callback-token surface supports the token form, but this task does not turn any fixture into provider-runtime evidence. After 5C-03, controlled Xendit Dashboard delivery must confirm the exact Payment Session wire contract without storing its token or raw body; any different auth/signing/timestamp/event-identity behavior returns Phase 5C to Phase 5A.
+The original V1 Payment Session body is historical provisional evidence only.
+Controlled Xendit Dashboard delivery confirmed the callback-token contract but
+showed a distinct `api-version: v1` envelope and `data.id` session identity.
+The synthetic `xendit_payment_sessions_v2` fixture set is the active Payment
+Session parser oracle; it contains no real token, customer, checkout, payment
+token, metadata, or raw provider data. Payment/capture and refund remain on the
+V1 contract. The processor remains disabled until V2 passes a repeated
+controlled delivery proof without raw-data persistence.

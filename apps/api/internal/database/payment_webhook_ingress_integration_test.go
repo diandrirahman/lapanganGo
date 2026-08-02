@@ -257,3 +257,112 @@ func TestPaymentWebhookIngressRepository_DurableDuplicateAndConflict(t *testing.
 		t.Fatalf("database failure: result=%+v err=%v", result, err)
 	}
 }
+
+func TestPaymentSessionV2IngressRepositoryPersistsOnlyNormalizedDiagnosticFacts(t *testing.T) {
+	adminDSN := checkOptIn(t)
+	targetDSN, cleanup := createDisposableDB(t, adminDSN)
+	defer cleanup()
+
+	db, migration := setupMigrate(t, targetDSN)
+	defer db.Close()
+	defer migration.Close()
+	migrateToVersion(t, migration, 29)
+	assertMigrationVersion(t, migration, 29, false)
+
+	pool, err := pgxpool.New(context.Background(), targetDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	verifier, err := payments.NewXenditTestWebhookVerifier("test-callback-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := paymentwebhooks.NewPostgresRepository(pool, audit.NewPlatformRepository())
+	service, err := paymentwebhooks.NewService(verifier, repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"event":"payment_session.completed","business_id":"biz_fixture_0001","created":"2020-04-20T16:25:52Z","data":{"id":"ps_ingress_v2_0001","amount":125000,"currency":"IDR","payment_request_id":"pr_ingress_v2_0001","status":"COMPLETED","customer_id":"<redacted>","description":"<redacted>","payment_token_id":"<redacted>","payment_link_url":"<redacted>","success_return_url":"<redacted>","cancel_return_url":"<redacted>","metadata":{"<redacted>":"<redacted>"},"channel_properties":{"cards":{"mid_label":"<redacted>"}},"allowed_payment_channels":["QRIS","CARD"]}}`)
+	request := paymentwebhooks.ReceiveRequest{
+		RouteFamily: paymentwebhooks.RoutePaymentSession, RawBody: body,
+		Headers:    map[string]string{"x-callback-token": "test-callback-token", "api-version": "v1"},
+		ReceivedAt: time.Date(2026, 1, 15, 11, 0, 0, 0, time.UTC), CorrelationID: "webhook:session-v2-new",
+	}
+	result, err := service.Receive(context.Background(), request)
+	if err != nil || !result.Accepted || result.Status != 200 {
+		t.Fatalf("first receive: result=%+v err=%v", result, err)
+	}
+
+	const key = "XENDIT|payment_session.completed|ps_ingress_v2_0001"
+	var verification, processing, payload, originalHash string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT verification_state, processing_state, redacted_payload::text, raw_body_hash
+		FROM payment_webhook_events WHERE provider_event_key=$1
+	`, key).Scan(&verification, &processing, &payload, &originalHash); err != nil {
+		t.Fatal(err)
+	}
+	if verification != "DIAGNOSTIC" || processing != "RECEIVED" {
+		t.Fatalf("first lifecycle = %s/%s", verification, processing)
+	}
+	for _, forbidden := range []string{"business", "customer", "description", "payment_token", "payment_link", "return_url", "metadata", "channel_properties", "<redacted>"} {
+		if strings.Contains(strings.ToLower(payload), forbidden) {
+			t.Fatalf("redacted payload retained %q: %s", forbidden, payload)
+		}
+	}
+
+	request.CorrelationID = "webhook:session-v2-duplicate"
+	result, err = service.Receive(context.Background(), request)
+	if err != nil || !result.Accepted || result.Status != 200 {
+		t.Fatalf("duplicate receive: result=%+v err=%v", result, err)
+	}
+	var eventCount, duplicateAudit int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM payment_webhook_events WHERE provider_event_key=$1`, key).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM platform_audit_logs WHERE correlation_id='webhook:session-v2-duplicate' AND action='webhook_duplicate'`).Scan(&duplicateAudit); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 || duplicateAudit != 1 {
+		t.Fatalf("same-body duplicate = events=%d audit=%d", eventCount, duplicateAudit)
+	}
+
+	conflict := append([]byte(nil), body...)
+	conflict = []byte(strings.Replace(string(conflict), `"description":"<redacted>"`, `"description":"<redacted-changed>"`, 1))
+	request.RawBody = conflict
+	request.CorrelationID = "webhook:session-v2-conflict"
+	result, err = service.Receive(context.Background(), request)
+	if err != nil || !result.Accepted || result.Status != 200 {
+		t.Fatalf("conflict receive: result=%+v err=%v", result, err)
+	}
+	var finalHash, finalVerification, finalProcessing, finalPayload, conflictReason string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT raw_body_hash, verification_state, processing_state, redacted_payload::text
+		FROM payment_webhook_events WHERE provider_event_key=$1
+	`, key).Scan(&finalHash, &finalVerification, &finalProcessing, &finalPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT metadata->>'reason' FROM platform_audit_logs WHERE correlation_id='webhook:session-v2-conflict' AND action='webhook_conflict'`).Scan(&conflictReason); err != nil {
+		t.Fatal(err)
+	}
+	if finalHash != originalHash || finalPayload != payload || finalVerification != "QUARANTINED" || finalProcessing != "TERMINAL" || conflictReason != "IDEMPOTENCY_CONFLICT" {
+		t.Fatalf("conflict immutability/lifecycle hash=%t payload=%t state=%s/%s reason=%s", finalHash == originalHash, finalPayload == payload, finalVerification, finalProcessing, conflictReason)
+	}
+
+	unsupported := request
+	unsupported.RawBody = body
+	unsupported.Headers = map[string]string{"x-callback-token": "test-callback-token"}
+	unsupported.CorrelationID = "webhook:session-v2-missing-version"
+	result, err = service.Receive(context.Background(), unsupported)
+	if err != nil || !result.Accepted || result.Status != 200 {
+		t.Fatalf("missing version receive: result=%+v err=%v", result, err)
+	}
+	var unsupportedAudit int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM platform_audit_logs WHERE correlation_id='webhook:session-v2-missing-version' AND action='webhook_conflict' AND metadata->>'result'='UNSUPPORTED' AND metadata->>'reason'='INVALID_REQUEST'`).Scan(&unsupportedAudit); err != nil {
+		t.Fatal(err)
+	}
+	if unsupportedAudit != 1 {
+		t.Fatalf("missing version did not create sanitized unsupported audit: %d", unsupportedAudit)
+	}
+}

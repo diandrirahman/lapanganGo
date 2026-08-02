@@ -373,6 +373,25 @@ only after the hardened ingress exists. A successful controlled test must prove
 callback-token presence/match without recording its value before the processor
 can be enabled.
 
+### 6.2.1 Controlled Payment Session wire correction
+
+Controlled Xendit Test Mode delivery confirmed the callback-token contract but
+replaced the provisional compact body shape. Payment Session uses
+`api-version: v1`, top-level `event`, `business_id`, `created`, and `data`,
+and derives its primary session identity from `data.id`. The deterministic key
+therefore remains `XENDIT|<event type>|<data.id>`; `webhook-id` is not part of
+identity. The provider body may carry extra diagnostic objects and arrays, but
+the parser retains only typed session/payment-request identity, state, amount,
+currency, event time, and raw-body hash. All customer, business, checkout,
+return URL, payment-token, metadata, and provider-description values are
+discarded before normalization, audit, logs, metrics, and persistence.
+
+The exact callback-token comparison remains the only authentication mechanism.
+HMAC, signed timestamp, and token rotation overlap remain `NOT_APPLICABLE`.
+The controlled-proof record and synthetic V2 fixture set are the authoritative
+Payment Session schema oracle; V1 stays historical for the earlier provisional
+assumption and unrelated provider families.
+
 ### 6.3 Return URLs
 
 Success/cancel URLs are constructed from a backend HTTPS allowlist and opaque
@@ -713,8 +732,11 @@ monotonic state.
 
 After 5C-03 creates the hardened diagnostic ingress, controlled Dashboard
 delivery is a second hard stop before 5C-05 or
-`PAYMENT_WEBHOOK_PROCESSOR_ENABLED`. If the delivery differs from the
-provisional fixture, Phase 5C stops and returns to Phase 5A.
+`PAYMENT_WEBHOOK_PROCESSOR_ENABLED`. The first delivery exposed a Payment
+Session schema mismatch and returned the work to Phase 5A. After the V2
+correction, repeated controlled delivery must establish a
+`DIAGNOSTIC/RECEIVED` inbox fact and duplicate same-body no-op before this gate
+can be considered closed.
 
 ## 13. Transaction and lock order
 

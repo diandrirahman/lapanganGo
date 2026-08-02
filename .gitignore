@@ -19,6 +19,7 @@ docs/*
 !docs/task_5a-03_payment_refund_state_machine.md
 !docs/task_5a-04_security_privacy_operational_gate.md
 !docs/task_5a-05_payment_technical_contract.md
+!docs/task_5a-05_payment_session_controlled_delivery_evidence.md
 !docs/task_5b-00_repository_migration_preflight.md
 !docs/task_5b-01_payment_attempts_migration.md
 !docs/task_5b-02_strict_payment_dto_money_validation.md

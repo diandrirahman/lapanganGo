@@ -232,7 +232,10 @@ type WebhookVerification struct {
 }
 
 type ParseWebhookRequest struct {
-	RawBody                  []byte
+	RawBody []byte
+	// Headers contains only the small allowlist of provider headers required
+	// for schema selection. It must never be persisted or logged.
+	Headers                  map[string]string
 	ObservedAt               time.Time
 	MaxBodyBytes             int
 	ExpectedAmountRupiah     int64

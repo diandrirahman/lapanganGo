@@ -13,6 +13,8 @@ import (
 const (
 	XenditWebhookAuthContractVersion = "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL"
 	XenditWebhookCallbackTokenHeader = "x-callback-token"
+	XenditWebhookAPIVersionHeader    = "api-version"
+	XenditPaymentSessionAPIVersion   = "v1"
 	XenditWebhookMaxBodyBytes        = 256 * 1024
 )
 
@@ -116,6 +118,9 @@ func (v *XenditTestWebhookVerifier) ParseWebhook(_ context.Context, req ParseWeb
 	if err != nil {
 		return WebhookEvent{}, err
 	}
+	if isXenditPaymentSessionEvent(envelope.eventType) && req.Headers[XenditWebhookAPIVersionHeader] != XenditPaymentSessionAPIVersion {
+		return WebhookEvent{}, newWebhookError(WebhookSchemaUnsupported)
+	}
 	state, err := normalizedXenditWebhookState(envelope.eventType, envelope.status)
 	if err != nil {
 		return WebhookEvent{}, err
@@ -217,16 +222,9 @@ func parseXenditWebhookEnvelope(rawBody []byte) (xenditWebhookEnvelope, map[stri
 	if err := json.Unmarshal(rawBody, &outer); err != nil {
 		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookJSONMalformed)
 	}
-	if !hasOnlyKeys(outer, "event", "version", "created", "data") {
-		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookSchemaUnsupported)
-	}
 	eventType, err := requiredJSONString(outer, "event", WebhookEventUnsupported)
 	if err != nil || !isFrozenXenditEventType(eventType) {
 		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookEventUnsupported)
-	}
-	version, err := requiredJSONString(outer, "version", WebhookSchemaUnsupported)
-	if err != nil || version != "2024-11-11" {
-		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookSchemaUnsupported)
 	}
 	created, err := requiredJSONString(outer, "created", WebhookEventTimeInvalid)
 	if err != nil {
@@ -235,6 +233,73 @@ func parseXenditWebhookEnvelope(rawBody []byte) (xenditWebhookEnvelope, map[stri
 	createdAt, err := time.Parse(time.RFC3339, created)
 	if err != nil || createdAt.Format(time.RFC3339) != created {
 		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookEventTimeInvalid)
+	}
+	if isXenditPaymentSessionEvent(eventType) {
+		return parseXenditPaymentSessionEnvelope(outer, eventType, createdAt)
+	}
+	return parseLegacyXenditWebhookEnvelope(outer, eventType, createdAt)
+}
+
+// Payment Session Test Mode deliveries use an observed v1 envelope that is
+// intentionally distinct from the older compact fixture envelope. The raw
+// body may carry additional provider diagnostics, but only the typed core
+// payment facts below are retained by the normalized event.
+func parseXenditPaymentSessionEnvelope(outer map[string]json.RawMessage, eventType string, createdAt time.Time) (xenditWebhookEnvelope, map[string]json.RawMessage, bool, error) {
+	if !hasOnlyKeys(outer, "event", "business_id", "created", "data") {
+		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookSchemaUnsupported)
+	}
+	if _, err := requiredJSONString(outer, "business_id", WebhookSchemaUnsupported); err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+
+	data, err := requiredJSONObject(outer, "data")
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+	status, err := requiredJSONString(data, "status", WebhookSchemaUnsupported)
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+	currency, err := requiredJSONString(data, "currency", WebhookCurrencyMismatch)
+	if err != nil || !xenditCurrencyPattern.MatchString(currency) {
+		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookCurrencyMismatch)
+	}
+	amountRupiah, err := requiredXenditAmount(data)
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+	paymentSessionID, err := requiredJSONString(data, "id", WebhookSchemaUnsupported)
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+	paymentRequestID, err := requiredJSONString(data, "payment_request_id", WebhookSchemaUnsupported)
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+	paymentID, err := optionalJSONString(data, "payment_id", WebhookSchemaUnsupported)
+	if err != nil {
+		return xenditWebhookEnvelope{}, nil, false, err
+	}
+
+	return xenditWebhookEnvelope{
+		eventType:        eventType,
+		createdAt:        createdAt,
+		paymentSessionID: paymentSessionID,
+		paymentRequestID: paymentRequestID,
+		paymentID:        paymentID,
+		status:           status,
+		amountRupiah:     amountRupiah,
+		currency:         currency,
+	}, data, false, nil
+}
+
+func parseLegacyXenditWebhookEnvelope(outer map[string]json.RawMessage, eventType string, createdAt time.Time) (xenditWebhookEnvelope, map[string]json.RawMessage, bool, error) {
+	if !hasOnlyKeys(outer, "event", "version", "created", "data") {
+		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookSchemaUnsupported)
+	}
+	version, err := requiredJSONString(outer, "version", WebhookSchemaUnsupported)
+	if err != nil || version != "2024-11-11" {
+		return xenditWebhookEnvelope{}, nil, false, newWebhookError(WebhookSchemaUnsupported)
 	}
 
 	dataRaw, ok := outer["data"]
@@ -295,6 +360,18 @@ func parseXenditWebhookEnvelope(rawBody []byte) (xenditWebhookEnvelope, map[stri
 		currency:         currency,
 		reasonCode:       reasonCode,
 	}, data, unexpectedData, nil
+}
+
+func requiredJSONObject(values map[string]json.RawMessage, key string) (map[string]json.RawMessage, error) {
+	value, present := values[key]
+	if !present {
+		return nil, newWebhookError(WebhookSchemaUnsupported)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(value, &decoded); err != nil || decoded == nil {
+		return nil, newWebhookError(WebhookSchemaUnsupported)
+	}
+	return decoded, nil
 }
 
 func requiredJSONString(values map[string]json.RawMessage, key string, code WebhookErrorCode) (string, error) {
@@ -429,6 +506,10 @@ func isFrozenXenditEventType(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func isXenditPaymentSessionEvent(eventType string) bool {
+	return eventType == "payment_session.completed" || eventType == "payment_session.expired"
 }
 
 func isSafeXenditReasonCode(reason string) bool {

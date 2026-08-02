@@ -115,6 +115,52 @@ func TestXenditWebhookFixturesV1ReplayIdentityIsConsistent(t *testing.T) {
 	}
 }
 
+func TestXenditPaymentSessionFixturesV2AreDeterministicAndRedacted(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate fixture test")
+	}
+	fixtureDir := filepath.Join(filepath.Dir(sourceFile), "testdata", "xendit_payment_sessions_v2")
+	manifestBytes, err := os.ReadFile(filepath.Join(fixtureDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest webhookFixtureManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("parse V2 manifest: %v", err)
+	}
+	if manifest.FixtureVersion != "XENDIT_PAYMENT_SESSION_FIXTURES_V2" || len(manifest.Fixtures) != 3 {
+		t.Fatalf("unexpected Payment Session fixture freeze: version=%q count=%d", manifest.FixtureVersion, len(manifest.Fixtures))
+	}
+
+	for _, fixture := range manifest.Fixtures {
+		t.Run(fixture.ID, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(fixtureDir, fixture.File))
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(raw)
+			if got := hex.EncodeToString(digest[:]); got != fixture.Hash {
+				t.Fatalf("raw hash = %s; want %s", got, fixture.Hash)
+			}
+			if !json.Valid(raw) {
+				t.Fatal("fixture must contain valid JSON")
+			}
+			key, primary := canonicalPaymentSessionFixtureIdentity(t, raw)
+			if key != fixture.EventKey || primary != fixture.PrimaryObjectID {
+				t.Fatalf("Payment Session identity = %q/%q; want %q/%q", key, primary, fixture.EventKey, fixture.PrimaryObjectID)
+			}
+			assertNormalizedPayloadIsRedacted(t, fixture.Normalized)
+		})
+	}
+
+	original := fixtureByID(t, manifest, "session-completed-actual")
+	duplicate := fixtureByID(t, manifest, "session-completed-duplicate")
+	if original.EventKey != duplicate.EventKey || original.Hash != duplicate.Hash || duplicate.Processing != "DUPLICATE" || duplicate.Duplicate != "SAME_KEY_SAME_HASH_NOOP" {
+		t.Fatalf("Payment Session duplicate contract is inconsistent: original=%+v duplicate=%+v", original, duplicate)
+	}
+}
+
 func fixtureRawBytes(dir, name string) ([]byte, error) {
 	if name != "oversized_body.spec" {
 		return os.ReadFile(filepath.Join(dir, name))
@@ -179,4 +225,18 @@ func canonicalCaptureFixtureIdentity(t *testing.T, fixtureDir, file string) (str
 		t.Fatalf("canonical capture parsing is non-deterministic for %q", file)
 	}
 	return firstKey, payload.Data.PaymentID
+}
+
+func canonicalPaymentSessionFixtureIdentity(t *testing.T, raw []byte) (string, string) {
+	t.Helper()
+	var payload struct {
+		Event string `json:"event"`
+		Data  struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || (payload.Event != "payment_session.completed" && payload.Event != "payment_session.expired") || payload.Data.ID == "" {
+		t.Fatalf("parse canonical Payment Session fixture: %v", err)
+	}
+	return "XENDIT|" + payload.Event + "|" + payload.Data.ID, payload.Data.ID
 }
