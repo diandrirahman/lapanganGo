@@ -134,7 +134,7 @@ func (r *PostgresRepository) Accept(ctx context.Context, params AcceptParams) (A
 }
 
 func validAcceptParams(params AcceptParams) bool {
-	return params.Event.EventKey != "" && params.Event.EventType != "" && params.Event.PrimaryObjectID != "" && params.Event.PayloadHash != "" && params.AuthContract == payments.XenditWebhookAuthContractVersion && params.CorrelationID != "" && !params.ReceivedAt.IsZero()
+	return params.Event.EventKey != "" && params.Event.EventType != "" && params.Event.PrimaryObjectID != "" && params.Event.PayloadHash != "" && payments.IsXenditWebhookContractVersion(params.AuthContract) && params.CorrelationID != "" && !params.ReceivedAt.IsZero()
 }
 
 func initialLifecycle(event payments.WebhookEvent) string {

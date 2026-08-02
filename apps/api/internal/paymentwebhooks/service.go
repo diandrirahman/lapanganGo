@@ -18,19 +18,31 @@ const maxJSONDepth = 16
 const maxJSONMembers = 128
 
 type Service struct {
-	verifier   Verifier
-	repository Repository
-	now        Clock
+	verifier     Verifier
+	repository   Repository
+	now          Clock
+	authContract string
 }
 
 func NewService(verifier Verifier, repository Repository, now Clock) (*Service, error) {
+	return NewServiceWithContract(verifier, repository, now, payments.XenditWebhookAuthContractVersion)
+}
+
+// NewServiceWithContract selects the reviewed ingress contract without
+// changing its authentication algorithm. VERIFIED only promotes parser-valid,
+// semantically valid Payment Session facts covered by the controlled proof;
+// other provider families remain diagnostic and quarantined facts stay terminal.
+func NewServiceWithContract(verifier Verifier, repository Repository, now Clock, authContract string) (*Service, error) {
 	if verifier == nil || repository == nil {
+		return nil, ErrInvalidIngressInput
+	}
+	if !payments.IsXenditWebhookContractVersion(authContract) {
 		return nil, ErrInvalidIngressInput
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{verifier: verifier, repository: repository, now: now}, nil
+	return &Service{verifier: verifier, repository: repository, now: now, authContract: authContract}, nil
 }
 
 type ReceiveRequest struct {
@@ -116,9 +128,14 @@ func (s *Service) Receive(ctx context.Context, request ReceiveRequest) (ReceiveR
 			}
 		}
 	}
+	if s.authContract == payments.XenditWebhookVerifiedContractVersion &&
+		payments.IsXenditWebhookEventEligibleForVerifiedContract(event.EventType) &&
+		event.VerificationState == payments.WebhookVerificationDiagnostic {
+		event.VerificationState = payments.WebhookVerificationVerified
+	}
 
 	_, err = s.repository.Accept(ctx, AcceptParams{
-		Event: event, AuthContract: verification.AuthContractVersion, CorrelationID: request.CorrelationID,
+		Event: event, AuthContract: s.authContract, CorrelationID: request.CorrelationID,
 		RouteFamily: request.RouteFamily, ReceivedAt: request.ReceivedAt, PaymentAttemptID: paymentAttemptID,
 	})
 	if err != nil {

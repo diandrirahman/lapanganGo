@@ -58,6 +58,14 @@ func TestSetupRouterWebhookRoutesAreFlagGatedAndIsolated(t *testing.T) {
 			t.Fatalf("enabled webhook attempt %d status=%d; route inherited JWT or general limiter", attempt+1, response.Code)
 		}
 	}
+
+	verifiedConfig := enabledConfig
+	verifiedConfig.PaymentWebhookContractVersion = "XENDIT_CALLBACK_TOKEN_V1_VERIFIED"
+	verified, verifiedCancel, err := setupRouter(context.Background(), verifiedConfig, nil, false)
+	if err != nil || verified == nil {
+		t.Fatalf("setup verified ingress router: router=%v err=%v", verified, err)
+	}
+	defer verifiedCancel()
 }
 
 func TestRouterWiring_FinanceAdminDisabled(t *testing.T) {

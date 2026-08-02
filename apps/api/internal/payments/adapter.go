@@ -248,11 +248,12 @@ type WebhookVerificationState string
 
 const (
 	WebhookVerificationDiagnostic  WebhookVerificationState = "DIAGNOSTIC"
+	WebhookVerificationVerified    WebhookVerificationState = "VERIFIED"
 	WebhookVerificationQuarantined WebhookVerificationState = "QUARANTINED"
 )
 
 func (s WebhookVerificationState) IsValid() bool {
-	return s == WebhookVerificationDiagnostic || s == WebhookVerificationQuarantined
+	return s == WebhookVerificationDiagnostic || s == WebhookVerificationVerified || s == WebhookVerificationQuarantined
 }
 
 type WebhookReplayDecision string

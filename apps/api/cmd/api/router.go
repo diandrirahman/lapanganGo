@@ -79,7 +79,7 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 	// behavior.
 	platformAuditRepository := audit.NewPlatformRepository()
 	if cfg.PaymentWebhookIngressEnabled {
-		if cfg.PaymentWebhookContractVersion != payments.XenditWebhookAuthContractVersion {
+		if !payments.IsXenditWebhookContractVersion(cfg.PaymentWebhookContractVersion) {
 			return nil, nil, fmt.Errorf("webhook ingress contract version is not implemented: %s", cfg.PaymentWebhookContractVersion)
 		}
 		verifier, err := payments.NewXenditTestWebhookVerifier(cfg.XenditWebhookToken)
@@ -87,7 +87,7 @@ func setupRouter(ctx context.Context, cfg config.Config, dbPool *pgxpool.Pool, s
 			return nil, nil, fmt.Errorf("initialize webhook verifier: %w", err)
 		}
 		webhookRepository := paymentwebhooks.NewPostgresRepository(dbPool, platformAuditRepository)
-		webhookService, err := paymentwebhooks.NewService(verifier, webhookRepository, nil)
+		webhookService, err := paymentwebhooks.NewServiceWithContract(verifier, webhookRepository, nil, cfg.PaymentWebhookContractVersion)
 		if err != nil {
 			return nil, nil, fmt.Errorf("initialize webhook ingress: %w", err)
 		}

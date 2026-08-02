@@ -80,6 +80,61 @@ func TestIngressAcceptsNormalizedWebhookWithoutJWT(t *testing.T) {
 	}
 }
 
+func TestIngressVerifiedContractPromotesOnlyControlledPaymentSessionFacts(t *testing.T) {
+	verifier, err := payments.NewXenditTestWebhookVerifier("test-callback-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &memoryRepository{}
+	service, err := NewServiceWithContract(verifier, repo, func() time.Time { return time.Date(2026, 1, 15, 11, 0, 0, 0, time.UTC) }, payments.XenditWebhookVerifiedContractVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name      string
+		route     RouteFamily
+		body      []byte
+		headers   map[string]string
+		wantState payments.WebhookVerificationState
+	}{
+		{
+			name: "completed Payment Session is covered by proof", route: RoutePaymentSession,
+			body:    []byte(`{"event":"payment_session.completed","business_id":"biz_verified_0001","created":"2026-01-15T11:00:00Z","data":{"id":"ps_verified_completed_0001","payment_request_id":"pr_verified_completed_0001","amount":125000,"currency":"IDR","status":"COMPLETED"}}`),
+			headers: map[string]string{"x-callback-token": "test-callback-token", "api-version": "v1"}, wantState: payments.WebhookVerificationVerified,
+		},
+		{
+			name: "expired Payment Session is covered by proof", route: RoutePaymentSession,
+			body:    []byte(`{"event":"payment_session.expired","business_id":"biz_verified_0001","created":"2026-01-15T11:00:00Z","data":{"id":"ps_verified_expired_0001","payment_request_id":"pr_verified_expired_0001","amount":125000,"currency":"IDR","status":"EXPIRED"}}`),
+			headers: map[string]string{"x-callback-token": "test-callback-token", "api-version": "v1"}, wantState: payments.WebhookVerificationVerified,
+		},
+		{
+			name: "capture remains diagnostic without capture proof", route: RoutePayment,
+			body:    []byte(`{"event":"payment.capture","version":"2024-11-11","created":"2026-01-15T11:00:00Z","data":{"payment_id":"pay_unproven_0001","amount":125000,"currency":"IDR","status":"SUCCEEDED"}}`),
+			headers: map[string]string{"x-callback-token": "test-callback-token"}, wantState: payments.WebhookVerificationDiagnostic,
+		},
+		{
+			name: "refund remains diagnostic without refund proof", route: RouteRefund,
+			body:    []byte(`{"event":"refund.succeeded","version":"2024-11-11","created":"2026-01-15T11:00:00Z","data":{"refund_id":"refund_unproven_0001","payment_id":"pay_unproven_0001","payment_request_id":"pr_unproven_0001","amount":125000,"currency":"IDR","status":"SUCCEEDED"}}`),
+			headers: map[string]string{"x-callback-token": "test-callback-token"}, wantState: payments.WebhookVerificationDiagnostic,
+		},
+		{
+			name: "quarantined capture is never promoted", route: RoutePayment,
+			body:    []byte(`{"event":"payment.capture","version":"2024-11-11","created":"2026-01-15T11:00:00Z","data":{"payment_id":"pay_quarantined_0001","amount":125000,"currency":"USD","status":"SUCCEEDED"}}`),
+			headers: map[string]string{"x-callback-token": "test-callback-token"}, wantState: payments.WebhookVerificationQuarantined,
+		},
+	}
+	for index, testCase := range cases {
+		result, receiveErr := service.Receive(context.Background(), ReceiveRequest{RouteFamily: testCase.route, RawBody: testCase.body, Headers: testCase.headers, CorrelationID: "webhook:verified-contract:" + testCase.name})
+		if receiveErr != nil || !result.Accepted || len(repo.accepted) != index+1 {
+			t.Fatalf("%s result=%+v err=%v accepted=%d", testCase.name, result, receiveErr, len(repo.accepted))
+		}
+		accepted := repo.accepted[index]
+		if accepted.Event.VerificationState != testCase.wantState || accepted.AuthContract != payments.XenditWebhookVerifiedContractVersion {
+			t.Fatalf("%s persisted state=%s contract=%s", testCase.name, accepted.Event.VerificationState, accepted.AuthContract)
+		}
+	}
+}
+
 func TestIngressAcceptsObservedPaymentSessionV2WithoutPersistingDiagnostics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	verifier, err := payments.NewXenditTestWebhookVerifier("test-callback-token")

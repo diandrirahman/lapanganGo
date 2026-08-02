@@ -11,12 +11,25 @@ import (
 )
 
 const (
-	XenditWebhookAuthContractVersion = "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL"
-	XenditWebhookCallbackTokenHeader = "x-callback-token"
-	XenditWebhookAPIVersionHeader    = "api-version"
-	XenditPaymentSessionAPIVersion   = "v1"
-	XenditWebhookMaxBodyBytes        = 256 * 1024
+	XenditWebhookAuthContractVersion     = "XENDIT_CALLBACK_TOKEN_V1_PROVISIONAL"
+	XenditWebhookVerifiedContractVersion = "XENDIT_CALLBACK_TOKEN_V1_VERIFIED"
+	XenditWebhookCallbackTokenHeader     = "x-callback-token"
+	XenditWebhookAPIVersionHeader        = "api-version"
+	XenditPaymentSessionAPIVersion       = "v1"
+	XenditWebhookMaxBodyBytes            = 256 * 1024
 )
+
+func IsXenditWebhookContractVersion(value string) bool {
+	return value == XenditWebhookAuthContractVersion || value == XenditWebhookVerifiedContractVersion
+}
+
+// IsXenditWebhookEventEligibleForVerifiedContract is intentionally limited to
+// the Payment Session events covered by the controlled Dashboard proof. The
+// callback-token contract for payment.capture and refund events remains
+// diagnostic-only until those event families have their own evidence.
+func IsXenditWebhookEventEligibleForVerifiedContract(eventType string) bool {
+	return eventType == "payment_session.completed" || eventType == "payment_session.expired"
+}
 
 type WebhookErrorCode string
 

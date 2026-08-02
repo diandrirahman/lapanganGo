@@ -392,6 +392,11 @@ The controlled-proof record and synthetic V2 fixture set are the authoritative
 Payment Session schema oracle; V1 stays historical for the earlier provisional
 assumption and unrelated provider families.
 
+This proof is limited to `payment_session.completed` and
+`payment_session.expired`. It does not authorize `payment.capture` or refund
+events to become `VERIFIED` or processable. Those families remain diagnostic
+until their own controlled proof and explicit contract marker exist.
+
 ### 6.3 Return URLs
 
 Success/cancel URLs are constructed from a backend HTTPS allowlist and opaque
@@ -622,7 +627,7 @@ The safe activation order is:
 3. inquiry recovery;
 4. webhook ingress in provisional diagnostic mode;
 5. controlled Dashboard delivery proof;
-6. verified contract marker and webhook processor;
+6. verified Payment Session contract marker and Payment Session processor;
 7. refund workflow;
 8. read-only reconciliation;
 9. isolated test-ledger tests only.
